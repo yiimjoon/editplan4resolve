@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /b /s \"e:\\\\Claude\\\\Videoforge\\\\scripts\")",
+      "Bash(tree:*)"
+    ]
+  }
+}
