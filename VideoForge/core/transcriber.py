@@ -83,15 +83,6 @@ def transcribe_segments(
                 pass
 
         logger.info("Transcription complete: %s sentences", len(sentences))
-        logger.info(">>> Releasing Whisper model resources...")
-        try:
-            del model
-            import gc
-
-            gc.collect()
-            logger.info(">>> Model resources released")
-        except Exception as exc:
-            logger.warning(">>> Failed to release model: %s", exc)
         logger.info(">>> Returning %d sentences to caller", len(sentences))
         return sentences
     except Exception as exc:
