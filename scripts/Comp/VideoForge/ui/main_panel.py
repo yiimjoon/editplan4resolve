@@ -66,7 +66,7 @@ COLORS = {
     "error": "#f44336",
 }
 
-VERSION = "v1.3.3"
+VERSION = "v1.3.4"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -259,6 +259,7 @@ class VideoForgePanel(QWidget):
         self.project_db: Optional[str] = None
         self.main_video_path: Optional[str] = None
         self._threads: list[QThread] = []
+        self._workers: list[Worker] = []
         self._threads_lock = threading.Lock()
         self.status_signal.connect(self._set_status)
         self.progress_signal.connect(self._set_progress_value)
@@ -695,12 +696,17 @@ class VideoForgePanel(QWidget):
         worker = Worker(func, *args)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.finished.connect(lambda result, err: self._on_worker_done(thread, result, err, on_done))
+        worker.finished.connect(
+            lambda result, err, t=thread, w=worker: self._on_worker_done(t, w, result, err, on_done)
+        )
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
         thread.start()
         with self._threads_lock:
             self._threads.append(thread)
+            self._workers.append(worker)
 
-    def _on_worker_done(self, thread: QThread, result, err, on_done) -> None:
+    def _on_worker_done(self, thread: QThread, worker: Worker, result, err, on_done) -> None:
         self._set_busy(False)
         if err:
             self._set_status(f"Error: {err}")
@@ -717,6 +723,8 @@ class VideoForgePanel(QWidget):
         with self._threads_lock:
             if thread in self._threads:
                 self._threads.remove(thread)
+            if worker in self._workers:
+                self._workers.remove(worker)
 
     def _on_threshold_changed(self, value: int) -> None:
         self.threshold_label.setText(f"{value}%")
