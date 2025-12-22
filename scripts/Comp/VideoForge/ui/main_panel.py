@@ -11,6 +11,7 @@ import yaml
 from VideoForge.broll.db import LibraryDB
 from VideoForge.broll.indexer import scan_library
 from VideoForge.broll.sidecar_tools import generate_comfyui_sidecars, generate_scene_sidecars
+from VideoForge.config.config_manager import Config
 from VideoForge.plugin.resolve_bridge import ResolveBridge
 
 try:
@@ -63,8 +64,7 @@ COLORS = {
     "error": "#f44336",
 }
 
-VERSION = "v1.3"
-DEFAULT_BROLL_DIR = r"E:\Claude\Videoforge\test_media\Broll"
+VERSION = "v1.3.1"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -247,6 +247,7 @@ class VideoForgePanel(QWidget):
         self._startup_warning: Optional[str] = None
         self.settings = self._load_settings()
         self.bridge = ResolveBridge(self.settings)
+        self.saved_broll_dir = Config.get("broll_dir")
         self.project_db: Optional[str] = None
         self.main_video_path: Optional[str] = None
         self._threads: list[QThread] = []
@@ -255,7 +256,7 @@ class VideoForgePanel(QWidget):
         self._init_ui()
         if self._startup_warning:
             self._set_status(self._startup_warning)
-        self._load_saved_library_path()
+        self._restore_library_path()
 
     def _init_ui(self) -> None:
         """Initialize the modernized UI."""
@@ -751,15 +752,28 @@ class VideoForgePanel(QWidget):
         self._run_worker(_analyze, on_done=_done)
 
     def _on_browse_library(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Select Library DB", "", "DB Files (*.db)")
-        if path:
-            self.library_path_edit.setText(path)
+        default_dir = (
+            self.saved_broll_dir
+            if self.saved_broll_dir and Path(self.saved_broll_dir).exists()
+            else ""
+        )
+        folder = QFileDialog.getExistingDirectory(self, "Select B-roll Folder", default_dir)
+        if folder:
+            Config.set("broll_dir", folder)
+            self.saved_broll_dir = folder
+            self.library_path_edit.setText(str(Path(folder) / "library.db"))
 
     def _on_scan_library(self) -> None:
-        default_dir = DEFAULT_BROLL_DIR if Path(DEFAULT_BROLL_DIR).exists() else ""
+        default_dir = (
+            self.saved_broll_dir
+            if self.saved_broll_dir and Path(self.saved_broll_dir).exists()
+            else ""
+        )
         folder = QFileDialog.getExistingDirectory(self, "Select B-roll Folder", default_dir)
         if not folder:
             return
+        Config.set("broll_dir", folder)
+        self.saved_broll_dir = folder
 
         def _scan():
             library_path = self.library_path_edit.text().strip()
@@ -807,8 +821,19 @@ class VideoForgePanel(QWidget):
             return
         library_path = self.library_path_edit.text().strip()
         if not library_path:
-            self._set_status("Set a library DB path first.")
-            return
+            default_dir = (
+                self.saved_broll_dir
+                if self.saved_broll_dir and Path(self.saved_broll_dir).exists()
+                else ""
+            )
+            folder = QFileDialog.getExistingDirectory(self, "Select B-roll Folder", default_dir)
+            if not folder:
+                self._set_status("Set a library DB path first.")
+                return
+            Config.set("broll_dir", folder)
+            self.saved_broll_dir = folder
+            library_path = str(Path(folder) / "library.db")
+            self.library_path_edit.setText(library_path)
         threshold = self.threshold_slider.value() / 100.0
         if not 0.0 <= threshold <= 1.0:
             self._set_status(f"Invalid threshold: {threshold}")
@@ -851,7 +876,12 @@ class VideoForgePanel(QWidget):
         self._run_worker(_apply, on_done=_done)
 
     def _on_generate_sidecars(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Select B-roll Folder", DEFAULT_BROLL_DIR)
+        default_dir = (
+            self.saved_broll_dir
+            if self.saved_broll_dir and Path(self.saved_broll_dir).exists()
+            else ""
+        )
+        folder = QFileDialog.getExistingDirectory(self, "Select B-roll Folder", default_dir)
         if not folder:
             return
 
@@ -865,7 +895,12 @@ class VideoForgePanel(QWidget):
         self._run_worker(_generate, on_done=_done)
 
     def _on_generate_comfyui_sidecars(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Select B-roll Folder", DEFAULT_BROLL_DIR)
+        default_dir = (
+            self.saved_broll_dir
+            if self.saved_broll_dir and Path(self.saved_broll_dir).exists()
+            else ""
+        )
+        folder = QFileDialog.getExistingDirectory(self, "Select B-roll Folder", default_dir)
         if not folder:
             return
 
@@ -896,10 +931,13 @@ class VideoForgePanel(QWidget):
         except Exception:
             return
 
-    def _load_saved_library_path(self) -> None:
+    def _restore_library_path(self) -> None:
         try:
             saved = self.bridge.get_saved_library_path()
         except Exception:
             saved = None
         if saved:
-            self.library_path_edit.setText(saved)
+            self.library_path_edit.setText(str(saved))
+            return
+        if self.saved_broll_dir:
+            self.library_path_edit.setText(str(Path(self.saved_broll_dir) / "library.db"))
