@@ -2,7 +2,7 @@ import hashlib
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from VideoForge.adapters import embedding_adapter
 from VideoForge.broll.db import LibraryDB
@@ -72,10 +72,26 @@ class ResolveBridge:
         if not main_clip:
             raise ValueError("No clip selected in the current timeline.")
 
-        video_path = main_clip.GetClipProperty("File Path")
+        video_path = self._get_clip_path(main_clip)
         if not video_path:
             raise ValueError("Selected clip has no file path.")
+        return self.analyze_from_path(
+            video_path=video_path,
+            whisper_model=whisper_model,
+            whisper_task=whisper_task,
+            whisper_language=whisper_language,
+            align_srt=align_srt,
+        )
 
+    def analyze_from_path(
+        self,
+        video_path: str,
+        whisper_model: str = "large-v3",
+        whisper_task: str = "translate",
+        whisper_language: str | None = None,
+        align_srt: str | None = None,
+    ) -> Dict[str, str]:
+        """Analyze from already-extracted video_path (thread-safe version)."""
         project_id = self._generate_project_id(video_path)
         project_db = self._get_project_db_path(project_id)
         self.logger.info("Analyze start: %s", video_path)
@@ -85,7 +101,7 @@ class ResolveBridge:
         store.save_artifact("whisper_model", whisper_model)
 
         try:
-            self.logger.info("=== [BRIDGE] analyze_selected_clip called ===")
+            self.logger.info("=== [BRIDGE] analyze_from_path called ===")
             self.logger.info("[BRIDGE] video_path: %s", video_path)
             self.logger.info(
                 "[BRIDGE] whisper_model: %s, task: %s, language: %s",
@@ -105,6 +121,7 @@ class ResolveBridge:
                 language=whisper_language,
             )
             self.logger.info("[BRIDGE] transcribe_segments returned %d sentences", len(sentences))
+            self.logger.info("[BRIDGE] Processing post-transcription steps...")
             if self.settings.get("silence", {}).get("enable_removal", False):
                 self.logger.info("Applying silence removal to sentences.")
                 segments = process_silence(
@@ -126,11 +143,15 @@ class ResolveBridge:
                         "metadata": {"auto_generated": True},
                     }
                 ]
+            self.logger.info("[BRIDGE] Segments created: %d", len(segments))
             if align_srt:
                 self.logger.info("Aligning sentences to SRT: %s", align_srt)
                 srt_entries = parse_srt(align_srt)
                 sentences = align_sentences_to_srt(sentences, srt_entries)
+                self.logger.info("[BRIDGE] SRT alignment complete")
+            self.logger.info("[BRIDGE] Saving to database...")
             store.save_project_data(segments=segments, sentences=sentences)
+            self.logger.info("[BRIDGE] Database save complete")
         except Exception as exc:
             self.logger.error("Analysis failed: %s", exc, exc_info=True)
             raise
@@ -139,8 +160,7 @@ class ResolveBridge:
         if any(seg.get("metadata", {}).get("warning") for seg in segments):
             warning = "Silence detection failed. Using full duration."
 
-        self.logger.info("Silence segments: %s", len(segments))
-        self.logger.info("Sentences: %s", len(sentences))
+        self.logger.info("[BRIDGE] Analyze complete. Segments: %s, Sentences: %s", len(segments), len(sentences))
         return {"project_db": project_db, "warning": warning}
 
     def match_broll(self, project_db_path: str, library_db_path: str) -> Dict[str, str | int]:
@@ -220,6 +240,28 @@ class ResolveBridge:
     @staticmethod
     def _time_to_frames(seconds: float, fps: float) -> int:
         return int(round(seconds * fps))
+
+    @staticmethod
+    def _get_clip_path(clip: Any) -> str | None:
+        getter = getattr(clip, "GetClipProperty", None)
+        if callable(getter):
+            try:
+                return getter("File Path")
+            except Exception:
+                pass
+        media_item = getattr(clip, "GetMediaPoolItem", None)
+        if callable(media_item):
+            try:
+                item = media_item()
+            except Exception:
+                item = None
+            getter = getattr(item, "GetClipProperty", None) if item else None
+            if callable(getter):
+                try:
+                    return getter("File Path")
+                except Exception:
+                    pass
+        return None
 
     @staticmethod
     def _assign_segments(sentences: List[Dict], segments: List[Dict]) -> None:

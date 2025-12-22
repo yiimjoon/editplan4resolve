@@ -66,7 +66,7 @@ COLORS = {
     "error": "#f44336",
 }
 
-VERSION = "v1.3.8"
+VERSION = "v1.3.9"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -780,6 +780,14 @@ class VideoForgePanel(QWidget):
                 f"color: {COLORS['error']}; font-size: 11px; background: transparent;"
             )
             return
+        try:
+            video_path = self.bridge._get_clip_path(clip)
+        except Exception as exc:
+            self._set_status(f"Error: Failed to get clip info: {exc}")
+            return
+        if not video_path:
+            self._set_status("Error: Clip has no file path.")
+            return
 
         def _analyze():
             logger = logging.getLogger("VideoForge.ui.Analyze")
@@ -791,7 +799,8 @@ class VideoForgePanel(QWidget):
             whisper_task = self.settings.get("whisper", {}).get("task", "translate")
             whisper_language = self.settings.get("whisper", {}).get("language", "auto")
 
-            logger.info("[2/6] Starting analyze_selected_clip")
+            logger.info("[2/6] Starting analyze_from_path")
+            logger.info("[2/6] video_path: %s", video_path)
             self._update_progress_safe(16)
             self._update_status_safe(
                 "Step 2/6: Loading Whisper model (first run may take 1-2 min)..."
@@ -802,7 +811,8 @@ class VideoForgePanel(QWidget):
 
             def _analyze_with_timeout():
                 try:
-                    result_container[0] = self.bridge.analyze_selected_clip(
+                    result_container[0] = self.bridge.analyze_from_path(
+                        video_path=video_path,
                         whisper_task=whisper_task,
                         whisper_language=whisper_language,
                         align_srt=srt_path,
@@ -839,9 +849,7 @@ class VideoForgePanel(QWidget):
             self._update_progress_safe(95)
             self._update_status_safe("Step 3/6: Finalizing...")
 
-            clip = self.bridge.resolve_api.get_primary_clip()
-            main_path = clip.GetClipProperty("File Path") if clip else None
-            result["main_path"] = main_path
+            result["main_path"] = video_path
 
             logger.info("[4/6] Analyze complete")
             self._update_progress_safe(100)
