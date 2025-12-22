@@ -5,6 +5,10 @@ from typing import Dict, List
 
 from VideoForge.core.srt_parser import SrtEntry
 
+_WHISPER_MODEL = None
+_WHISPER_MODEL_NAME = None
+_WHISPER_MODEL_DEVICE = None
+
 def transcribe_segments(
     video_path: str,
     segments: List[Dict[str, float]],
@@ -31,22 +35,39 @@ def transcribe_segments(
             or os.environ.get("CT2_USE_CUDA") == "0"
             or os.environ.get("CUDA_VISIBLE_DEVICES") in {"", "-1"}
         )
-        if force_cpu:
+        desired_device = "cpu" if force_cpu else "auto"
+        global _WHISPER_MODEL, _WHISPER_MODEL_NAME, _WHISPER_MODEL_DEVICE
+        if (
+            _WHISPER_MODEL is not None
+            and _WHISPER_MODEL_NAME == model_name
+            and _WHISPER_MODEL_DEVICE == desired_device
+        ):
+            model = _WHISPER_MODEL
+        elif force_cpu:
             logger.info(">>> Loading Whisper model on CPU (device=cpu, compute_type=int8)")
             logger.info(">>> This may take 30-120 seconds on first run...")
             model = WhisperModel(model_name, device="cpu", compute_type="int8")
             logger.info(">>> CPU model loaded in %.1f seconds", time.time() - model_load_start)
+            _WHISPER_MODEL = model
+            _WHISPER_MODEL_NAME = model_name
+            _WHISPER_MODEL_DEVICE = desired_device
         else:
             try:
                 logger.info(">>> Loading Whisper model on GPU (device=auto, compute_type=int8)")
                 logger.info(">>> This may take 30-120 seconds on first run...")
                 model = WhisperModel(model_name, device="auto", compute_type="int8")
                 logger.info(">>> GPU model loaded in %.1f seconds", time.time() - model_load_start)
+                _WHISPER_MODEL = model
+                _WHISPER_MODEL_NAME = model_name
+                _WHISPER_MODEL_DEVICE = desired_device
             except Exception as exc:
                 logger.warning(">>> GPU init failed (%s), falling back to CPU", exc)
                 logger.info(">>> Loading Whisper model on CPU (fallback)")
                 model = WhisperModel(model_name, device="cpu", compute_type="int8")
                 logger.info(">>> CPU model loaded in %.1f seconds", time.time() - model_load_start)
+                _WHISPER_MODEL = model
+                _WHISPER_MODEL_NAME = model_name
+                _WHISPER_MODEL_DEVICE = "cpu"
 
         logger.info("Transcribing audio... (this may take 30-60 seconds)")
         transcribe_kwargs = {"word_timestamps": False, "task": task}
