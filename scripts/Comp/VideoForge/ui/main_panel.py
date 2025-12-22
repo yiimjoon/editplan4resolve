@@ -12,6 +12,7 @@ from VideoForge.broll.db import LibraryDB
 from VideoForge.broll.indexer import scan_library
 from VideoForge.broll.sidecar_tools import generate_comfyui_sidecars, generate_scene_sidecars
 from VideoForge.config.config_manager import Config
+from VideoForge.core.segment_store import SegmentStore
 from VideoForge.plugin.resolve_bridge import ResolveBridge
 
 try:
@@ -66,7 +67,7 @@ COLORS = {
     "error": "#f44336",
 }
 
-VERSION = "v1.3.15"
+VERSION = "v1.4.0"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -260,6 +261,7 @@ class VideoForgePanel(QWidget):
         self.main_video_path: Optional[str] = None
         self._threads: list[QThread] = []
         self._workers: list[Worker] = []
+        self.transcript_panel = None
         self._threads_lock = threading.Lock()
         self.status_signal.connect(self._set_status)
         self.progress_signal.connect(self._set_progress_value)
@@ -361,6 +363,12 @@ class VideoForgePanel(QWidget):
         self.analyze_status = QLabel("Status: Not analyzed")
         self.analyze_status.setObjectName("StatusLabel")
         card_layout.addWidget(self.analyze_status)
+
+        self.edit_transcript_btn = QPushButton("Edit Transcript")
+        self.edit_transcript_btn.setCursor(Qt.PointingHandCursor)
+        self.edit_transcript_btn.setEnabled(False)
+        self.edit_transcript_btn.clicked.connect(self._on_edit_transcript)
+        card_layout.addWidget(self.edit_transcript_btn)
 
         log_row = QHBoxLayout()
         log_row.setSpacing(6)
@@ -809,19 +817,20 @@ class VideoForgePanel(QWidget):
             self._set_busy(True)
             self.progress.setRange(0, 100)
             self.progress.setValue(0)
-            self._set_status("◐ Preparing... (1/4)")
+            self._set_status("Preparing... (1/4)")
             try:
                 self._set_progress_value(55)
-                self._set_status("◑ Transcribing (Resolve AI)... (2/4)")
+                self._set_status("Transcribing (Resolve AI)... (2/4)")
                 result = self.bridge.analyze_resolve_ai(video_path=video_path, language=language)
-                self._set_progress_value(90)
-                self._set_status("◓ Saving... (3/4)")
                 self.project_db = result.get("project_db")
                 self.main_video_path = video_path
                 self.analyze_status.setText("Status: Analyzed")
                 self.analyze_status.setStyleSheet(f"color: {COLORS['success']}; margin-top: 6px;")
+                self.edit_transcript_btn.setEnabled(True)
+                self._set_progress_value(90)
+                self._set_status("Saving... (3/4)")
                 self._set_progress_value(100)
-                self._set_status("● Complete (4/4)")
+                self._set_status("Complete (4/4)")
             except Exception as exc:
                 self._set_status(f"Error: {exc}")
             finally:
@@ -832,7 +841,7 @@ class VideoForgePanel(QWidget):
             logger = logging.getLogger("VideoForge.ui.Analyze")
             logger.info("[1/4] Preparing analysis")
             self._update_progress_safe(8)
-            self._update_status_safe("◐ Preparing... (1/4)")
+            self._update_status_safe("Preparing... (1/4)")
             srt_path = self.srt_path_edit.text().strip() if self.srt_path_edit else ""
             srt_path = srt_path or None
             whisper_task = self.settings.get("whisper", {}).get("task", "translate")
@@ -841,7 +850,7 @@ class VideoForgePanel(QWidget):
             logger.info("[2/4] Starting Whisper transcription")
             logger.info("[2/4] video_path: %s", video_path)
             self._update_progress_safe(16)
-            self._update_status_safe("◑ Transcribing audio... (2/4) This may take 1-2 minutes")
+            self._update_status_safe("Transcribing audio... (2/4) This may take 1-2 minutes")
 
             result_container = [None]
             error_container = [None]
@@ -868,7 +877,7 @@ class VideoForgePanel(QWidget):
                 elapsed += 5
                 if elapsed % 15 == 0:
                     logger.info("[2/4] Still transcribing... (%d seconds elapsed)", elapsed)
-                    self._update_status_safe(f"◒ Transcribing... ({elapsed}s) (2/4)")
+                    self._update_status_safe(f"Transcribing... ({elapsed}s) (2/4)")
                     self._update_progress_safe(min(90, 16 + int(elapsed / timeout * 70)))
 
             if analyze_thread.is_alive():
@@ -884,13 +893,13 @@ class VideoForgePanel(QWidget):
 
             logger.info("[3/4] Saving results to database")
             self._update_progress_safe(95)
-            self._update_status_safe("◓ Saving... (3/4)")
+            self._update_status_safe("Saving... (3/4)")
 
             result["main_path"] = video_path
 
             logger.info("[4/4] Analysis complete")
             self._update_progress_safe(100)
-            self._update_status_safe("● Complete (4/4)")
+            self._update_status_safe("Complete (4/4)")
             return result
 
         def _done(result):
@@ -898,6 +907,7 @@ class VideoForgePanel(QWidget):
             self.main_video_path = result.get("main_path")
             self.analyze_status.setText("Status: Analyzed")
             self.analyze_status.setStyleSheet(f"color: {COLORS['success']}; margin-top: 6px;")
+            self.edit_transcript_btn.setEnabled(True)
             warning = result.get("warning")
             if warning:
                 self._set_status(f"Warning: {warning}")
@@ -974,6 +984,26 @@ class VideoForgePanel(QWidget):
             self._set_status("Log file not found yet. Opened log folder.")
             return
         self._set_status("Log path unavailable.")
+
+    def _on_edit_transcript(self) -> None:
+        if not self.project_db:
+            self._set_status("Analyze a clip first.")
+            return
+        try:
+            from VideoForge.ui.transcript_editor import TranscriptEditorPanel
+        except Exception as exc:
+            self._set_status(f"Failed to open editor: {exc}")
+            return
+        if self.transcript_panel is None:
+            self.transcript_panel = TranscriptEditorPanel(self.project_db)
+        else:
+            try:
+                self.transcript_panel.project_db = self.project_db
+                self.transcript_panel.store = SegmentStore(self.project_db)
+                self.transcript_panel._load_transcript()
+            except Exception:
+                self.transcript_panel = TranscriptEditorPanel(self.project_db)
+        self.transcript_panel.show()
 
     def _on_match_clicked(self) -> None:
         logging.getLogger("VideoForge.ui").info("Match clicked")

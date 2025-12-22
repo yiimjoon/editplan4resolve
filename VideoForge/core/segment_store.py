@@ -84,6 +84,30 @@ class SegmentStore:
         with self._connect_ctx() as conn:
             return self._insert_matches(conn, matches)
 
+    def update_sentences(self, sentences: Iterable[Dict[str, Any]]) -> None:
+        """Update existing sentences by id."""
+        with self._connect_ctx() as conn:
+            for sentence in sentences:
+                sentence_id = sentence.get("id")
+                if sentence_id is None:
+                    continue
+                conn.execute(
+                    """
+                    UPDATE sentences
+                    SET t0 = ?, t1 = ?, text = ?, confidence = ?, segment_id = ?, metadata = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        float(sentence.get("t0", 0.0)),
+                        float(sentence.get("t1", 0.0)),
+                        sentence.get("text", ""),
+                        sentence.get("confidence"),
+                        sentence.get("segment_id"),
+                        json.dumps(sentence.get("metadata", {})),
+                        int(sentence_id),
+                    ),
+                )
+
     def save_project_data(
         self,
         segments: Iterable[Dict[str, Any]] | None = None,
