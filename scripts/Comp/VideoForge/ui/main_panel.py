@@ -66,7 +66,7 @@ COLORS = {
     "error": "#f44336",
 }
 
-VERSION = "v1.3.9"
+VERSION = "v1.3.10"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -697,7 +697,8 @@ class VideoForgePanel(QWidget):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(
-            lambda result, err, t=thread, w=worker: self._on_worker_done(t, w, result, err, on_done)
+            lambda result, err, t=thread, w=worker: self._on_worker_done(t, w, result, err, on_done),
+            Qt.QueuedConnection,
         )
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
