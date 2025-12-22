@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 from pathlib import Path
@@ -9,6 +10,18 @@ Place this folder in the Resolve Fusion Scripts/Comp directory.
 
 
 def main() -> None:
+    log_dir = Path(os.environ.get("APPDATA", ".")) / "Blackmagic Design" / "DaVinci Resolve" / "Support"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "VideoForge.log"
+    os.environ.setdefault("VIDEOFORGE_LOG_PATH", str(log_path))
+    root_logger = logging.getLogger()
+    if not root_logger.handlers:
+        logging.basicConfig(
+            filename=str(log_path),
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+
     try:
         script_path = Path(__file__).resolve()
     except NameError:

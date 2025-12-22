@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import os
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -8,10 +10,11 @@ import yaml
 
 from VideoForge.broll.db import LibraryDB
 from VideoForge.broll.indexer import scan_library
+from VideoForge.broll.sidecar_tools import generate_comfyui_sidecars, generate_scene_sidecars
 from VideoForge.plugin.resolve_bridge import ResolveBridge
 
 try:
-    from PySide6.QtCore import QObject, QThread, Signal, Qt
+    from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer
     from PySide6.QtWidgets import (
         QApplication,
         QFileDialog,
@@ -27,7 +30,7 @@ try:
     )
 except Exception:
     try:
-        from PySide2.QtCore import QObject, QThread, Signal, Qt
+        from PySide2.QtCore import QObject, QThread, Signal, Qt, QTimer
         from PySide2.QtWidgets import (
             QApplication,
             QFileDialog,
@@ -59,6 +62,9 @@ COLORS = {
     "success": "#4caf50",
     "error": "#f44336",
 }
+
+VERSION = "v1.3"
+DEFAULT_BROLL_DIR = r"E:\Claude\Videoforge\test_media\Broll"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -208,6 +214,7 @@ class Worker(QObject):
 
 DEFAULT_SETTINGS = {
     "silence": {
+        "enable_removal": False,
         "threshold_db": -34,
         "min_keep_duration": 0.4,
         "buffer_before": 0.2,
@@ -219,7 +226,11 @@ DEFAULT_SETTINGS = {
         "fit_mode": "center",
         "crossfade": 0.3,
         "cooldown_sec": 30,
+        "hybrid_weights": {"vector": 0.5, "text": 0.5, "prior": 0.1},
+        "visual_similarity_threshold": 0.85,
+        "cooldown_penalty": 0.4,
     },
+    "whisper": {"task": "translate"},
     "query": {"top_n_tokens": 6},
     "vision": {"max_frames": 12, "base_frames": 6},
     "resolve": {"timeline_name_prefix": "VideoForge_"},
@@ -229,6 +240,8 @@ DEFAULT_SETTINGS = {
 class VideoForgePanel(QWidget):
     """Modern styled panel for VideoForge plugin."""
 
+    status_signal = Signal(str)
+
     def __init__(self) -> None:
         super().__init__()
         self._startup_warning: Optional[str] = None
@@ -237,6 +250,8 @@ class VideoForgePanel(QWidget):
         self.project_db: Optional[str] = None
         self.main_video_path: Optional[str] = None
         self._threads: list[QThread] = []
+        self._threads_lock = threading.Lock()
+        self.status_signal.connect(self._set_status)
         self._init_ui()
         if self._startup_warning:
             self._set_status(self._startup_warning)
@@ -264,6 +279,9 @@ class VideoForgePanel(QWidget):
         # --- Step 3: Match & Apply ---
         self._setup_step3_match(layout)
 
+        # --- Step 4: Advanced ---
+        self._setup_step4_advanced(layout)
+
         # --- Footer ---
         self._setup_footer(layout)
 
@@ -284,9 +302,17 @@ class VideoForgePanel(QWidget):
         )
         subtitle.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
+        version = QLabel(VERSION)
+        version.setStyleSheet(
+            f"color: {COLORS['text_dim']}; font-size: 10px; background: transparent;"
+        )
+        version.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
         header_layout.addWidget(title)
         header_layout.addStretch()
         header_layout.addWidget(subtitle)
+        header_layout.addSpacing(8)
+        header_layout.addWidget(version)
         parent_layout.addLayout(header_layout)
 
         # Separator line
@@ -320,9 +346,26 @@ class VideoForgePanel(QWidget):
         card_layout.addWidget(self.analyze_btn)
 
         # Status
-        self.analyze_status = QLabel("○ Not analyzed")
+        self.analyze_status = QLabel("Status: Not analyzed")
         self.analyze_status.setObjectName("StatusLabel")
         card_layout.addWidget(self.analyze_status)
+
+        log_row = QHBoxLayout()
+        log_row.setSpacing(6)
+        self.log_path_label = QLabel("Log: VideoForge.log")
+        log_path = self._get_log_path()
+        if log_path:
+            self.log_path_label.setToolTip(str(log_path))
+        self.log_path_label.setStyleSheet(
+            f"color: {COLORS['text_dim']}; font-size: 11px; background: transparent;"
+        )
+        self.open_log_btn = QPushButton("Open Log File")
+        self.open_log_btn.setCursor(Qt.PointingHandCursor)
+        self.open_log_btn.clicked.connect(self._on_open_log)
+        log_row.addWidget(self.log_path_label)
+        log_row.addStretch()
+        log_row.addWidget(self.open_log_btn)
+        card_layout.addLayout(log_row)
 
         parent_layout.addWidget(card)
 
@@ -342,7 +385,7 @@ class VideoForgePanel(QWidget):
         self.library_path_edit = QLineEdit()
         self.library_path_edit.setPlaceholderText("Library DB path...")
 
-        self.browse_btn = QPushButton("📁")
+        self.browse_btn = QPushButton("Browse")
         self.browse_btn.setFixedWidth(36)
         self.browse_btn.setToolTip("Browse for library DB file")
         self.browse_btn.setCursor(Qt.PointingHandCursor)
@@ -359,7 +402,7 @@ class VideoForgePanel(QWidget):
         card_layout.addWidget(self.scan_library_btn)
 
         # Status
-        self.library_status = QLabel("○ Library not loaded")
+        self.library_status = QLabel("Status: Library not scanned")
         self.library_status.setObjectName("StatusLabel")
         card_layout.addWidget(self.library_status)
 
@@ -379,7 +422,9 @@ class VideoForgePanel(QWidget):
         slider_label = QLabel("Matching Threshold")
         slider_label.setStyleSheet("background: transparent;")
 
-        self.threshold_label = QLabel("65%")
+        self.threshold_label = QLabel(
+            f"{int(self.settings['broll']['matching_threshold'] * 100)}%"
+        )
         self.threshold_label.setStyleSheet(
             f"color: {COLORS['accent']}; font-weight: bold; background: transparent;"
         )
@@ -393,7 +438,9 @@ class VideoForgePanel(QWidget):
         self.threshold_slider = QSlider(Qt.Horizontal)
         self.threshold_slider.setMinimum(0)
         self.threshold_slider.setMaximum(100)
-        self.threshold_slider.setValue(65)
+        self.threshold_slider.setValue(
+            int(self.settings["broll"]["matching_threshold"] * 100)
+        )
         self.threshold_slider.valueChanged.connect(self._on_threshold_changed)
         card_layout.addWidget(self.threshold_slider)
 
@@ -418,6 +465,90 @@ class VideoForgePanel(QWidget):
 
         parent_layout.addWidget(card)
 
+    def _setup_step4_advanced(self, parent_layout: QVBoxLayout) -> None:
+        """Step 4: Advanced Matching + Sidecar Tools."""
+        card = self._create_card()
+        card_layout = QVBoxLayout(card)
+        card_layout.setSpacing(8)
+
+        card_layout.addWidget(self._create_section_title("4. Advanced"))
+
+        srt_row = QHBoxLayout()
+        srt_row.setSpacing(6)
+        self.srt_path_edit = QLineEdit()
+        self.srt_path_edit.setPlaceholderText("Optional SRT path...")
+        self.srt_browse_btn = QPushButton("Browse")
+        self.srt_browse_btn.setFixedWidth(72)
+        self.srt_browse_btn.setCursor(Qt.PointingHandCursor)
+        self.srt_browse_btn.clicked.connect(self._on_browse_srt)
+        srt_row.addWidget(self.srt_path_edit)
+        srt_row.addWidget(self.srt_browse_btn)
+        card_layout.addLayout(srt_row)
+
+        card_layout.addWidget(QLabel("Hybrid Weights"))
+        vector_weight = float(self.settings["broll"]["hybrid_weights"]["vector"])
+        text_weight = float(self.settings["broll"]["hybrid_weights"]["text"])
+        self.vector_weight_label = QLabel(
+            f"Vector: {vector_weight:.2f} / Text: {text_weight:.2f}"
+        )
+        self.vector_weight_label.setStyleSheet(
+            f"color: {COLORS['text_dim']}; background: transparent;"
+        )
+        card_layout.addWidget(self.vector_weight_label)
+
+        self.vector_weight_slider = QSlider(Qt.Horizontal)
+        self.vector_weight_slider.setMinimum(0)
+        self.vector_weight_slider.setMaximum(100)
+        self.vector_weight_slider.setValue(
+            int(self.settings["broll"]["hybrid_weights"]["vector"] * 100)
+        )
+        self.vector_weight_slider.valueChanged.connect(self._on_vector_weight_changed)
+        card_layout.addWidget(self.vector_weight_slider)
+
+        prior_weight = float(self.settings["broll"]["hybrid_weights"]["prior"])
+        self.prior_weight_label = QLabel(f"Prior Weight: {prior_weight:.2f}")
+        self.prior_weight_label.setStyleSheet(
+            f"color: {COLORS['text_dim']}; background: transparent;"
+        )
+        card_layout.addWidget(self.prior_weight_label)
+
+        self.prior_weight_slider = QSlider(Qt.Horizontal)
+        self.prior_weight_slider.setMinimum(0)
+        self.prior_weight_slider.setMaximum(30)
+        self.prior_weight_slider.setValue(
+            int(self.settings["broll"]["hybrid_weights"]["prior"] * 100)
+        )
+        self.prior_weight_slider.valueChanged.connect(self._on_prior_weight_changed)
+        card_layout.addWidget(self.prior_weight_slider)
+
+        visual_threshold = float(self.settings["broll"]["visual_similarity_threshold"])
+        self.visual_threshold_label = QLabel(f"Visual Filter: {visual_threshold:.2f}")
+        self.visual_threshold_label.setStyleSheet(
+            f"color: {COLORS['text_dim']}; background: transparent;"
+        )
+        card_layout.addWidget(self.visual_threshold_label)
+
+        self.visual_threshold_slider = QSlider(Qt.Horizontal)
+        self.visual_threshold_slider.setMinimum(70)
+        self.visual_threshold_slider.setMaximum(95)
+        self.visual_threshold_slider.setValue(
+            int(self.settings["broll"]["visual_similarity_threshold"] * 100)
+        )
+        self.visual_threshold_slider.valueChanged.connect(self._on_visual_threshold_changed)
+        card_layout.addWidget(self.visual_threshold_slider)
+
+        self.sidecar_btn = QPushButton("Generate Scene Sidecars")
+        self.sidecar_btn.setCursor(Qt.PointingHandCursor)
+        self.sidecar_btn.clicked.connect(self._on_generate_sidecars)
+        card_layout.addWidget(self.sidecar_btn)
+
+        self.comfyui_sidecar_btn = QPushButton("Generate ComfyUI Sidecars")
+        self.comfyui_sidecar_btn.setCursor(Qt.PointingHandCursor)
+        self.comfyui_sidecar_btn.clicked.connect(self._on_generate_comfyui_sidecars)
+        card_layout.addWidget(self.comfyui_sidecar_btn)
+
+        parent_layout.addWidget(card)
+
     def _setup_footer(self, parent_layout: QVBoxLayout) -> None:
         """Footer with progress bar and global status."""
         parent_layout.addStretch()
@@ -436,6 +567,18 @@ class VideoForgePanel(QWidget):
             f"color: {COLORS['text_dim']}; font-size: 11px; background: transparent;"
         )
         parent_layout.addWidget(self.status)
+
+        self.last_log_label = QLabel("")
+        self.last_log_label.setStyleSheet(
+            f"color: {COLORS['text_dim']}; font-size: 10px; "
+            "font-family: 'Consolas', monospace; background: transparent;"
+        )
+        self.last_log_label.setWordWrap(True)
+        parent_layout.addWidget(self.last_log_label)
+
+        self.log_timer = QTimer(self)
+        self.log_timer.timeout.connect(self._update_last_log)
+        self.log_timer.start(1000)
 
     # --- Helper Methods ---
 
@@ -487,6 +630,25 @@ class VideoForgePanel(QWidget):
     def _set_status(self, message: str) -> None:
         self.status.setText(message)
 
+    def _update_status_safe(self, message: str) -> None:
+        logging.getLogger(__name__).info(message)
+        self.status_signal.emit(message)
+
+    def _get_log_path(self) -> Optional[Path]:
+        env_path = os.environ.get("VIDEOFORGE_LOG_PATH")
+        if env_path:
+            return Path(env_path)
+        appdata = os.environ.get("APPDATA")
+        if not appdata:
+            return None
+        return (
+            Path(appdata)
+            / "Blackmagic Design"
+            / "DaVinci Resolve"
+            / "Support"
+            / "VideoForge.log"
+        )
+
     def _set_busy(self, busy: bool) -> None:
         self.progress.setVisible(busy)
         self.analyze_btn.setEnabled(not busy)
@@ -502,7 +664,8 @@ class VideoForgePanel(QWidget):
         thread.started.connect(worker.run)
         worker.finished.connect(lambda result, err: self._on_worker_done(thread, result, err, on_done))
         thread.start()
-        self._threads.append(thread)
+        with self._threads_lock:
+            self._threads.append(thread)
 
     def _on_worker_done(self, thread: QThread, result, err, on_done) -> None:
         self._set_busy(False)
@@ -518,8 +681,9 @@ class VideoForgePanel(QWidget):
             )
         thread.quit()
         thread.wait()
-        if thread in self._threads:
-            self._threads.remove(thread)
+        with self._threads_lock:
+            if thread in self._threads:
+                self._threads.remove(thread)
 
     def _on_threshold_changed(self, value: int) -> None:
         self.threshold_label.setText(f"{value}%")
@@ -534,22 +698,56 @@ class VideoForgePanel(QWidget):
             f"color: {color}; font-weight: bold; background: transparent;"
         )
 
+    def _on_vector_weight_changed(self, value: int) -> None:
+        vector_weight = value / 100.0
+        text_weight = 1.0 - vector_weight
+        self.settings["broll"]["hybrid_weights"]["vector"] = vector_weight
+        self.settings["broll"]["hybrid_weights"]["text"] = text_weight
+        self.vector_weight_label.setText(
+            f"Vector: {vector_weight:.2f} / Text: {text_weight:.2f}"
+        )
+
+    def _on_prior_weight_changed(self, value: int) -> None:
+        prior_weight = value / 100.0
+        self.settings["broll"]["hybrid_weights"]["prior"] = prior_weight
+        self.prior_weight_label.setText(f"Prior Weight: {prior_weight:.2f}")
+
+    def _on_visual_threshold_changed(self, value: int) -> None:
+        threshold = value / 100.0
+        self.settings["broll"]["visual_similarity_threshold"] = threshold
+        self.visual_threshold_label.setText(f"Visual Filter: {threshold:.2f}")
+
     # --- Event Handlers ---
 
     def _on_analyze_clicked(self) -> None:
         def _analyze():
-            project_db = self.bridge.analyze_selected_clip()
+            self._update_status_safe("Step 1/3: Initializing...")
+            srt_path = self.srt_path_edit.text().strip() if self.srt_path_edit else ""
+            srt_path = srt_path or None
+            whisper_task = self.settings.get("whisper", {}).get("task", "translate")
+            self._update_status_safe("Step 2/3: Transcribing audio (30-60s)...")
+            result = self.bridge.analyze_selected_clip(
+                whisper_task=whisper_task,
+                align_srt=srt_path,
+            )
+            self._update_status_safe("Step 3/3: Finalizing...")
             clips = self.bridge.resolve_api.get_selected_clips()
             main_path = clips[0].GetClipProperty("File Path") if clips else None
-            return project_db, main_path
+            result["main_path"] = main_path
+            return result
 
         def _done(result):
-            self.project_db, self.main_video_path = result
-            self.analyze_status.setText("✓ Analyzed")
+            self.project_db = result.get("project_db")
+            self.main_video_path = result.get("main_path")
+            self.analyze_status.setText("Status: Analyzed")
             self.analyze_status.setStyleSheet(f"color: {COLORS['success']}; margin-top: 6px;")
-            self._set_status("Analysis complete")
+            warning = result.get("warning")
+            if warning:
+                self._set_status(f"Warning: {warning}")
+            else:
+                self._set_status("Analysis complete")
 
-        self._set_status("Analyzing... (silence + transcription)")
+        self._set_status("Analyzing... Check log for progress")
         self._run_worker(_analyze, on_done=_done)
 
     def _on_browse_library(self) -> None:
@@ -558,7 +756,8 @@ class VideoForgePanel(QWidget):
             self.library_path_edit.setText(path)
 
     def _on_scan_library(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Select B-roll Folder")
+        default_dir = DEFAULT_BROLL_DIR if Path(DEFAULT_BROLL_DIR).exists() else ""
+        folder = QFileDialog.getExistingDirectory(self, "Select B-roll Folder", default_dir)
         if not folder:
             return
 
@@ -577,13 +776,30 @@ class VideoForgePanel(QWidget):
             return count
 
         def _done(result):
-            self.library_status.setText(f"✓ Indexed {result} clips")
+            self.library_status.setText(f"Status: Indexed {result} clips")
             self.library_status.setStyleSheet(f"color: {COLORS['success']}; margin-top: 6px;")
             self._set_status("Library scan complete")
             self.bridge.save_library_path(self.library_path_edit.text().strip())
 
         self._set_status("Scanning library...")
         self._run_worker(_scan, on_done=_done)
+
+    def _on_browse_srt(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Select SRT File", "", "SRT Files (*.srt)")
+        if path:
+            self.srt_path_edit.setText(path)
+
+    def _on_open_log(self) -> None:
+        log_path = self._get_log_path()
+        if log_path and log_path.exists():
+            os.startfile(str(log_path))
+            self._set_status("Opened log file.")
+            return
+        if log_path and log_path.parent.exists():
+            os.startfile(str(log_path.parent))
+            self._set_status("Log file not found yet. Opened log folder.")
+            return
+        self._set_status("Log path unavailable.")
 
     def _on_match_clicked(self) -> None:
         if not self.project_db:
@@ -594,13 +810,21 @@ class VideoForgePanel(QWidget):
             self._set_status("Set a library DB path first.")
             return
         threshold = self.threshold_slider.value() / 100.0
+        if not 0.0 <= threshold <= 1.0:
+            self._set_status(f"Invalid threshold: {threshold}")
+            return
         self.settings["broll"]["matching_threshold"] = threshold
 
         def _match():
             return self.bridge.match_broll(self.project_db, library_path)
 
         def _done(result):
-            self._set_status(f"Matched {result} clips")
+            count = result.get("count", 0)
+            warning = result.get("warning")
+            if warning:
+                self._set_status(f"Warning: {warning}")
+            else:
+                self._set_status(f"Matched {count} clips")
 
         self._set_status("Matching... (searching library)")
         self._run_worker(_match, on_done=_done)
@@ -609,16 +833,68 @@ class VideoForgePanel(QWidget):
         if not self.project_db or not self.main_video_path:
             self._set_status("Analyze a clip first.")
             return
+        if not Path(self.main_video_path).exists():
+            self._set_status(f"Main video not found: {Path(self.main_video_path).name}")
+            return
+        if not Path(self.project_db).exists():
+            self._set_status("Project database missing. Re-run analysis.")
+            return
 
         def _apply():
             self.bridge.apply_to_timeline(self.project_db, self.main_video_path)
             return True
 
         def _done(_result):
-            self._set_status("Applied to timeline ✓")
+            self._set_status("Applied to timeline")
 
         self._set_status("Applying to timeline...")
         self._run_worker(_apply, on_done=_done)
+
+    def _on_generate_sidecars(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Select B-roll Folder", DEFAULT_BROLL_DIR)
+        if not folder:
+            return
+
+        def _generate():
+            return generate_scene_sidecars(Path(folder), overwrite=True)
+
+        def _done(result):
+            self._set_status(f"Generated {result} sidecars")
+
+        self._set_status("Generating scene sidecars...")
+        self._run_worker(_generate, on_done=_done)
+
+    def _on_generate_comfyui_sidecars(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Select B-roll Folder", DEFAULT_BROLL_DIR)
+        if not folder:
+            return
+
+        def _generate():
+            return generate_comfyui_sidecars(Path(folder), overwrite=True, sequence=True)
+
+        def _done(result):
+            self._set_status(f"Generated {result} ComfyUI sidecars")
+
+        self._set_status("Generating ComfyUI sidecars...")
+        self._run_worker(_generate, on_done=_done)
+
+    def _update_last_log(self) -> None:
+        log_path = self._get_log_path()
+        if not log_path or not log_path.exists():
+            return
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="ignore") as handle:
+                lines = handle.readlines()
+            if not lines:
+                return
+            last_line = lines[-1].strip()
+            if "] " in last_line:
+                message = last_line.split("] ", 1)[-1]
+            else:
+                message = last_line
+            self.last_log_label.setText(f"Last log: {message[:120]}")
+        except Exception:
+            return
 
     def _load_saved_library_path(self) -> None:
         try:

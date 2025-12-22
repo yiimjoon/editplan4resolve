@@ -71,7 +71,17 @@ class ResolveAPI:
             "48000",
             output,
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                encoding="utf-8",
+                errors="ignore",
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"Command timed out after 300s: {cmd[0]}") from exc
         if proc.returncode != 0:
             raise RuntimeError(f"ffmpeg failed: {proc.stderr.strip()}")
         return output

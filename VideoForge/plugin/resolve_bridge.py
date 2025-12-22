@@ -4,12 +4,14 @@ import os
 from pathlib import Path
 from typing import Dict, List
 
+from VideoForge.adapters import embedding_adapter
 from VideoForge.broll.db import LibraryDB
 from VideoForge.broll.matcher import BrollMatcher
 from VideoForge.core.segment_store import SegmentStore
 from VideoForge.core.silence_processor import process_silence
 from VideoForge.core.timeline_builder import TimelineBuilder
-from VideoForge.core.transcriber import transcribe_segments
+from VideoForge.core.srt_parser import parse_srt
+from VideoForge.core.transcriber import align_sentences_to_srt, transcribe_segments
 from VideoForge.integrations.resolve_api import ResolveAPI
 from VideoForge.plugin.project_manager import ProjectManager
 
@@ -21,9 +23,48 @@ class ResolveBridge:
         self.resolve_api = ResolveAPI()
         self.settings = settings
         self.project_manager = ProjectManager(self.resolve_api)
+        self._ensure_logging()
         self.logger = logging.getLogger(__name__)
 
-    def analyze_selected_clip(self, whisper_model: str = "large-v3") -> str:
+    @staticmethod
+    def _ensure_logging() -> None:
+        root_logger = logging.getLogger()
+        log_path = os.environ.get("VIDEOFORGE_LOG_PATH")
+        if not log_path:
+            appdata = os.environ.get("APPDATA", ".")
+            log_path = str(
+                Path(appdata)
+                / "Blackmagic Design"
+                / "DaVinci Resolve"
+                / "Support"
+                / "VideoForge.log"
+            )
+        try:
+            Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            log_path = "VideoForge.log"
+
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+
+        logging.basicConfig(
+            filename=log_path,
+            level=logging.DEBUG,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
+        console = logging.StreamHandler()
+        console.setLevel(logging.INFO)
+        console.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+        root_logger.addHandler(console)
+        root_logger.info("VideoForge logging initialized: %s", log_path)
+
+    def analyze_selected_clip(
+        self,
+        whisper_model: str = "large-v3",
+        whisper_task: str = "translate",
+        align_srt: str | None = None,
+    ) -> Dict[str, str]:
         """Analyze the selected timeline clip and store segments/sentences."""
         clips = self.resolve_api.get_selected_clips()
         if not clips:
@@ -42,23 +83,50 @@ class ResolveBridge:
         store.save_artifact("project_id", project_id)
         store.save_artifact("whisper_model", whisper_model)
 
-        segments = process_silence(
-            video_path=video_path,
-            threshold_db=self.settings["silence"]["threshold_db"],
-            min_keep=self.settings["silence"]["min_keep_duration"],
-            buffer_before=self.settings["silence"]["buffer_before"],
-            buffer_after=self.settings["silence"]["buffer_after"],
-        )
-        store.save_segments(segments)
+        try:
+            self.logger.info("Transcribing full audio (no silence removal).")
+            full_segment = [{"id": 0, "t0": 0.0, "t1": 10**9}]
+            sentences = transcribe_segments(
+                video_path, full_segment, whisper_model, task=whisper_task
+            )
+            if self.settings.get("silence", {}).get("enable_removal", False):
+                self.logger.info("Applying silence removal to sentences.")
+                segments = process_silence(
+                    video_path=video_path,
+                    threshold_db=self.settings["silence"]["threshold_db"],
+                    min_keep=self.settings["silence"]["min_keep_duration"],
+                    buffer_before=self.settings["silence"]["buffer_before"],
+                    buffer_after=self.settings["silence"]["buffer_after"],
+                )
+                self._assign_segments(sentences, segments)
+            else:
+                last_t1 = sentences[-1]["t1"] if sentences else 0.0
+                segments = [
+                    {
+                        "id": 0,
+                        "t0": 0.0,
+                        "t1": float(last_t1),
+                        "type": "keep",
+                        "metadata": {"auto_generated": True},
+                    }
+                ]
+            if align_srt:
+                srt_entries = parse_srt(align_srt)
+                sentences = align_sentences_to_srt(sentences, srt_entries)
+            store.save_project_data(segments=segments, sentences=sentences)
+        except Exception as exc:
+            self.logger.error("Analysis failed: %s", exc, exc_info=True)
+            raise
+
+        warning = ""
+        if any(seg.get("metadata", {}).get("warning") for seg in segments):
+            warning = "Silence detection failed. Using full duration."
+
         self.logger.info("Silence segments: %s", len(segments))
-
-        sentences = transcribe_segments(video_path, segments, whisper_model)
-        store.save_sentences(sentences)
         self.logger.info("Sentences: %s", len(sentences))
+        return {"project_db": project_db, "warning": warning}
 
-        return project_db
-
-    def match_broll(self, project_db_path: str, library_db_path: str) -> int:
+    def match_broll(self, project_db_path: str, library_db_path: str) -> Dict[str, str | int]:
         """Match B-roll clips against stored sentences."""
         store = SegmentStore(project_db_path)
         sentences = store.get_sentences()
@@ -68,10 +136,17 @@ class ResolveBridge:
         schema_path = self._resolve_schema_path()
         library_db = LibraryDB(library_db_path, schema_path=str(schema_path))
         matcher = BrollMatcher(library_db, self.settings)
-        matches = matcher.match(sentences)
-        store.save_matches(matches)
+        try:
+            matches = matcher.match(sentences)
+            store.save_project_data(matches=matches)
+        except Exception as exc:
+            self.logger.error("Match failed: %s", exc, exc_info=True)
+            raise
+        warning = ""
+        if embedding_adapter.consume_fallback_used():
+            warning = "CLIP model unavailable. Using deterministic embeddings."
         self.logger.info("Matches: %s", len(matches))
-        return len(matches)
+        return {"count": len(matches), "warning": warning}
 
     def apply_to_timeline(self, project_db_path: str, main_video_path: str) -> None:
         """Apply VideoForge timeline data directly to Resolve timeline."""
@@ -128,6 +203,17 @@ class ResolveBridge:
     @staticmethod
     def _time_to_frames(seconds: float, fps: float) -> int:
         return int(round(seconds * fps))
+
+    @staticmethod
+    def _assign_segments(sentences: List[Dict], segments: List[Dict]) -> None:
+        for sentence in sentences:
+            seg_id = None
+            t0 = float(sentence.get("t0", 0.0))
+            for seg in segments:
+                if float(seg["t0"]) <= t0 <= float(seg["t1"]):
+                    seg_id = int(seg.get("id")) if seg.get("id") is not None else None
+                    break
+            sentence["segment_id"] = seg_id
 
     @staticmethod
     def _resolve_schema_path() -> Path:
