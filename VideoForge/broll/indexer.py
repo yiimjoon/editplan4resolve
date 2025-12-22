@@ -46,8 +46,8 @@ def smart_frame_sampling(duration: float, max_frames: int = 12, base_frames: int
 
     inner_points: List[float] = []
     if inner_count > 0:
-        step = (inner_end - inner_start) / max(inner_count, 1)
-        for i in range(inner_count):
+        step = (inner_end - inner_start) / (inner_count + 1)
+        for i in range(1, inner_count + 1):
             inner_points.append(inner_start + i * step)
 
     anchors = [min(excl, duration * 0.1), max(duration - excl, duration * 0.9)]

@@ -18,6 +18,7 @@ try:
     from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer
     from PySide6.QtWidgets import (
         QApplication,
+        QComboBox,
         QFileDialog,
         QFrame,
         QHBoxLayout,
@@ -34,6 +35,7 @@ except Exception:
         from PySide2.QtCore import QObject, QThread, Signal, Qt, QTimer
         from PySide2.QtWidgets import (
             QApplication,
+            QComboBox,
             QFileDialog,
             QFrame,
             QHBoxLayout,
@@ -64,7 +66,7 @@ COLORS = {
     "error": "#f44336",
 }
 
-VERSION = "v1.3.1"
+VERSION = "v1.3.2"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -205,10 +207,14 @@ class Worker(QObject):
         self.kwargs = kwargs
 
     def run(self) -> None:
+        logger = logging.getLogger("VideoForge.ui.Worker")
         try:
+            logger.info("=== Worker thread started: %s ===", getattr(self.func, "__name__", "unknown"))
             result = self.func(*self.args, **self.kwargs)
+            logger.info("=== Worker thread finished: %s ===", getattr(self.func, "__name__", "unknown"))
             self.finished.emit(result, None)
         except Exception as exc:
+            logger.error("=== Worker thread error: %s ===", exc, exc_info=True)
             self.finished.emit(None, exc)
 
 
@@ -230,7 +236,7 @@ DEFAULT_SETTINGS = {
         "visual_similarity_threshold": 0.85,
         "cooldown_penalty": 0.4,
     },
-    "whisper": {"task": "translate"},
+    "whisper": {"task": "translate", "language": "auto"},
     "query": {"top_n_tokens": 6},
     "vision": {"max_frames": 12, "base_frames": 6},
     "resolve": {"timeline_name_prefix": "VideoForge_"},
@@ -241,6 +247,7 @@ class VideoForgePanel(QWidget):
     """Modern styled panel for VideoForge plugin."""
 
     status_signal = Signal(str)
+    progress_signal = Signal(int)
 
     def __init__(self) -> None:
         super().__init__()
@@ -253,6 +260,7 @@ class VideoForgePanel(QWidget):
         self._threads: list[QThread] = []
         self._threads_lock = threading.Lock()
         self.status_signal.connect(self._set_status)
+        self.progress_signal.connect(self._set_progress_value)
         self._init_ui()
         if self._startup_warning:
             self._set_status(self._startup_warning)
@@ -474,6 +482,17 @@ class VideoForgePanel(QWidget):
 
         card_layout.addWidget(self._create_section_title("4. Advanced"))
 
+        card_layout.addWidget(QLabel("Whisper Language"))
+        self.language_combo = QComboBox()
+        self.language_combo.addItems(["auto", "ko", "en"])
+        current_lang = self.settings.get("whisper", {}).get("language", "auto")
+        if current_lang in {"auto", "ko", "en"}:
+            self.language_combo.setCurrentText(current_lang)
+        else:
+            self.language_combo.setCurrentText("auto")
+        self.language_combo.currentTextChanged.connect(self._on_language_changed)
+        card_layout.addWidget(self.language_combo)
+
         srt_row = QHBoxLayout()
         srt_row.setSpacing(6)
         self.srt_path_edit = QLineEdit()
@@ -657,6 +676,17 @@ class VideoForgePanel(QWidget):
         self.match_btn.setEnabled(not busy)
         self.apply_btn.setEnabled(not busy)
 
+    def _set_progress_value(self, value: int) -> None:
+        try:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(max(0, min(100, int(value))))
+            self.progress.setTextVisible(False)
+        except Exception:
+            return
+
+    def _update_progress_safe(self, value: int) -> None:
+        self.progress_signal.emit(value)
+
     def _run_worker(self, func, *args, on_done=None) -> None:
         self._set_busy(True)
         thread = QThread(self)
@@ -718,23 +748,77 @@ class VideoForgePanel(QWidget):
         self.settings["broll"]["visual_similarity_threshold"] = threshold
         self.visual_threshold_label.setText(f"Visual Filter: {threshold:.2f}")
 
+    def _on_language_changed(self, value: str) -> None:
+        self.settings.setdefault("whisper", {})["language"] = value
+
     # --- Event Handlers ---
 
     def _on_analyze_clicked(self) -> None:
         def _analyze():
-            self._update_status_safe("Step 1/3: Initializing...")
+            logger = logging.getLogger("VideoForge.ui.Analyze")
+            logger.info("[1/6] Reading settings from UI")
+            self._update_progress_safe(8)
+            self._update_status_safe("Step 1/6: Reading settings...")
             srt_path = self.srt_path_edit.text().strip() if self.srt_path_edit else ""
             srt_path = srt_path or None
             whisper_task = self.settings.get("whisper", {}).get("task", "translate")
-            self._update_status_safe("Step 2/3: Transcribing audio (30-60s)...")
-            result = self.bridge.analyze_selected_clip(
-                whisper_task=whisper_task,
-                align_srt=srt_path,
+            whisper_language = self.settings.get("whisper", {}).get("language", "auto")
+
+            logger.info("[2/6] Starting analyze_selected_clip")
+            self._update_progress_safe(16)
+            self._update_status_safe(
+                "Step 2/6: Loading Whisper model (first run may take 1-2 min)..."
             )
-            self._update_status_safe("Step 3/3: Finalizing...")
+
+            result_container = [None]
+            error_container = [None]
+
+            def _analyze_with_timeout():
+                try:
+                    result_container[0] = self.bridge.analyze_selected_clip(
+                        whisper_task=whisper_task,
+                        whisper_language=whisper_language,
+                        align_srt=srt_path,
+                    )
+                except Exception as exc:
+                    error_container[0] = exc
+
+            analyze_thread = threading.Thread(target=_analyze_with_timeout, name="VideoForgeAnalyze")
+            analyze_thread.daemon = True
+            analyze_thread.start()
+
+            timeout = 600
+            elapsed = 0
+            while analyze_thread.is_alive() and elapsed < timeout:
+                analyze_thread.join(timeout=5)
+                elapsed += 5
+                if elapsed % 15 == 0:
+                    logger.info("[2/6] Still processing... (%d seconds elapsed)", elapsed)
+                    self._update_status_safe(f"Step 2/6: Processing... ({elapsed}s elapsed)")
+                    self._update_progress_safe(min(90, 16 + int(elapsed / timeout * 70)))
+
+            if analyze_thread.is_alive():
+                logger.error("[2/6] TIMEOUT after %d seconds!", timeout)
+                raise TimeoutError(
+                    f"Analyze timed out after {timeout}s. Try CPU mode or check CUDA/CT2 settings."
+                )
+
+            if error_container[0]:
+                raise error_container[0]
+
+            result = result_container[0] or {}
+
+            logger.info("[3/6] Finalizing")
+            self._update_progress_safe(95)
+            self._update_status_safe("Step 3/6: Finalizing...")
+
             clips = self.bridge.resolve_api.get_selected_clips()
             main_path = clips[0].GetClipProperty("File Path") if clips else None
             result["main_path"] = main_path
+
+            logger.info("[4/6] Analyze complete")
+            self._update_progress_safe(100)
+            self._update_status_safe("Step 4/6: Complete")
             return result
 
         def _done(result):
@@ -748,6 +832,8 @@ class VideoForgePanel(QWidget):
             else:
                 self._set_status("Analysis complete")
 
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
         self._set_status("Analyzing... Check log for progress")
         self._run_worker(_analyze, on_done=_done)
 

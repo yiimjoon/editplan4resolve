@@ -63,6 +63,7 @@ class ResolveBridge:
         self,
         whisper_model: str = "large-v3",
         whisper_task: str = "translate",
+        whisper_language: str | None = None,
         align_srt: str | None = None,
     ) -> Dict[str, str]:
         """Analyze the selected timeline clip and store segments/sentences."""
@@ -84,11 +85,26 @@ class ResolveBridge:
         store.save_artifact("whisper_model", whisper_model)
 
         try:
+            self.logger.info("=== [BRIDGE] analyze_selected_clip called ===")
+            self.logger.info("[BRIDGE] video_path: %s", video_path)
+            self.logger.info(
+                "[BRIDGE] whisper_model: %s, task: %s, language: %s",
+                whisper_model,
+                whisper_task,
+                whisper_language or "auto",
+            )
             self.logger.info("Transcribing full audio (no silence removal).")
             full_segment = [{"id": 0, "t0": 0.0, "t1": 10**9}]
+            self.logger.info("[BRIDGE] Calling transcribe_segments (Whisper will load now)")
+            self.logger.info("[BRIDGE] NOTE: First run may take 1-2 minutes to download model")
             sentences = transcribe_segments(
-                video_path, full_segment, whisper_model, task=whisper_task
+                video_path,
+                full_segment,
+                whisper_model,
+                task=whisper_task,
+                language=whisper_language,
             )
+            self.logger.info("[BRIDGE] transcribe_segments returned %d sentences", len(sentences))
             if self.settings.get("silence", {}).get("enable_removal", False):
                 self.logger.info("Applying silence removal to sentences.")
                 segments = process_silence(
@@ -111,6 +127,7 @@ class ResolveBridge:
                     }
                 ]
             if align_srt:
+                self.logger.info("Aligning sentences to SRT: %s", align_srt)
                 srt_entries = parse_srt(align_srt)
                 sentences = align_sentences_to_srt(sentences, srt_entries)
             store.save_project_data(segments=segments, sentences=sentences)

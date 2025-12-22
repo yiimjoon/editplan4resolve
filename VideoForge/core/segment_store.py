@@ -1,11 +1,13 @@
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 
 class SegmentStore:
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = "1.0"
+    SCHEMA_VERSION_INT = 1
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self._ensure_schema()
@@ -15,12 +17,20 @@ class SegmentStore:
         conn.row_factory = sqlite3.Row
         return conn
 
+    @contextmanager
+    def _connect_ctx(self) -> sqlite3.Connection:
+        conn = self._connect()
+        try:
+            yield conn
+        finally:
+            conn.close()
+
     def _ensure_schema(self) -> None:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
+        with self._connect_ctx() as conn:
             conn.executescript(
                 """
-                PRAGMA journal_mode = WAL;
+                PRAGMA journal_mode = DELETE;
                 CREATE TABLE IF NOT EXISTS schema_version (
                   version INTEGER PRIMARY KEY
                 );
@@ -59,19 +69,19 @@ class SegmentStore:
             )
             conn.execute(
                 "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
-                (self.SCHEMA_VERSION,),
+                (self.SCHEMA_VERSION_INT,),
             )
 
     def save_segments(self, segments: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        with self._connect() as conn:
+        with self._connect_ctx() as conn:
             return self._insert_segments(conn, segments)
 
     def save_sentences(self, sentences: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        with self._connect() as conn:
+        with self._connect_ctx() as conn:
             return self._insert_sentences(conn, sentences)
 
     def save_matches(self, matches: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        with self._connect() as conn:
+        with self._connect_ctx() as conn:
             return self._insert_matches(conn, matches)
 
     def save_project_data(
@@ -81,7 +91,7 @@ class SegmentStore:
         matches: Iterable[Dict[str, Any]] | None = None,
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Save segments, sentences, and matches in a single transaction."""
-        with self._connect() as conn:
+        with self._connect_ctx() as conn:
             saved_segments = self._insert_segments(conn, segments or [])
             saved_sentences = self._insert_sentences(conn, sentences or [])
             saved_matches = self._insert_matches(conn, matches or [])
@@ -92,29 +102,29 @@ class SegmentStore:
         }
 
     def get_segments(self) -> List[Dict[str, Any]]:
-        with self._connect() as conn:
+        with self._connect_ctx() as conn:
             rows = conn.execute("SELECT * FROM segments ORDER BY t0").fetchall()
             return [self._row_to_dict(row) for row in rows]
 
     def get_sentences(self) -> List[Dict[str, Any]]:
-        with self._connect() as conn:
+        with self._connect_ctx() as conn:
             rows = conn.execute("SELECT * FROM sentences ORDER BY t0").fetchall()
             return [self._row_to_dict(row) for row in rows]
 
     def get_matches(self) -> List[Dict[str, Any]]:
-        with self._connect() as conn:
+        with self._connect_ctx() as conn:
             rows = conn.execute("SELECT * FROM matches ORDER BY id").fetchall()
             return [self._row_to_dict(row) for row in rows]
 
     def save_artifact(self, key: str, value: Dict[str, Any]) -> None:
-        with self._connect() as conn:
+        with self._connect_ctx() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO artifacts (key, value) VALUES (?, ?)",
                 (key, json.dumps(value)),
             )
 
     def get_artifact(self, key: str) -> Dict[str, Any] | None:
-        with self._connect() as conn:
+        with self._connect_ctx() as conn:
             row = conn.execute("SELECT value FROM artifacts WHERE key = ?", (key,)).fetchone()
             if not row:
                 return None

@@ -9,6 +9,8 @@ def test_config_persistence(tmp_path: Path, monkeypatch):
     """Test that config persists across instances."""
     config_file = tmp_path / "user_config.json"
 
+    ConfigManager._instance = None
+
     def mock_init(self):
         self._config_path = config_file
         self._config_path.parent.mkdir(parents=True, exist_ok=True)

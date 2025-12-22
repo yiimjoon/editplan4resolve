@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from typing import Dict, List
 
 from VideoForge.core.srt_parser import SrtEntry
@@ -9,36 +10,49 @@ def transcribe_segments(
     segments: List[Dict[str, float]],
     model_name: str,
     task: str = "transcribe",
+    language: str | None = None,
 ) -> List[Dict[str, float]]:
     """
     Transcribe audio and return sentence-level segments.
     Each sentence: {"t0": float, "t1": float, "text": str, "confidence": float, "segment_id": int}
     """
     logger = logging.getLogger(__name__)
-    logger.info("Starting Whisper transcription: %s", os.path.basename(video_path))
-    logger.info("Model: %s, Task: %s", model_name, task)
+    logger.info("=" * 60)
+    logger.info("=== WHISPER TRANSCRIPTION START ===")
+    logger.info("Video: %s", os.path.basename(video_path))
+    logger.info("Model: %s, Task: %s, Language: %s", model_name, task, language or "auto")
+    logger.info("=" * 60)
     try:
         from faster_whisper import WhisperModel  # type: ignore
 
+        model_load_start = time.time()
         force_cpu = (
             os.environ.get("VIDEOFORGE_FORCE_CPU") == "1"
             or os.environ.get("CT2_USE_CUDA") == "0"
             or os.environ.get("CUDA_VISIBLE_DEVICES") in {"", "-1"}
         )
         if force_cpu:
-            logger.info("Using CPU for Whisper")
+            logger.info(">>> Loading Whisper model on CPU (device=cpu, compute_type=int8)")
+            logger.info(">>> This may take 30-120 seconds on first run...")
             model = WhisperModel(model_name, device="cpu", compute_type="int8")
+            logger.info(">>> CPU model loaded in %.1f seconds", time.time() - model_load_start)
         else:
             try:
-                logger.info("Initializing Whisper on GPU...")
+                logger.info(">>> Loading Whisper model on GPU (device=auto, compute_type=int8)")
+                logger.info(">>> This may take 30-120 seconds on first run...")
                 model = WhisperModel(model_name, device="auto", compute_type="int8")
-                logger.info("Whisper GPU initialized")
+                logger.info(">>> GPU model loaded in %.1f seconds", time.time() - model_load_start)
             except Exception as exc:
-                logger.warning("Whisper GPU init failed, falling back to CPU: %s", exc)
+                logger.warning(">>> GPU init failed (%s), falling back to CPU", exc)
+                logger.info(">>> Loading Whisper model on CPU (fallback)")
                 model = WhisperModel(model_name, device="cpu", compute_type="int8")
+                logger.info(">>> CPU model loaded in %.1f seconds", time.time() - model_load_start)
 
         logger.info("Transcribing audio... (this may take 30-60 seconds)")
-        results, _info = model.transcribe(video_path, word_timestamps=False, task=task)
+        transcribe_kwargs = {"word_timestamps": False, "task": task}
+        if language and language != "auto":
+            transcribe_kwargs["language"] = language
+        results, _info = model.transcribe(video_path, **transcribe_kwargs)
         sentences: List[Dict[str, float]] = []
         segment_count = 0
         for seg in results:
@@ -55,7 +69,8 @@ def transcribe_segments(
             )
             segment_count += 1
             if segment_count % 5 == 0:
-                logger.info("Transcribed %s sentences...", segment_count)
+                elapsed = time.time() - model_load_start
+                logger.info(">>> Transcribed %d sentences... (%.1f seconds elapsed)", segment_count, elapsed)
         logger.info("Transcription complete: %s sentences", len(sentences))
         return sentences
     except Exception as exc:
