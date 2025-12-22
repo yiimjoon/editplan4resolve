@@ -55,23 +55,44 @@ def transcribe_segments(
         results, _info = model.transcribe(video_path, **transcribe_kwargs)
         sentences: List[Dict[str, float]] = []
         segment_count = 0
-        for seg in results:
-            seg_id = _segment_for_time(segments, float(seg.start))
-            sentences.append(
-                {
-                    "t0": float(seg.start),
-                    "t1": float(seg.end),
-                    "text": seg.text.strip(),
-                    "confidence": float(getattr(seg, "avg_logprob", 0.0)),
-                    "segment_id": seg_id,
-                    "metadata": {},
-                }
-            )
-            segment_count += 1
-            if segment_count % 5 == 0:
-                elapsed = time.time() - model_load_start
-                logger.info(">>> Transcribed %d sentences... (%.1f seconds elapsed)", segment_count, elapsed)
+        try:
+            for seg in results:
+                seg_id = _segment_for_time(segments, float(seg.start))
+                sentences.append(
+                    {
+                        "t0": float(seg.start),
+                        "t1": float(seg.end),
+                        "text": seg.text.strip(),
+                        "confidence": float(getattr(seg, "avg_logprob", 0.0)),
+                        "segment_id": seg_id,
+                        "metadata": {},
+                    }
+                )
+                segment_count += 1
+                if segment_count % 5 == 0:
+                    elapsed = time.time() - model_load_start
+                    logger.info(
+                        ">>> Transcribed %d sentences... (%.1f seconds elapsed)",
+                        segment_count,
+                        elapsed,
+                    )
+        finally:
+            try:
+                results.close()
+            except Exception:
+                pass
+
         logger.info("Transcription complete: %s sentences", len(sentences))
+        logger.info(">>> Releasing Whisper model resources...")
+        try:
+            del model
+            import gc
+
+            gc.collect()
+            logger.info(">>> Model resources released")
+        except Exception as exc:
+            logger.warning(">>> Failed to release model: %s", exc)
+        logger.info(">>> Returning %d sentences to caller", len(sentences))
         return sentences
     except Exception as exc:
         logger.error("Whisper transcription failed: %s", exc, exc_info=True)

@@ -121,6 +121,9 @@ class ResolveBridge:
                 language=whisper_language,
             )
             self.logger.info("[BRIDGE] transcribe_segments returned %d sentences", len(sentences))
+            self.logger.info("[BRIDGE] Waiting for any background cleanup... (2 seconds)")
+            import time
+            time.sleep(2)
             self.logger.info("[BRIDGE] Processing post-transcription steps...")
             if self.settings.get("silence", {}).get("enable_removal", False):
                 self.logger.info("Applying silence removal to sentences.")
