@@ -66,7 +66,7 @@ COLORS = {
     "error": "#f44336",
 }
 
-VERSION = "v1.3.13"
+VERSION = "v1.3.14"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -792,20 +792,18 @@ class VideoForgePanel(QWidget):
 
         def _analyze():
             logger = logging.getLogger("VideoForge.ui.Analyze")
-            logger.info("[1/6] Reading settings from UI")
+            logger.info("[1/4] Preparing analysis")
             self._update_progress_safe(8)
-            self._update_status_safe("Step 1/6: Reading settings...")
+            self._update_status_safe("◐ Preparing... (1/4)")
             srt_path = self.srt_path_edit.text().strip() if self.srt_path_edit else ""
             srt_path = srt_path or None
             whisper_task = self.settings.get("whisper", {}).get("task", "translate")
             whisper_language = self.settings.get("whisper", {}).get("language", "auto")
 
-            logger.info("[2/6] Starting analyze_from_path")
-            logger.info("[2/6] video_path: %s", video_path)
+            logger.info("[2/4] Starting Whisper transcription")
+            logger.info("[2/4] video_path: %s", video_path)
             self._update_progress_safe(16)
-            self._update_status_safe(
-                "Step 2/6: Loading Whisper model (first run may take 1-2 min)..."
-            )
+            self._update_status_safe("◑ Transcribing audio... (2/4) This may take 1-2 minutes")
 
             result_container = [None]
             error_container = [None]
@@ -831,8 +829,8 @@ class VideoForgePanel(QWidget):
                 analyze_thread.join(timeout=5)
                 elapsed += 5
                 if elapsed % 15 == 0:
-                    logger.info("[2/6] Still processing... (%d seconds elapsed)", elapsed)
-                    self._update_status_safe(f"Step 2/6: Processing... ({elapsed}s elapsed)")
+                    logger.info("[2/4] Still transcribing... (%d seconds elapsed)", elapsed)
+                    self._update_status_safe(f"◒ Transcribing... ({elapsed}s) (2/4)")
                     self._update_progress_safe(min(90, 16 + int(elapsed / timeout * 70)))
 
             if analyze_thread.is_alive():
@@ -846,15 +844,15 @@ class VideoForgePanel(QWidget):
 
             result = result_container[0] or {}
 
-            logger.info("[3/6] Finalizing")
+            logger.info("[3/4] Saving results to database")
             self._update_progress_safe(95)
-            self._update_status_safe("Step 3/6: Finalizing...")
+            self._update_status_safe("◓ Saving... (3/4)")
 
             result["main_path"] = video_path
 
-            logger.info("[4/6] Analyze complete")
+            logger.info("[4/4] Analysis complete")
             self._update_progress_safe(100)
-            self._update_status_safe("Step 4/6: Complete")
+            self._update_status_safe("● Complete (4/4)")
             return result
 
         def _done(result):
