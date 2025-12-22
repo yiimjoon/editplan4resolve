@@ -13,7 +13,8 @@ from VideoForge.broll.matcher import BrollMatcher
 from VideoForge.core.segment_store import SegmentStore
 from VideoForge.core.silence_processor import process_silence
 from VideoForge.core.timeline_builder import TimelineBuilder
-from VideoForge.core.transcriber import transcribe_segments
+from VideoForge.core.srt_parser import parse_srt
+from VideoForge.core.transcriber import align_sentences_to_srt, transcribe_segments
 from VideoForge.integrations.edl_generator import generate_edl
 from VideoForge.integrations.resolve_python import export_timeline_file
 
@@ -38,6 +39,9 @@ def project_db_path(project_id: str) -> str:
 def cmd_library_scan(args: argparse.Namespace) -> None:
     settings = load_settings()
     library_db_path = args.library or str(Path(__file__).resolve().parents[1] / "data" / "cache" / "library.db")
+    if args.reindex and Path(library_db_path).exists():
+        Path(library_db_path).unlink()
+        print(f"Deleted existing library DB: {library_db_path}")
     db = LibraryDB(library_db_path, schema_path=str(Path(__file__).resolve().parents[1] / "config" / "schema.sql"))
     count = scan_library(args.directory, db)
     print(f"Indexed {count} clips into {library_db_path}")
@@ -70,7 +74,15 @@ def cmd_analyze(args: argparse.Namespace) -> None:
             print("Sentences already exist. Use --force to recompute.")
         else:
             segments = store.get_segments()
-            sentences = transcribe_segments(args.main, segments, args.whisper_model)
+            sentences = transcribe_segments(
+                args.main,
+                segments,
+                args.whisper_model,
+                task=args.whisper_task,
+            )
+            if args.align_srt:
+                srt_entries = parse_srt(args.align_srt)
+                sentences = align_sentences_to_srt(sentences, srt_entries)
             saved = store.save_sentences(sentences)
             print(f"Saved {len(saved)} sentences")
 
@@ -81,6 +93,17 @@ def cmd_match(args: argparse.Namespace) -> None:
     settings = load_settings()
     if args.threshold is not None:
         settings["broll"]["matching_threshold"] = float(args.threshold)
+    weights = settings["broll"].setdefault("hybrid_weights", {})
+    if args.vector_weight is not None:
+        weights["vector"] = float(args.vector_weight)
+    if args.text_weight is not None:
+        weights["text"] = float(args.text_weight)
+    if args.prior_weight is not None:
+        weights["prior"] = float(args.prior_weight)
+    if args.visual_threshold is not None:
+        settings["broll"]["visual_similarity_threshold"] = float(args.visual_threshold)
+    if args.cooldown_penalty is not None:
+        settings["broll"]["cooldown_penalty"] = float(args.cooldown_penalty)
     store = SegmentStore(args.project_db)
     sentences = store.get_sentences()
     if not sentences:
@@ -92,6 +115,25 @@ def cmd_match(args: argparse.Namespace) -> None:
     matches = matcher.match(sentences)
     store.save_matches(matches)
     print(f"Saved {len(matches)} matches")
+
+
+def cmd_analyze_srt(args: argparse.Namespace) -> None:
+    store = SegmentStore(args.project_db)
+    entries = parse_srt(args.srt)
+    sentences = []
+    for entry in entries:
+        sentences.append(
+            {
+                "t0": float(entry.start),
+                "t1": float(entry.end),
+                "text": entry.text,
+                "confidence": 0.0,
+                "segment_id": None,
+                "metadata": {"script_index": str(entry.index), "source": "srt"},
+            }
+        )
+    saved = store.save_sentences(sentences)
+    print(f"Imported {len(saved)} sentences from SRT")
 
 
 def cmd_build(args: argparse.Namespace) -> None:
@@ -135,19 +177,32 @@ def build_parser() -> argparse.ArgumentParser:
     scan = lib_sub.add_parser("scan")
     scan.add_argument("directory")
     scan.add_argument("--library", default=None)
+    scan.add_argument("--reindex", action="store_true", help="Delete existing library DB and rebuild it.")
     scan.set_defaults(func=cmd_library_scan)
 
     analyze = sub.add_parser("analyze")
     analyze.add_argument("main")
     analyze.add_argument("--stage", choices=["segments", "speech", "all"], default="all")
     analyze.add_argument("--whisper-model", default="large-v3")
+    analyze.add_argument("--whisper-task", choices=["transcribe", "translate"], default="transcribe")
+    analyze.add_argument("--align-srt", default=None, help="Align Whisper output to an SRT file.")
     analyze.add_argument("--force", action="store_true")
     analyze.set_defaults(func=cmd_analyze)
+
+    analyze_srt = sub.add_parser("analyze-srt")
+    analyze_srt.add_argument("srt")
+    analyze_srt.add_argument("--project-db", required=True)
+    analyze_srt.set_defaults(func=cmd_analyze_srt)
 
     match = sub.add_parser("match")
     match.add_argument("project_db")
     match.add_argument("--library", required=True)
     match.add_argument("--threshold", type=float, default=None)
+    match.add_argument("--vector-weight", type=float, default=None)
+    match.add_argument("--text-weight", type=float, default=None)
+    match.add_argument("--prior-weight", type=float, default=None)
+    match.add_argument("--visual-threshold", type=float, default=None)
+    match.add_argument("--cooldown-penalty", type=float, default=None)
     match.set_defaults(func=cmd_match)
 
     build = sub.add_parser("build")
