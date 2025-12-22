@@ -66,7 +66,7 @@ COLORS = {
     "error": "#f44336",
 }
 
-VERSION = "v1.3.14"
+VERSION = "v1.3.15"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -485,6 +485,15 @@ class VideoForgePanel(QWidget):
 
         card_layout.addWidget(self._create_section_title("4. Advanced"))
 
+        card_layout.addWidget(QLabel("Transcription Engine"))
+        self.engine_combo = QComboBox()
+        self.engine_combo.addItems(["Resolve AI", "Whisper"])
+        saved_engine = Config.get("transcription_engine", "Resolve AI")
+        if saved_engine in {"Resolve AI", "Whisper"}:
+            self.engine_combo.setCurrentText(saved_engine)
+        self.engine_combo.currentTextChanged.connect(self._on_engine_changed)
+        card_layout.addWidget(self.engine_combo)
+
         card_layout.addWidget(QLabel("Whisper Language"))
         self.language_combo = QComboBox()
         self.language_combo.addItems(["auto", "ko", "en"])
@@ -762,6 +771,9 @@ class VideoForgePanel(QWidget):
     def _on_language_changed(self, value: str) -> None:
         self.settings.setdefault("whisper", {})["language"] = value
 
+    def _on_engine_changed(self, value: str) -> None:
+        Config.set("transcription_engine", value)
+
     # --- Event Handlers ---
 
     def _on_analyze_clicked(self) -> None:
@@ -788,6 +800,32 @@ class VideoForgePanel(QWidget):
             return
         if not video_path:
             self._set_status("Error: Clip has no file path.")
+            return
+
+        engine = self.engine_combo.currentText() if hasattr(self, "engine_combo") else "Whisper"
+        Config.set("transcription_engine", engine)
+        if engine == "Resolve AI":
+            language = self.language_combo.currentText() if hasattr(self, "language_combo") else "auto"
+            self._set_busy(True)
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
+            self._set_status("◐ Preparing... (1/4)")
+            try:
+                self._set_progress_value(55)
+                self._set_status("◑ Transcribing (Resolve AI)... (2/4)")
+                result = self.bridge.analyze_resolve_ai(video_path=video_path, language=language)
+                self._set_progress_value(90)
+                self._set_status("◓ Saving... (3/4)")
+                self.project_db = result.get("project_db")
+                self.main_video_path = video_path
+                self.analyze_status.setText("Status: Analyzed")
+                self.analyze_status.setStyleSheet(f"color: {COLORS['success']}; margin-top: 6px;")
+                self._set_progress_value(100)
+                self._set_status("● Complete (4/4)")
+            except Exception as exc:
+                self._set_status(f"Error: {exc}")
+            finally:
+                self._set_busy(False)
             return
 
         def _analyze():
@@ -834,7 +872,7 @@ class VideoForgePanel(QWidget):
                     self._update_progress_safe(min(90, 16 + int(elapsed / timeout * 70)))
 
             if analyze_thread.is_alive():
-                logger.error("[2/6] TIMEOUT after %d seconds!", timeout)
+                logger.error("[2/4] TIMEOUT after %d seconds!", timeout)
                 raise TimeoutError(
                     f"Analyze timed out after {timeout}s. Try CPU mode or check CUDA/CT2 settings."
                 )

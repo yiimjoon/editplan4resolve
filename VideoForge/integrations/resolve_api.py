@@ -58,6 +58,107 @@ class ResolveAPI:
             return selected[0]
         return self.get_clip_at_playhead()
 
+    def create_subtitles_from_audio(self, language: str = "auto") -> bool:
+        """Run Resolve Studio auto-captioning on the current timeline."""
+        timeline = self.get_current_timeline()
+        resolve = self._resolve
+        settings = {}
+        language_key = getattr(resolve, "SUBTITLE_LANGUAGE", None)
+        if language_key is not None:
+            lang_map = {
+                "auto": getattr(resolve, "AUTO_CAPTION_AUTO", None),
+                "en": getattr(resolve, "AUTO_CAPTION_ENGLISH", None),
+                "ko": getattr(resolve, "AUTO_CAPTION_KOREAN", None),
+            }
+            lang_value = lang_map.get(language)
+            if lang_value is not None:
+                settings[language_key] = lang_value
+
+        preset_key = getattr(resolve, "SUBTITLE_CAPTION_PRESET", None)
+        default_preset = getattr(resolve, "AUTO_CAPTION_SUBTITLE_DEFAULT", None)
+        if preset_key is not None and default_preset is not None:
+            settings[preset_key] = default_preset
+
+        if settings:
+            return bool(timeline.CreateSubtitlesFromAudio(settings))
+        return bool(timeline.CreateSubtitlesFromAudio())
+
+    def get_subtitle_items(self) -> List[Any]:
+        """Return subtitle timeline items across all subtitle tracks."""
+        timeline = self.get_current_timeline()
+        items: List[Any] = []
+        track_count = int(timeline.GetTrackCount("subtitle") or 0)
+        for track_index in range(1, track_count + 1):
+            items.extend(timeline.GetItemListInTrack("subtitle", track_index) or [])
+        return items
+
+    def export_subtitles_as_sentences(self) -> List[dict]:
+        """Extract subtitle items into sentence-like dicts (t0/t1/text)."""
+        fps = self.get_timeline_fps()
+        sentences: List[dict] = []
+        for item in self.get_subtitle_items():
+            t0, t1 = self._item_time_range_seconds(item, fps)
+            text = self._subtitle_text(item)
+            if text is None:
+                continue
+            sentences.append(
+                {
+                    "t0": t0,
+                    "t1": t1,
+                    "text": text,
+                    "confidence": None,
+                    "segment_id": 0,
+                    "metadata": {"source": "resolve_ai"},
+                }
+            )
+        return sentences
+
+    @staticmethod
+    def _subtitle_text(item: Any) -> Optional[str]:
+        getter = getattr(item, "GetText", None)
+        if callable(getter):
+            try:
+                text = getter()
+                if text:
+                    return str(text).strip()
+            except Exception:
+                pass
+        for method_name in ("GetName",):
+            getter = getattr(item, method_name, None)
+            if callable(getter):
+                try:
+                    text = getter()
+                    if text:
+                        return str(text).strip()
+                except Exception:
+                    pass
+        getter = getattr(item, "GetProperty", None)
+        if callable(getter):
+            for key in ("Text", "text", "Name", "name"):
+                try:
+                    value = getter(key)
+                    if value:
+                        return str(value).strip()
+                except Exception:
+                    continue
+        getter = getattr(item, "GetClipProperty", None)
+        if callable(getter):
+            for key in ("Text", "text", "Name", "name"):
+                try:
+                    value = getter(key)
+                    if value:
+                        return str(value).strip()
+                except Exception:
+                    continue
+        return None
+
+    @staticmethod
+    def _item_time_range_seconds(item: Any, fps: float) -> tuple[float, float]:
+        start, end = ResolveAPI._get_item_range(item)
+        if start is None or end is None or fps <= 0:
+            return 0.0, 0.0
+        return float(start) / float(fps), float(end) / float(fps)
+
     def get_clip_at_playhead(self) -> Optional[Any]:
         """Return the timeline clip under the playhead if available."""
         timeline = self.get_current_timeline()

@@ -90,6 +90,7 @@ class ResolveBridge:
         whisper_task: str = "translate",
         whisper_language: str | None = None,
         align_srt: str | None = None,
+        engine: str = "whisper",
     ) -> Dict[str, str]:
         """Analyze from already-extracted video_path (thread-safe version)."""
         project_id = self._generate_project_id(video_path)
@@ -109,6 +110,9 @@ class ResolveBridge:
                 whisper_task,
                 whisper_language or "auto",
             )
+            if engine == "resolve_ai":
+                raise RuntimeError("Resolve AI engine must run on the UI thread.")
+
             self.logger.info("Transcribing full audio (no silence removal).")
             full_segment = [{"id": 0, "t0": 0.0, "t1": 10**9}]
             self.logger.info("[BRIDGE] Calling transcribe_segments (Whisper will load now)")
@@ -165,6 +169,40 @@ class ResolveBridge:
 
         self.logger.info("[BRIDGE] Analyze complete. Segments: %s, Sentences: %s", len(segments), len(sentences))
         return {"project_db": project_db, "warning": warning}
+
+    def analyze_resolve_ai(
+        self,
+        video_path: str,
+        language: str = "auto",
+    ) -> Dict[str, str]:
+        """Analyze using Resolve Studio auto-captioning (must run on UI thread)."""
+        project_id = self._generate_project_id(video_path)
+        project_db = self._get_project_db_path(project_id)
+        self.logger.info("Analyze(Resolve AI) start: %s", video_path)
+
+        ok = self.resolve_api.create_subtitles_from_audio(language=language)
+        if not ok:
+            raise RuntimeError("Resolve CreateSubtitlesFromAudio returned False")
+
+        sentences = self.resolve_api.export_subtitles_as_sentences()
+        self.logger.info("[BRIDGE] Resolve AI subtitles extracted: %d", len(sentences))
+
+        segments = [
+            {
+                "id": 0,
+                "t0": 0.0,
+                "t1": float(sentences[-1]["t1"]) if sentences else 0.0,
+                "type": "keep",
+                "metadata": {"auto_generated": True, "source": "resolve_ai"},
+            }
+        ]
+
+        store = SegmentStore(project_db)
+        store.save_artifact("project_id", project_id)
+        store.save_artifact("whisper_model", "resolve_ai")
+        store.save_project_data(segments=segments, sentences=sentences)
+        self.logger.info("[BRIDGE] Resolve AI database save complete")
+        return {"project_db": project_db, "warning": ""}
 
     def match_broll(self, project_db_path: str, library_db_path: str) -> Dict[str, str | int]:
         """Match B-roll clips against stored sentences."""
