@@ -66,7 +66,7 @@ COLORS = {
     "error": "#f44336",
 }
 
-VERSION = "v1.3.2"
+VERSION = "v1.3.3"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -251,6 +251,7 @@ class VideoForgePanel(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        logging.getLogger("VideoForge.ui").info("UI init start (%s)", VERSION)
         self._startup_warning: Optional[str] = None
         self.settings = self._load_settings()
         self.bridge = ResolveBridge(self.settings)
@@ -265,6 +266,7 @@ class VideoForgePanel(QWidget):
         if self._startup_warning:
             self._set_status(self._startup_warning)
         self._restore_library_path()
+        logging.getLogger("VideoForge.ui").info("UI init done (%s)", VERSION)
 
     def _init_ui(self) -> None:
         """Initialize the modernized UI."""
@@ -754,6 +756,7 @@ class VideoForgePanel(QWidget):
     # --- Event Handlers ---
 
     def _on_analyze_clicked(self) -> None:
+        logging.getLogger("VideoForge.ui").info("Analyze clicked")
         def _analyze():
             logger = logging.getLogger("VideoForge.ui.Analyze")
             logger.info("[1/6] Reading settings from UI")
@@ -838,6 +841,7 @@ class VideoForgePanel(QWidget):
         self._run_worker(_analyze, on_done=_done)
 
     def _on_browse_library(self) -> None:
+        logging.getLogger("VideoForge.ui").info("Browse library clicked")
         default_dir = (
             self.saved_broll_dir
             if self.saved_broll_dir and Path(self.saved_broll_dir).exists()
@@ -850,6 +854,7 @@ class VideoForgePanel(QWidget):
             self.library_path_edit.setText(str(Path(folder) / "library.db"))
 
     def _on_scan_library(self) -> None:
+        logging.getLogger("VideoForge.ui").info("Scan library clicked")
         default_dir = (
             self.saved_broll_dir
             if self.saved_broll_dir and Path(self.saved_broll_dir).exists()
@@ -902,6 +907,7 @@ class VideoForgePanel(QWidget):
         self._set_status("Log path unavailable.")
 
     def _on_match_clicked(self) -> None:
+        logging.getLogger("VideoForge.ui").info("Match clicked")
         if not self.project_db:
             self._set_status("Analyze a clip first.")
             return
@@ -941,6 +947,7 @@ class VideoForgePanel(QWidget):
         self._run_worker(_match, on_done=_done)
 
     def _on_apply_clicked(self) -> None:
+        logging.getLogger("VideoForge.ui").info("Apply clicked")
         if not self.project_db or not self.main_video_path:
             self._set_status("Analyze a clip first.")
             return
