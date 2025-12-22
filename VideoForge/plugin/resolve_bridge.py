@@ -47,16 +47,17 @@ class ResolveBridge:
         for handler in root_logger.handlers[:]:
             root_logger.removeHandler(handler)
 
-        logging.basicConfig(
-            filename=log_path,
-            level=logging.DEBUG,
-            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            datefmt="%H:%M:%S",
+        logging.raiseExceptions = False
+        file_handler = logging.FileHandler(log_path, encoding="utf-8", delay=True)
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                datefmt="%H:%M:%S",
+            )
         )
-        console = logging.StreamHandler()
-        console.setLevel(logging.INFO)
-        console.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
-        root_logger.addHandler(console)
+        root_logger.setLevel(logging.DEBUG)
+        root_logger.addHandler(file_handler)
         root_logger.info("VideoForge logging initialized: %s", log_path)
 
     def analyze_selected_clip(
