@@ -180,29 +180,36 @@ class ResolveBridge:
         project_db = self._get_project_db_path(project_id)
         self.logger.info("Analyze(Resolve AI) start: %s", video_path)
 
-        ok = self.resolve_api.create_subtitles_from_audio(language=language)
-        if not ok:
-            raise RuntimeError("Resolve CreateSubtitlesFromAudio returned False")
+        try:
+            ok = self.resolve_api.create_subtitles_from_audio(language=language)
+            if not ok:
+                raise RuntimeError("Resolve CreateSubtitlesFromAudio returned False")
 
-        sentences = self.resolve_api.export_subtitles_as_sentences()
-        self.logger.info("[BRIDGE] Resolve AI subtitles extracted: %d", len(sentences))
+            self.logger.info("[BRIDGE] Resolve AI subtitle creation complete")
+            sentences = self.resolve_api.export_subtitles_as_sentences()
+            self.logger.info("[BRIDGE] Resolve AI subtitles extracted: %d", len(sentences))
 
-        segments = [
-            {
-                "id": 0,
-                "t0": 0.0,
-                "t1": float(sentences[-1]["t1"]) if sentences else 0.0,
-                "type": "keep",
-                "metadata": {"auto_generated": True, "source": "resolve_ai"},
-            }
-        ]
+            segments = [
+                {
+                    "id": 0,
+                    "t0": 0.0,
+                    "t1": float(sentences[-1]["t1"]) if sentences else 0.0,
+                    "type": "keep",
+                    "metadata": {"auto_generated": True, "source": "resolve_ai"},
+                }
+            ]
+            self.logger.info("[BRIDGE] Resolve AI segments created: %d", len(segments))
 
-        store = SegmentStore(project_db)
-        store.save_artifact("project_id", project_id)
-        store.save_artifact("whisper_model", "resolve_ai")
-        store.save_project_data(segments=segments, sentences=sentences)
-        self.logger.info("[BRIDGE] Resolve AI database save complete")
-        return {"project_db": project_db, "warning": ""}
+            store = SegmentStore(project_db)
+            store.save_artifact("project_id", project_id)
+            store.save_artifact("whisper_model", "resolve_ai")
+            self.logger.info("[BRIDGE] Resolve AI saving to database...")
+            store.save_project_data(segments=segments, sentences=sentences)
+            self.logger.info("[BRIDGE] Resolve AI database save complete")
+            return {"project_db": project_db, "warning": ""}
+        except Exception as exc:
+            self.logger.error("Resolve AI analysis failed: %s", exc, exc_info=True)
+            raise
 
     def match_broll(self, project_db_path: str, library_db_path: str) -> Dict[str, str | int]:
         """Match B-roll clips against stored sentences."""
