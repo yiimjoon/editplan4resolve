@@ -68,11 +68,10 @@ class ResolveBridge:
         align_srt: str | None = None,
     ) -> Dict[str, str]:
         """Analyze the selected timeline clip and store segments/sentences."""
-        clips = self.resolve_api.get_selected_clips()
-        if not clips:
+        main_clip = self.resolve_api.get_primary_clip()
+        if not main_clip:
             raise ValueError("No clip selected in the current timeline.")
 
-        main_clip = clips[0]
         video_path = main_clip.GetClipProperty("File Path")
         if not video_path:
             raise ValueError("Selected clip has no file path.")

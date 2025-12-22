@@ -66,7 +66,7 @@ COLORS = {
     "error": "#f44336",
 }
 
-VERSION = "v1.3.7"
+VERSION = "v1.3.8"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -766,16 +766,16 @@ class VideoForgePanel(QWidget):
     def _on_analyze_clicked(self) -> None:
         logging.getLogger("VideoForge.ui").info("Analyze clicked")
         try:
-            clips = self.bridge.resolve_api.get_selected_clips()
+            clip = self.bridge.resolve_api.get_primary_clip()
         except Exception as exc:
             logging.getLogger("VideoForge.ui").error("Failed to read selection: %s", exc)
             self._set_status(f"Failed to read selection: {exc}")
             return
         logging.getLogger("VideoForge.ui").info(
-            "Selected clips count: %s", len(clips) if clips else 0
+            "Primary clip found: %s", bool(clip)
         )
-        if not clips:
-            self._set_status("Select a clip in the timeline first.")
+        if not clip:
+            self._set_status("Select a clip or move the playhead over a clip.")
             self.status.setStyleSheet(
                 f"color: {COLORS['error']}; font-size: 11px; background: transparent;"
             )
@@ -839,8 +839,8 @@ class VideoForgePanel(QWidget):
             self._update_progress_safe(95)
             self._update_status_safe("Step 3/6: Finalizing...")
 
-            clips = self.bridge.resolve_api.get_selected_clips()
-            main_path = clips[0].GetClipProperty("File Path") if clips else None
+            clip = self.bridge.resolve_api.get_primary_clip()
+            main_path = clip.GetClipProperty("File Path") if clip else None
             result["main_path"] = main_path
 
             logger.info("[4/6] Analyze complete")

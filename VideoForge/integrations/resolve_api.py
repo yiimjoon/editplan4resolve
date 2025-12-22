@@ -1,8 +1,11 @@
 import subprocess
+import logging
 from pathlib import Path
 from typing import Any, List, Optional
 
 from VideoForge.integrations.resolve_python import _get_resolve
+
+logger = logging.getLogger(__name__)
 
 
 class ResolveAPI:
@@ -47,6 +50,70 @@ class ResolveAPI:
                 except Exception:
                     continue
         return selected
+
+    def get_primary_clip(self) -> Optional[Any]:
+        """Return selected clip or fallback to the clip under the playhead."""
+        selected = self.get_selected_clips()
+        if selected:
+            return selected[0]
+        return self.get_clip_at_playhead()
+
+    def get_clip_at_playhead(self) -> Optional[Any]:
+        """Return the timeline clip under the playhead if available."""
+        timeline = self.get_current_timeline()
+        try:
+            current_item = timeline.GetCurrentVideoItem()
+            if current_item:
+                return current_item
+        except Exception:
+            pass
+
+        frame = self._get_playhead_frame(timeline)
+        if frame is None:
+            return None
+
+        track_count = int(timeline.GetTrackCount("video") or 0)
+        for track_index in range(1, track_count + 1):
+            items = timeline.GetItemListInTrack("video", track_index) or []
+            for item in items:
+                start, end = self._get_item_range(item)
+                if start is None or end is None:
+                    continue
+                if start <= frame <= end:
+                    return item
+        return None
+
+    def _get_playhead_frame(self, timeline: Any) -> Optional[int]:
+        try:
+            timecode = timeline.GetCurrentTimecode()
+        except Exception:
+            return None
+        fps = self.get_timeline_fps()
+        return self._timecode_to_frames(timecode, fps)
+
+    @staticmethod
+    def _timecode_to_frames(timecode: str, fps: float) -> Optional[int]:
+        try:
+            parts = [int(p) for p in str(timecode).split(":")]
+            if len(parts) != 4:
+                return None
+            hours, minutes, seconds, frames = parts
+            return int(round(((hours * 3600 + minutes * 60 + seconds) * fps) + frames))
+        except Exception as exc:
+            logger.debug("Failed to parse timecode %s: %s", timecode, exc)
+            return None
+
+    @staticmethod
+    def _get_item_range(item: Any) -> tuple[Optional[int], Optional[int]]:
+        for start_name, end_name in (("GetStart", "GetEnd"), ("GetStartFrame", "GetEndFrame")):
+            try:
+                start = getattr(item, start_name)()
+                end = getattr(item, end_name)()
+                if start is not None and end is not None:
+                    return int(start), int(end)
+            except Exception:
+                continue
+        return None, None
 
     def get_media_pool(self) -> Any:
         """Return the project media pool."""
