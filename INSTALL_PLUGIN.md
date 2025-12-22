@@ -33,17 +33,17 @@ Python environment.
 
 Windows (PowerShell):
 ```
-& "C:\Users\<you>\AppData\Local\Programs\Python\Python312\python.exe" -m pip install numpy PyYAML faster-whisper open-clip-torch faiss-cpu PySide6
+& "C:\Users\<you>\AppData\Local\Programs\Python\Python312\python.exe" -m pip install numpy PyYAML faster-whisper torch open-clip-torch faiss-cpu PySide6
 ```
 
 macOS (Terminal):
 ```
-/Applications/DaVinci\ Resolve/DaVinci\ Resolve.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 -m pip install numpy PyYAML faster-whisper open-clip-torch faiss-cpu PySide6
+/Applications/DaVinci\ Resolve/DaVinci\ Resolve.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 -m pip install numpy PyYAML faster-whisper torch open-clip-torch faiss-cpu PySide6
 ```
 
 Linux (Terminal):
 ```
-/opt/resolve/python/bin/python3 -m pip install numpy PyYAML faster-whisper open-clip-torch faiss-cpu PySide6
+/opt/resolve/python/bin/python3 -m pip install numpy PyYAML faster-whisper torch open-clip-torch faiss-cpu PySide6
 ```
 
 If pip is missing, run:

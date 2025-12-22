@@ -51,6 +51,7 @@ videoforge debug VideoForge\data\projects\<project_id>.db --show-segments
 - AutoResolve interactions are encapsulated in adapters.
 - The pipeline uses timeline.json as the single export interface.
 - Optional dependencies degrade gracefully.
+- If image/JPG metadata is stripped by downloads or editors, generate `.json` sidecars from the Scene_* video metadata using `scripts/generate_sidecars.py`.
 
 ## Resolve Plugin
 Install the Resolve Fusion Script plugin using `INSTALL_PLUGIN.md`. Run it from Workspace > Scripts > Comp > VideoForge > VideoForge.
