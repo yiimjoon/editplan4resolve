@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import subprocess
 from pathlib import Path
@@ -16,9 +17,19 @@ def _ffprobe_duration(video_path: str) -> float:
         video_path,
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=300,
+            encoding="utf-8",
+            errors="ignore",
+        )
         data = json.loads(proc.stdout)
         return float(data.get("format", {}).get("duration", 0.0))
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Command timed out after 300s: {cmd[0]}") from exc
     except Exception:
         return 0.0
 
@@ -38,7 +49,10 @@ def _extract_pcm(video_path: str, sample_rate: int = 16000) -> bytes:
         "s16le",
         "-",
     ]
-    proc = subprocess.run(cmd, capture_output=True)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=300)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Command timed out after 300s: {cmd[0]}") from exc
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.decode("utf-8", errors="ignore"))
     return proc.stdout
@@ -62,16 +76,33 @@ def extract_silence_segments(
     if duration <= 0:
         return []
 
+    logger = logging.getLogger(__name__)
     try:
         pcm = _extract_pcm(video_path)
-    except Exception:
-        return [{"t0": 0.0, "t1": duration, "type": "speech"}]
+    except Exception as exc:
+        logger.warning("Silence detection failed, using full duration: %s", exc)
+        return [
+            {
+                "t0": 0.0,
+                "t1": duration,
+                "type": "speech",
+                "metadata": {"warning": "silence_detection_failed"},
+            }
+        ]
 
     sample_rate = 16000
     window_sec = 0.1
     window_size = int(sample_rate * window_sec)
     if window_size <= 0:
-        return [{"t0": 0.0, "t1": duration, "type": "speech"}]
+        logger.warning("Invalid window size for silence detection, using full duration.")
+        return [
+            {
+                "t0": 0.0,
+                "t1": duration,
+                "type": "speech",
+                "metadata": {"warning": "silence_detection_failed"},
+            }
+        ]
 
     total_samples = len(pcm) // 2
     num_windows = max(1, total_samples // window_size)
@@ -117,6 +148,14 @@ def extract_silence_segments(
                              "type": "speech"})
 
     if not segments:
-        return [{"t0": 0.0, "t1": duration, "type": "speech"}]
+        logger.warning("No speech segments detected, using full duration.")
+        return [
+            {
+                "t0": 0.0,
+                "t1": duration,
+                "type": "speech",
+                "metadata": {"warning": "silence_detection_failed"},
+            }
+        ]
 
     return segments

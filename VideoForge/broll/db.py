@@ -1,8 +1,9 @@
 import hashlib
 import json
 import sqlite3
+import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -93,7 +94,7 @@ class LibraryDB:
             "folder_tags": metadata.get("folder_tags", ""),
             "vision_tags": metadata.get("vision_tags", ""),
             "description": metadata.get("description", ""),
-            "created_at": metadata.get("created_at") or datetime.utcnow().isoformat(),
+            "created_at": metadata.get("created_at") or datetime.now(timezone.utc).isoformat(),
         }
         emb_blob = clip_embedding.astype(np.float32).tobytes()
         with self._connect() as conn:
@@ -118,7 +119,8 @@ class LibraryDB:
         return clip_id
 
     def fts_search(self, query: str, limit: int = 10) -> List[Dict]:
-        if not query.strip():
+        fts_query = _to_fts_query(query)
+        if not fts_query:
             return []
         with self._connect() as conn:
             rows = conn.execute(
@@ -130,7 +132,7 @@ class LibraryDB:
                 WHERE clips_fts MATCH ?
                 LIMIT ?
                 """,
-                (query, limit),
+                (fts_query, limit),
             ).fetchall()
         results = []
         for row in rows:
@@ -143,9 +145,20 @@ class LibraryDB:
         results = self._vector_backend.search(query_embedding, limit)
         return [{"clip_id": r.clip_id, "score": r.score} for r in results]
 
-    def hybrid_search(self, text_query: str, query_embedding: np.ndarray, limit: int = 10) -> List[Dict]:
+    def hybrid_search(
+        self,
+        text_query: str,
+        query_embedding: np.ndarray,
+        limit: int = 10,
+        weights: Dict[str, float] | None = None,
+    ) -> List[Dict]:
         text_results = {r["clip_id"]: r for r in self.fts_search(text_query, limit=limit * 2)}
         vector_results = {r["clip_id"]: r for r in self.vector_search(query_embedding, limit=limit * 2)}
+
+        weights = weights or {}
+        vector_weight = float(weights.get("vector", 0.5))
+        text_weight = float(weights.get("text", 0.5))
+        prior_weight = float(weights.get("prior", 0.1))
 
         clip_ids = set(text_results.keys()) | set(vector_results.keys())
         combined: List[Dict] = []
@@ -156,7 +169,7 @@ class LibraryDB:
             folder_tags = row.get("folder_tags", "")
             folder_hit = any(token for token in text_query.split() if token and token in folder_tags)
             prior = (1.0 if folder_hit else 0.0) - (self._cooldown_penalty if clip_id in self._recent_clip_ids else 0.0)
-            final = 0.55 * vector_score + 0.35 * text_score + 0.10 * prior
+            final = vector_weight * vector_score + text_weight * text_score + prior_weight * prior
             combined.append(
                 {
                     "clip_id": clip_id,
@@ -165,6 +178,13 @@ class LibraryDB:
                         "vector_score": vector_score,
                         "text_score": text_score,
                         "folder_hit": bool(folder_hit),
+                        "prior": prior,
+                        "final": final,
+                        "weights": {
+                            "vector": vector_weight,
+                            "text": text_weight,
+                            "prior": prior_weight,
+                        },
                     },
                 }
             )
@@ -174,4 +194,34 @@ class LibraryDB:
     def get_clip(self, clip_id: str) -> Optional[Dict]:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM clips WHERE id = ?", (clip_id,)).fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            data = dict(row)
+            if "embedding" in data:
+                data.pop("embedding")
+            return data
+
+    def get_embedding(self, clip_id: str) -> Optional[np.ndarray]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT embedding FROM clips WHERE id = ?", (clip_id,)).fetchone()
+        if not row or row["embedding"] is None:
+            return None
+        emb = np.frombuffer(row["embedding"], dtype=np.float32)
+        if emb.size == 0:
+            return None
+        return _normalize(emb)
+
+
+def _to_fts_query(raw: str) -> str:
+    """
+    Convert arbitrary user text into a safe FTS5 MATCH query.
+
+    FTS5 treats many punctuation characters (quotes/apostrophes/operators) as syntax.
+    We extract word-like tokens and OR them together.
+    """
+    tokens = re.findall(r"[0-9A-Za-z_]+", raw or "")
+    tokens = [t for t in tokens if t.strip()]
+    if not tokens:
+        return ""
+    # OR provides recall; scoring still comes from bm25()
+    return " OR ".join(tokens)

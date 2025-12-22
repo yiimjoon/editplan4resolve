@@ -5,6 +5,7 @@ from typing import Any, Dict, Iterable, List
 
 
 class SegmentStore:
+    SCHEMA_VERSION = 1
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self._ensure_schema()
@@ -20,6 +21,9 @@ class SegmentStore:
             conn.executescript(
                 """
                 PRAGMA journal_mode = WAL;
+                CREATE TABLE IF NOT EXISTS schema_version (
+                  version INTEGER PRIMARY KEY
+                );
                 CREATE TABLE IF NOT EXISTS segments (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   t0 REAL NOT NULL,
@@ -53,68 +57,39 @@ class SegmentStore:
                 CREATE INDEX IF NOT EXISTS idx_matches_sentence ON matches(sentence_id);
                 """
             )
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+                (self.SCHEMA_VERSION,),
+            )
 
     def save_segments(self, segments: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        saved = []
         with self._connect() as conn:
-            cur = conn.cursor()
-            for seg in segments:
-                cur.execute(
-                    "INSERT INTO segments (t0, t1, type, metadata) VALUES (?, ?, ?, ?)",
-                    (
-                        float(seg["t0"]),
-                        float(seg["t1"]),
-                        seg.get("type", "speech"),
-                        json.dumps(seg.get("metadata", {})),
-                    ),
-                )
-                seg_id = cur.lastrowid
-                saved.append({**seg, "id": seg_id})
-        return saved
+            return self._insert_segments(conn, segments)
 
     def save_sentences(self, sentences: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        saved = []
         with self._connect() as conn:
-            cur = conn.cursor()
-            for sent in sentences:
-                cur.execute(
-                    """
-                    INSERT INTO sentences (segment_id, t0, t1, text, confidence, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        sent.get("segment_id"),
-                        float(sent["t0"]),
-                        float(sent["t1"]),
-                        sent["text"],
-                        float(sent.get("confidence", 0.0)),
-                        json.dumps(sent.get("metadata", {})),
-                    ),
-                )
-                sent_id = cur.lastrowid
-                saved.append({**sent, "id": sent_id})
-        return saved
+            return self._insert_sentences(conn, sentences)
 
     def save_matches(self, matches: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        saved = []
         with self._connect() as conn:
-            cur = conn.cursor()
-            for match in matches:
-                cur.execute(
-                    """
-                    INSERT INTO matches (sentence_id, clip_id, score, metadata)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (
-                        match["sentence_id"],
-                        match["clip_id"],
-                        float(match.get("score", 0.0)),
-                        json.dumps(match.get("metadata", {})),
-                    ),
-                )
-                match_id = cur.lastrowid
-                saved.append({**match, "id": match_id})
-        return saved
+            return self._insert_matches(conn, matches)
+
+    def save_project_data(
+        self,
+        segments: Iterable[Dict[str, Any]] | None = None,
+        sentences: Iterable[Dict[str, Any]] | None = None,
+        matches: Iterable[Dict[str, Any]] | None = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Save segments, sentences, and matches in a single transaction."""
+        with self._connect() as conn:
+            saved_segments = self._insert_segments(conn, segments or [])
+            saved_sentences = self._insert_sentences(conn, sentences or [])
+            saved_matches = self._insert_matches(conn, matches or [])
+        return {
+            "segments": saved_segments,
+            "sentences": saved_sentences,
+            "matches": saved_matches,
+        }
 
     def get_segments(self) -> List[Dict[str, Any]]:
         with self._connect() as conn:
@@ -154,3 +129,71 @@ class SegmentStore:
             except json.JSONDecodeError:
                 data["metadata"] = {}
         return data
+
+    @staticmethod
+    def _insert_segments(
+        conn: sqlite3.Connection, segments: Iterable[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        saved = []
+        cur = conn.cursor()
+        for seg in segments:
+            cur.execute(
+                "INSERT INTO segments (t0, t1, type, metadata) VALUES (?, ?, ?, ?)",
+                (
+                    float(seg["t0"]),
+                    float(seg["t1"]),
+                    seg.get("type", "speech"),
+                    json.dumps(seg.get("metadata", {})),
+                ),
+            )
+            seg_id = cur.lastrowid
+            saved.append({**seg, "id": seg_id})
+        return saved
+
+    @staticmethod
+    def _insert_sentences(
+        conn: sqlite3.Connection, sentences: Iterable[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        saved = []
+        cur = conn.cursor()
+        for sent in sentences:
+            cur.execute(
+                """
+                INSERT INTO sentences (segment_id, t0, t1, text, confidence, metadata)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sent.get("segment_id"),
+                    float(sent["t0"]),
+                    float(sent["t1"]),
+                    sent["text"],
+                    float(sent.get("confidence", 0.0)),
+                    json.dumps(sent.get("metadata", {})),
+                ),
+            )
+            sent_id = cur.lastrowid
+            saved.append({**sent, "id": sent_id})
+        return saved
+
+    @staticmethod
+    def _insert_matches(
+        conn: sqlite3.Connection, matches: Iterable[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        saved = []
+        cur = conn.cursor()
+        for match in matches:
+            cur.execute(
+                """
+                INSERT INTO matches (sentence_id, clip_id, score, metadata)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    match["sentence_id"],
+                    match["clip_id"],
+                    float(match.get("score", 0.0)),
+                    json.dumps(match.get("metadata", {})),
+                ),
+            )
+            match_id = cur.lastrowid
+            saved.append({**match, "id": match_id})
+        return saved

@@ -26,7 +26,15 @@ def _ffprobe_video_info(path: str) -> Dict[str, float | str | List[int]]:
     try:
         import subprocess
 
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=300,
+            encoding="utf-8",
+            errors="ignore",
+        )
         data = json.loads(proc.stdout)
         stream = (data.get("streams") or [{}])[0]
         width = int(stream.get("width", 0))
@@ -41,6 +49,8 @@ def _ffprobe_video_info(path: str) -> Dict[str, float | str | List[int]]:
             "fps": fps,
             "resolution": [width, height],
         }
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Command timed out after 300s: {cmd[0]}") from exc
     except Exception:
         return {"path": path, "duration": 0.0, "fps": 0.0, "resolution": [0, 0]}
 
@@ -77,7 +87,7 @@ class TimelineBuilder:
         )
 
         timeline = {
-            "schema_version": "1.0",
+            "schema_version": str(SegmentStore.SCHEMA_VERSION),
             "pipeline_version": "0.1.0",
             "metadata": {
                 "project_id": self.store.get_artifact("project_id") or "",
