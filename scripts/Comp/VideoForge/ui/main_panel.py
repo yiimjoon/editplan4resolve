@@ -66,7 +66,7 @@ COLORS = {
     "error": "#f44336",
 }
 
-VERSION = "v1.3.5"
+VERSION = "v1.3.7"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -765,6 +765,22 @@ class VideoForgePanel(QWidget):
 
     def _on_analyze_clicked(self) -> None:
         logging.getLogger("VideoForge.ui").info("Analyze clicked")
+        try:
+            clips = self.bridge.resolve_api.get_selected_clips()
+        except Exception as exc:
+            logging.getLogger("VideoForge.ui").error("Failed to read selection: %s", exc)
+            self._set_status(f"Failed to read selection: {exc}")
+            return
+        logging.getLogger("VideoForge.ui").info(
+            "Selected clips count: %s", len(clips) if clips else 0
+        )
+        if not clips:
+            self._set_status("Select a clip in the timeline first.")
+            self.status.setStyleSheet(
+                f"color: {COLORS['error']}; font-size: 11px; background: transparent;"
+            )
+            return
+
         def _analyze():
             logger = logging.getLogger("VideoForge.ui.Analyze")
             logger.info("[1/6] Reading settings from UI")
