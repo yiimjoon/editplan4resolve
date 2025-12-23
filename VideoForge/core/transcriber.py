@@ -73,7 +73,26 @@ def transcribe_segments(
                 _WHISPER_MODEL_DEVICE = "cpu"
 
         logger.info("Transcribing audio... (this may take 30-60 seconds)")
-        transcribe_kwargs = {"word_timestamps": False, "task": task}
+
+        # VAD (Voice Activity Detection) parameters for better sentence segmentation
+        # - condition_on_previous_text=False: Each segment is independent (more accurate splits)
+        # - vad_filter=True: Enable silence-based segmentation
+        # - vad_parameters: Fine-tune silence detection
+        #   * threshold: Lower = more aggressive splitting (0.0-1.0, default 0.5)
+        #   * min_silence_duration_ms: Minimum silence gap to trigger split (default 2000ms)
+        #   * speech_pad_ms: Padding around speech segments (default 400ms)
+        transcribe_kwargs = {
+            "word_timestamps": False,
+            "task": task,
+            "condition_on_previous_text": False,  # Reduce long sentence merging
+            "vad_filter": True,  # Enable VAD-based segmentation
+            "vad_parameters": {
+                "threshold": 0.3,  # More sensitive to silence (0.5 default, lower = more splits)
+                "min_silence_duration_ms": 300,  # Shorter silence gap (500ms default)
+                "speech_pad_ms": 0,  # Avoid padding that can erase short silences
+            },
+        }
+
         if language and language != "auto":
             transcribe_kwargs["language"] = language
         source_path = video_path
@@ -130,6 +149,19 @@ def transcribe_segments(
                 pass
 
         logger.info("Transcription complete: %s sentences", len(sentences))
+        if len(sentences) > 1:
+            gaps = []
+            for prev, curr in zip(sentences, sentences[1:]):
+                gap = float(curr["t0"]) - float(prev["t1"])
+                if gap > 0:
+                    gaps.append(gap)
+            if gaps:
+                logger.info(
+                    "Detected %d silence gaps (max %.2fs, avg %.2fs)",
+                    len(gaps),
+                    max(gaps),
+                    sum(gaps) / len(gaps),
+                )
         logger.info(">>> Returning %d sentences to caller", len(sentences))
         if temp_path:
             try:

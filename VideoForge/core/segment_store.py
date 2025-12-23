@@ -112,6 +112,34 @@ class SegmentStore:
                     ),
                 )
 
+    def replace_sentence(self, sentence_id: int, new_sentences: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Replace a single sentence row with one or more new sentence rows."""
+        with self._connect_ctx() as conn:
+            conn.execute("DELETE FROM sentences WHERE id = ?", (int(sentence_id),))
+            return self._insert_sentences(conn, new_sentences)
+
+    def replace_all_sentences(self, sentences: Iterable[Dict[str, Any]]) -> None:
+        """Replace all sentences while preserving ids when provided."""
+        with self._connect_ctx() as conn:
+            conn.execute("DELETE FROM sentences")
+            cur = conn.cursor()
+            for sentence in sentences:
+                cur.execute(
+                    """
+                    INSERT INTO sentences (id, segment_id, t0, t1, text, confidence, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        sentence.get("id"),
+                        sentence.get("segment_id"),
+                        float(sentence.get("t0", 0.0)),
+                        float(sentence.get("t1", 0.0)),
+                        sentence.get("text", ""),
+                        sentence.get("confidence"),
+                        json.dumps(sentence.get("metadata", {})),
+                    ),
+                )
+
     def save_project_data(
         self,
         segments: Iterable[Dict[str, Any]] | None = None,
