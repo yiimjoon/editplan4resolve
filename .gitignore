@@ -33,3 +33,9 @@ Thumbs.db
 
 # Local development settings
 .claude/
+
+# DaVinci Resolve local deploy folder accidentally copied into repo
+%APPDATA%/
+
+# Personal notes
+CLAUDE.MD
