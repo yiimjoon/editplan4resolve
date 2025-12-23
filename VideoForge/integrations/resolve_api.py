@@ -20,6 +20,14 @@ class ResolveAPI:
                 "DaVinci Resolve scripting API is not available. Start Resolve and enable scripting."
             ) from exc
 
+    def is_available(self) -> bool:
+        """Return True if Resolve scripting API is still reachable."""
+        try:
+            manager = self._resolve.GetProjectManager()
+            return manager is not None
+        except Exception:
+            return False
+
     def get_current_project(self) -> Any:
         """Return the current Resolve project."""
         manager = self._resolve.GetProjectManager()
@@ -92,12 +100,20 @@ class ResolveAPI:
             items.extend(timeline.GetItemListInTrack("subtitle", track_index) or [])
         return items
 
-    def export_subtitles_as_sentences(self) -> List[dict]:
+    def export_subtitles_as_sentences(
+        self,
+        clip_range: tuple[float, float] | None = None,
+    ) -> List[dict]:
         """Extract subtitle items into sentence-like dicts (t0/t1/text)."""
         fps = self.get_timeline_fps()
         sentences: List[dict] = []
+        min_t = clip_range[0] if clip_range else None
+        max_t = clip_range[1] if clip_range else None
         for item in self.get_subtitle_items():
             t0, t1 = self._item_time_range_seconds(item, fps)
+            if min_t is not None and max_t is not None:
+                if t1 < min_t or t0 > max_t:
+                    continue
             text = self._subtitle_text(item)
             if text is None:
                 continue
@@ -112,6 +128,132 @@ class ResolveAPI:
                 }
             )
         return sentences
+
+    def get_item_range_seconds(self, item: Any) -> tuple[float, float] | None:
+        """Return timeline item range as seconds (t0, t1)."""
+        fps = self.get_timeline_fps()
+        start, end = self._get_item_range(item)
+        if start is None or end is None or fps <= 0:
+            return None
+        return float(start) / float(fps), float(end) / float(fps)
+
+    def get_clip_source_range_seconds(self, item: Any) -> tuple[float, float] | None:
+        """Return source in/out range for a timeline item in seconds."""
+        fps = self.get_timeline_fps()
+        if fps <= 0:
+            return None
+
+        left_offset = self._safe_call(item, "GetLeftOffset")
+        duration = self._safe_call(item, "GetDuration")
+        if left_offset is not None and duration is not None:
+            try:
+                start = float(left_offset) / float(fps)
+                end = (float(left_offset) + float(duration)) / float(fps)
+                return start, end
+            except Exception:
+                pass
+
+        source_start = self._safe_call(item, "GetSourceStartFrame")
+        source_end = self._safe_call(item, "GetSourceEndFrame")
+        if source_start is not None and source_end is not None:
+            try:
+                return float(source_start) / float(fps), float(source_end) / float(fps)
+            except Exception:
+                pass
+
+        return self.get_item_range_seconds(item)
+
+    @staticmethod
+    def _safe_call(item: Any, method_name: str):
+        method = getattr(item, method_name, None)
+        if callable(method):
+            try:
+                return method()
+            except Exception:
+                return None
+        return None
+
+    def import_subtitles_into_timeline(self, srt_path: str) -> bool:
+        """Import an SRT file into the current timeline subtitle track."""
+        timeline = self.get_current_timeline()
+        srt_path = str(Path(srt_path))
+        if not Path(srt_path).exists():
+            logger.warning("Subtitle import failed: file missing (%s)", srt_path)
+            return False
+        try:
+            if int(timeline.GetTrackCount("subtitle") or 0) == 0:
+                timeline.AddTrack("subtitle")
+        except Exception as exc:
+            logger.debug("Failed to ensure subtitle track: %s", exc)
+
+        importer = getattr(timeline, "ImportSubtitles", None)
+        if callable(importer):
+            try:
+                if importer(srt_path):
+                    return True
+            except Exception as exc:
+                logger.warning("Timeline ImportSubtitles(path) failed: %s", exc)
+
+        importer = getattr(timeline, "ImportSubtitlesFromFile", None)
+        if callable(importer):
+            try:
+                if importer(srt_path):
+                    return True
+            except Exception as exc:
+                logger.warning("Timeline ImportSubtitlesFromFile(path) failed: %s", exc)
+
+        importer = getattr(timeline, "ImportIntoTimeline", None)
+        if callable(importer):
+            try:
+                if importer(srt_path):
+                    return True
+            except Exception as exc:
+                logger.warning("Timeline ImportIntoTimeline(path) failed: %s", exc)
+
+            for payload in (
+                {"filePath": srt_path},
+                {"FilePath": srt_path},
+                {"filepath": srt_path},
+                {"path": srt_path},
+                {"Path": srt_path},
+                {"type": "subtitle", "filePath": srt_path},
+                {"trackType": "subtitle", "filePath": srt_path},
+                {"TrackType": "subtitle", "FilePath": srt_path},
+                {"trackType": "subtitle", "trackIndex": 1, "filePath": srt_path},
+            ):
+                try:
+                    if importer(payload):
+                        return True
+                except Exception as exc:
+                    logger.debug("Timeline ImportIntoTimeline(%s) failed: %s", payload, exc)
+
+        project = self.get_current_project()
+        importer = getattr(project, "ImportSubtitles", None)
+        if callable(importer):
+            try:
+                if importer(srt_path):
+                    return True
+            except Exception as exc:
+                logger.warning("Project ImportSubtitles(path) failed: %s", exc)
+
+        importer = getattr(project, "ImportIntoTimeline", None)
+        if callable(importer):
+            try:
+                if importer(srt_path):
+                    return True
+            except Exception as exc:
+                logger.warning("Project ImportIntoTimeline(path) failed: %s", exc)
+        try:
+            methods = [
+                name
+                for name in dir(timeline)
+                if "import" in name.lower() or "subtitle" in name.lower()
+            ]
+            logger.debug("Timeline import methods: %s", methods)
+        except Exception:
+            pass
+        return False
+
 
     @staticmethod
     def _subtitle_text(item: Any) -> Optional[str]:

@@ -1,5 +1,7 @@
 import logging
 import os
+import tempfile
+import subprocess
 import time
 from typing import Dict, List
 
@@ -15,6 +17,7 @@ def transcribe_segments(
     model_name: str,
     task: str = "transcribe",
     language: str | None = None,
+    clip_range: tuple[float, float] | None = None,
 ) -> List[Dict[str, float]]:
     """
     Transcribe audio and return sentence-level segments.
@@ -73,7 +76,30 @@ def transcribe_segments(
         transcribe_kwargs = {"word_timestamps": False, "task": task}
         if language and language != "auto":
             transcribe_kwargs["language"] = language
-        results, _info = model.transcribe(video_path, **transcribe_kwargs)
+        source_path = video_path
+        offset = 0.0
+        temp_path = None
+        if clip_range:
+            duration = _get_media_duration(video_path)
+            start, end = clip_range
+            if duration is not None and (end <= start or end > duration + 0.5 or start < 0.0):
+                logger.warning(
+                    "Clip range %.2fs - %.2fs is outside media duration (%.2fs); skipping trim.",
+                    float(start),
+                    float(end),
+                    float(duration),
+                )
+                clip_range = None
+            elif end > start:
+                offset = float(start)
+                temp_path = _extract_audio_segment(video_path, start, end)
+                source_path = temp_path
+                logger.info(
+                    "Using trimmed audio segment: %.2fs - %.2fs",
+                    float(start),
+                    float(end),
+                )
+        results, _info = model.transcribe(source_path, **transcribe_kwargs)
         sentences: List[Dict[str, float]] = []
         segment_count = 0
         try:
@@ -81,8 +107,8 @@ def transcribe_segments(
                 seg_id = _segment_for_time(segments, float(seg.start))
                 sentences.append(
                     {
-                        "t0": float(seg.start),
-                        "t1": float(seg.end),
+                        "t0": float(seg.start) + offset,
+                        "t1": float(seg.end) + offset,
                         "text": seg.text.strip(),
                         "confidence": float(getattr(seg, "avg_logprob", 0.0)),
                         "segment_id": seg_id,
@@ -105,10 +131,81 @@ def transcribe_segments(
 
         logger.info("Transcription complete: %s sentences", len(sentences))
         logger.info(">>> Returning %d sentences to caller", len(sentences))
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except Exception:
+                pass
         return sentences
     except Exception as exc:
         logger.error("Whisper transcription failed: %s", exc, exc_info=True)
         raise RuntimeError("Whisper transcription failed") from exc
+
+
+def _extract_audio_segment(video_path: str, start: float, end: float) -> str:
+    """Extract a temporary WAV for the requested time range."""
+    temp_fd, temp_path = tempfile.mkstemp(suffix=".wav", prefix="vf_trim_")
+    os.close(temp_fd)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        str(max(0.0, float(start))),
+        "-to",
+        str(max(0.0, float(end))),
+        "-i",
+        video_path,
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        temp_path,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("ffmpeg segment extraction timed out") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg segment extraction failed: {proc.stderr.strip()}")
+    return temp_path
+
+
+def _get_media_duration(video_path: str) -> float | None:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=nw=1:nk=1",
+        video_path,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return float(proc.stdout.strip())
+    except Exception:
+        return None
 
 
 def _segment_for_time(segments: List[Dict[str, float]], t0: float) -> int | None:

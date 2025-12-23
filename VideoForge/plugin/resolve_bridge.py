@@ -91,6 +91,7 @@ class ResolveBridge:
         whisper_language: str | None = None,
         align_srt: str | None = None,
         engine: str = "whisper",
+        clip_range: tuple[float, float] | None = None,
     ) -> Dict[str, str]:
         """Analyze from already-extracted video_path (thread-safe version)."""
         project_id = self._generate_project_id(video_path)
@@ -98,6 +99,7 @@ class ResolveBridge:
         self.logger.info("Analyze start: %s", video_path)
 
         store = SegmentStore(project_db)
+        store.clear_analysis_data()
         store.save_artifact("project_id", project_id)
         store.save_artifact("whisper_model", whisper_model)
 
@@ -114,7 +116,10 @@ class ResolveBridge:
                 raise RuntimeError("Resolve AI engine must run on the UI thread.")
 
             self.logger.info("Transcribing full audio (no silence removal).")
-            full_segment = [{"id": 0, "t0": 0.0, "t1": 10**9}]
+            if clip_range:
+                full_segment = [{"id": 0, "t0": float(clip_range[0]), "t1": float(clip_range[1])}]
+            else:
+                full_segment = [{"id": 0, "t0": 0.0, "t1": 10**9}]
             self.logger.info("[BRIDGE] Calling transcribe_segments (Whisper will load now)")
             self.logger.info("[BRIDGE] NOTE: First run may take 1-2 minutes to download model")
             sentences = transcribe_segments(
@@ -123,6 +128,7 @@ class ResolveBridge:
                 whisper_model,
                 task=whisper_task,
                 language=whisper_language,
+                clip_range=clip_range,
             )
             self.logger.info("[BRIDGE] transcribe_segments returned %d sentences", len(sentences))
             self.logger.info("[BRIDGE] Waiting for any background cleanup... (2 seconds)")
@@ -138,14 +144,20 @@ class ResolveBridge:
                     buffer_before=self.settings["silence"]["buffer_before"],
                     buffer_after=self.settings["silence"]["buffer_after"],
                 )
+                if clip_range:
+                    segments = [
+                        seg
+                        for seg in segments
+                        if float(seg["t1"]) >= clip_range[0] and float(seg["t0"]) <= clip_range[1]
+                    ]
                 self._assign_segments(sentences, segments)
             else:
                 last_t1 = sentences[-1]["t1"] if sentences else 0.0
                 segments = [
                     {
                         "id": 0,
-                        "t0": 0.0,
-                        "t1": float(last_t1),
+                        "t0": float(clip_range[0]) if clip_range else 0.0,
+                        "t1": float(clip_range[1]) if clip_range else float(last_t1),
                         "type": "keep",
                         "metadata": {"auto_generated": True},
                     }
@@ -174,11 +186,13 @@ class ResolveBridge:
         self,
         video_path: str,
         language: str = "auto",
+        clip_range: tuple[float, float] | None = None,
     ) -> Dict[str, str]:
         """Analyze using Resolve Studio auto-captioning (must run on UI thread)."""
         project_id = self._generate_project_id(video_path)
         project_db = self._get_project_db_path(project_id)
         self.logger.info("Analyze(Resolve AI) start: %s", video_path)
+        self.logger.info("Analyze(Resolve AI) project_db: %s", project_db)
 
         try:
             ok = self.resolve_api.create_subtitles_from_audio(language=language)
@@ -186,21 +200,39 @@ class ResolveBridge:
                 raise RuntimeError("Resolve CreateSubtitlesFromAudio returned False")
 
             self.logger.info("[BRIDGE] Resolve AI subtitle creation complete")
-            sentences = self.resolve_api.export_subtitles_as_sentences()
+            if clip_range:
+                self.logger.info(
+                    "[BRIDGE] Resolve AI clip range filter: %.2fs - %.2fs",
+                    clip_range[0],
+                    clip_range[1],
+                )
+            sentences = self.resolve_api.export_subtitles_as_sentences(clip_range=clip_range)
             self.logger.info("[BRIDGE] Resolve AI subtitles extracted: %d", len(sentences))
 
-            segments = [
-                {
-                    "id": 0,
-                    "t0": 0.0,
-                    "t1": float(sentences[-1]["t1"]) if sentences else 0.0,
-                    "type": "keep",
-                    "metadata": {"auto_generated": True, "source": "resolve_ai"},
-                }
-            ]
+            if self.settings.get("silence", {}).get("enable_removal", False):
+                self.logger.info("[BRIDGE] Applying silence removal after Resolve AI")
+                segments = process_silence(
+                    video_path=video_path,
+                    threshold_db=self.settings["silence"]["threshold_db"],
+                    min_keep=self.settings["silence"]["min_keep_duration"],
+                    buffer_before=self.settings["silence"]["buffer_before"],
+                    buffer_after=self.settings["silence"]["buffer_after"],
+                )
+                self._assign_segments(sentences, segments)
+            else:
+                segments = [
+                    {
+                        "id": 0,
+                        "t0": 0.0,
+                        "t1": float(sentences[-1]["t1"]) if sentences else 0.0,
+                        "type": "keep",
+                        "metadata": {"auto_generated": True, "source": "resolve_ai"},
+                    }
+                ]
             self.logger.info("[BRIDGE] Resolve AI segments created: %d", len(segments))
 
             store = SegmentStore(project_db)
+            store.clear_analysis_data()
             store.save_artifact("project_id", project_id)
             store.save_artifact("whisper_model", "resolve_ai")
             self.logger.info("[BRIDGE] Resolve AI saving to database...")
@@ -214,6 +246,7 @@ class ResolveBridge:
     def match_broll(self, project_db_path: str, library_db_path: str) -> Dict[str, str | int]:
         """Match B-roll clips against stored sentences."""
         store = SegmentStore(project_db_path)
+        store.clear_matches()
         sentences = store.get_sentences()
         if not sentences:
             raise ValueError("No sentences found. Run analysis first.")

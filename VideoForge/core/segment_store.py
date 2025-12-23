@@ -22,6 +22,10 @@ class SegmentStore:
         conn = self._connect()
         try:
             yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -125,6 +129,18 @@ class SegmentStore:
             "matches": saved_matches,
         }
 
+    def clear_analysis_data(self) -> None:
+        """Clear segments, sentences, and matches before a new analysis run."""
+        with self._connect_ctx() as conn:
+            conn.execute("DELETE FROM matches")
+            conn.execute("DELETE FROM sentences")
+            conn.execute("DELETE FROM segments")
+
+    def clear_matches(self) -> None:
+        """Clear existing matches before re-matching."""
+        with self._connect_ctx() as conn:
+            conn.execute("DELETE FROM matches")
+
     def get_segments(self) -> List[Dict[str, Any]]:
         with self._connect_ctx() as conn:
             rows = conn.execute("SELECT * FROM segments ORDER BY t0").fetchall()
@@ -140,7 +156,7 @@ class SegmentStore:
             rows = conn.execute("SELECT * FROM matches ORDER BY id").fetchall()
             return [self._row_to_dict(row) for row in rows]
 
-    def save_artifact(self, key: str, value: Dict[str, Any]) -> None:
+    def save_artifact(self, key: str, value: Any) -> None:
         with self._connect_ctx() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO artifacts (key, value) VALUES (?, ?)",
@@ -191,6 +207,9 @@ class SegmentStore:
         saved = []
         cur = conn.cursor()
         for sent in sentences:
+            confidence = sent.get("confidence", 0.0)
+            if confidence is None:
+                confidence = 0.0
             cur.execute(
                 """
                 INSERT INTO sentences (segment_id, t0, t1, text, confidence, metadata)
@@ -201,7 +220,7 @@ class SegmentStore:
                     float(sent["t0"]),
                     float(sent["t1"]),
                     sent["text"],
-                    float(sent.get("confidence", 0.0)),
+                    float(confidence),
                     json.dumps(sent.get("metadata", {})),
                 ),
             )

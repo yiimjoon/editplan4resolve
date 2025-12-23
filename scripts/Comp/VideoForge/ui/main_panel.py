@@ -13,12 +13,14 @@ from VideoForge.broll.indexer import scan_library
 from VideoForge.broll.sidecar_tools import generate_comfyui_sidecars, generate_scene_sidecars
 from VideoForge.config.config_manager import Config
 from VideoForge.core.segment_store import SegmentStore
+from VideoForge.core.project_cleanup import cleanup_project_files
 from VideoForge.plugin.resolve_bridge import ResolveBridge
 
 try:
     from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer
     from PySide6.QtWidgets import (
         QApplication,
+        QCheckBox,
         QComboBox,
         QFileDialog,
         QFrame,
@@ -36,6 +38,7 @@ except Exception:
         from PySide2.QtCore import QObject, QThread, Signal, Qt, QTimer
         from PySide2.QtWidgets import (
             QApplication,
+            QCheckBox,
             QComboBox,
             QFileDialog,
             QFrame,
@@ -67,7 +70,7 @@ COLORS = {
     "error": "#f44336",
 }
 
-VERSION = "v1.4.1"
+VERSION = "v1.5.3"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -237,7 +240,7 @@ DEFAULT_SETTINGS = {
         "visual_similarity_threshold": 0.85,
         "cooldown_penalty": 0.4,
     },
-    "whisper": {"task": "translate", "language": "auto"},
+    "whisper": {"task": "transcribe", "language": "auto"},
     "query": {"top_n_tokens": 6},
     "vision": {"max_frames": 12, "base_frames": 6},
     "resolve": {"timeline_name_prefix": "VideoForge_"},
@@ -255,6 +258,9 @@ class VideoForgePanel(QWidget):
         logging.getLogger("VideoForge.ui").info("UI init start (%s)", VERSION)
         self._startup_warning: Optional[str] = None
         self.settings = self._load_settings()
+        whisper_silence_override = Config.get("whisper_silence_enabled")
+        if whisper_silence_override is not None:
+            self.settings["silence"]["enable_removal"] = bool(whisper_silence_override)
         self.bridge = ResolveBridge(self.settings)
         self.saved_broll_dir = Config.get("broll_dir")
         self.project_db: Optional[str] = None
@@ -266,6 +272,7 @@ class VideoForgePanel(QWidget):
         self.status_signal.connect(self._set_status)
         self.progress_signal.connect(self._set_progress_value)
         self._init_ui()
+        self._start_resolve_watchdog()
         if self._startup_warning:
             self._set_status(self._startup_warning)
         self._restore_library_path()
@@ -275,7 +282,7 @@ class VideoForgePanel(QWidget):
         """Initialize the modernized UI."""
         self.setStyleSheet(STYLESHEET)
         self.setWindowTitle("VideoForge - Auto B-roll")
-        self.setMinimumWidth(380)
+        self.setMinimumWidth(520)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -513,6 +520,25 @@ class VideoForgePanel(QWidget):
         self.language_combo.currentTextChanged.connect(self._on_language_changed)
         card_layout.addWidget(self.language_combo)
 
+        card_layout.addWidget(QLabel("Whisper Task"))
+        self.task_combo = QComboBox()
+        self.task_combo.addItems(["transcribe", "translate"])
+        current_task = self.settings.get("whisper", {}).get("task", "transcribe")
+        if current_task in {"transcribe", "translate"}:
+            self.task_combo.setCurrentText(current_task)
+        else:
+            self.task_combo.setCurrentText("transcribe")
+        self.task_combo.currentTextChanged.connect(self._on_task_changed)
+        card_layout.addWidget(self.task_combo)
+
+        self.transcript_chars_label = QLabel("Transcript max chars per line")
+        card_layout.addWidget(self.transcript_chars_label)
+        self.transcript_chars_edit = QLineEdit()
+        self.transcript_chars_edit.setFixedWidth(80)
+        self.transcript_chars_edit.setText(str(Config.get("subtitle_max_chars", 42)))
+        self.transcript_chars_edit.textChanged.connect(self._on_transcript_chars_changed)
+        card_layout.addWidget(self.transcript_chars_edit)
+
         srt_row = QHBoxLayout()
         srt_row.setSpacing(6)
         self.srt_path_edit = QLineEdit()
@@ -524,6 +550,25 @@ class VideoForgePanel(QWidget):
         srt_row.addWidget(self.srt_path_edit)
         srt_row.addWidget(self.srt_browse_btn)
         card_layout.addLayout(srt_row)
+
+        card_layout.addWidget(QLabel("Silence Removal"))
+        self.whisper_silence_checkbox = QCheckBox("Remove silence after transcription")
+        self.whisper_silence_checkbox.setChecked(
+            bool(self.settings["silence"].get("enable_removal", False))
+        )
+        self.whisper_silence_checkbox.stateChanged.connect(self._on_whisper_silence_toggled)
+        card_layout.addWidget(self.whisper_silence_checkbox)
+
+        cleanup_row = QHBoxLayout()
+        cleanup_row.addWidget(QLabel("Project Cleanup"))
+        cleanup_row.addStretch()
+        self.cleanup_btn = QPushButton("Clean Old Projects")
+        self.cleanup_btn.setCursor(Qt.PointingHandCursor)
+        self.cleanup_btn.clicked.connect(self._on_cleanup_projects)
+        cleanup_row.addWidget(self.cleanup_btn)
+        card_layout.addLayout(cleanup_row)
+
+        self._update_transcript_option_visibility(self.engine_combo.currentText())
 
         card_layout.addWidget(QLabel("Hybrid Weights"))
         vector_weight = float(self.settings["broll"]["hybrid_weights"]["vector"])
@@ -779,8 +824,29 @@ class VideoForgePanel(QWidget):
     def _on_language_changed(self, value: str) -> None:
         self.settings.setdefault("whisper", {})["language"] = value
 
+    def _on_task_changed(self, value: str) -> None:
+        self.settings.setdefault("whisper", {})["task"] = value
+
+    def _on_transcript_chars_changed(self, value: str) -> None:
+        try:
+            Config.set("subtitle_max_chars", int(str(value).strip()))
+        except Exception:
+            return
+
     def _on_engine_changed(self, value: str) -> None:
         Config.set("transcription_engine", value)
+        self._update_transcript_option_visibility(value)
+
+    def _update_transcript_option_visibility(self, engine: str) -> None:
+        engine_key = str(engine).strip().lower()
+        show = engine_key in {"resolve ai", "resolve_ai", "resolve"}
+        self.transcript_chars_label.setVisible(show)
+        self.transcript_chars_edit.setVisible(show)
+
+    def _on_whisper_silence_toggled(self, state: int) -> None:
+        enabled = state == Qt.Checked
+        self.settings["silence"]["enable_removal"] = enabled
+        Config.set("whisper_silence_enabled", enabled)
 
     # --- Event Handlers ---
 
@@ -809,10 +875,15 @@ class VideoForgePanel(QWidget):
         if not video_path:
             self._set_status("Error: Clip has no file path.")
             return
+        clip_range = self.bridge.resolve_api.get_item_range_seconds(clip)
+        source_range = self.bridge.resolve_api.get_clip_source_range_seconds(clip)
 
-        engine = self.engine_combo.currentText() if hasattr(self, "engine_combo") else "Whisper"
+        engine_raw = self.engine_combo.currentText() if hasattr(self, "engine_combo") else "Whisper"
+        engine = engine_raw.strip()
+        logging.getLogger("VideoForge.ui").info("Transcription engine selected: %s", engine)
         Config.set("transcription_engine", engine)
-        if engine == "Resolve AI":
+        engine_key = engine.lower()
+        if engine_key in {"resolve ai", "resolve_ai", "resolve"}:
             language = self.language_combo.currentText() if hasattr(self, "language_combo") else "auto"
             self._set_busy(True)
             self.progress.setRange(0, 100)
@@ -821,7 +892,11 @@ class VideoForgePanel(QWidget):
             try:
                 self._set_progress_value(55)
                 self._set_status("Transcribing (Resolve AI)... (2/4)")
-                result = self.bridge.analyze_resolve_ai(video_path=video_path, language=language)
+                result = self.bridge.analyze_resolve_ai(
+                    video_path=video_path,
+                    language=language,
+                    clip_range=clip_range,
+                )
                 self.project_db = result.get("project_db")
                 self.main_video_path = video_path
                 self.analyze_status.setText("Status: Analyzed")
@@ -844,7 +919,7 @@ class VideoForgePanel(QWidget):
             self._update_status_safe("Preparing... (1/4)")
             srt_path = self.srt_path_edit.text().strip() if self.srt_path_edit else ""
             srt_path = srt_path or None
-            whisper_task = self.settings.get("whisper", {}).get("task", "translate")
+            whisper_task = self.settings.get("whisper", {}).get("task", "transcribe")
             whisper_language = self.settings.get("whisper", {}).get("language", "auto")
 
             logger.info("[2/4] Starting Whisper transcription")
@@ -862,6 +937,7 @@ class VideoForgePanel(QWidget):
                         whisper_task=whisper_task,
                         whisper_language=whisper_language,
                         align_srt=srt_path,
+                        clip_range=source_range,
                     )
                 except Exception as exc:
                     error_container[0] = exc
@@ -1105,6 +1181,30 @@ class VideoForgePanel(QWidget):
         self._set_status("Generating ComfyUI sidecars...")
         self._run_worker(_generate, on_done=_done)
 
+    def _on_cleanup_projects(self) -> None:
+        projects_dir = (
+            self._resolve_repo_root() / "VideoForge" / "data" / "projects"
+        )
+        keep_latest = int(Config.get("cleanup_keep_latest", 5))
+        min_age_days = int(Config.get("cleanup_min_age_days", 14))
+
+        def _cleanup():
+            return cleanup_project_files(
+                projects_dir,
+                self.project_db,
+                keep_latest=keep_latest,
+                min_age_days=min_age_days,
+            )
+
+        def _done(result):
+            self._set_status(
+                f"Cleanup complete: removed {result.removed}, kept {result.kept}, "
+                f"skipped {result.skipped_recent}."
+            )
+
+        self._set_status("Cleaning old projects...")
+        self._run_worker(_cleanup, on_done=_done)
+
     def _update_last_log(self) -> None:
         log_path = self._get_log_path()
         if not log_path or not log_path.exists():
@@ -1120,6 +1220,21 @@ class VideoForgePanel(QWidget):
             else:
                 message = last_line
             self.last_log_label.setText(f"Last log: {message[:120]}")
+        except Exception:
+            return
+
+    def _start_resolve_watchdog(self) -> None:
+        self._resolve_watchdog = QTimer(self)
+        self._resolve_watchdog.setInterval(3000)
+        self._resolve_watchdog.timeout.connect(self._check_resolve_alive)
+        self._resolve_watchdog.start()
+
+    def _check_resolve_alive(self) -> None:
+        try:
+            if not self.bridge.resolve_api.is_available():
+                logging.getLogger("VideoForge.ui").info("Resolve API unavailable; closing panel.")
+                self.close()
+                QApplication.quit()
         except Exception:
             return
 
