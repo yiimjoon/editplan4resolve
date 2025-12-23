@@ -159,3 +159,112 @@ def extract_silence_segments(
         ]
 
     return segments
+
+
+def render_silence_removed(
+    video_path: str,
+    segments: List[Dict[str, float]],
+    output_path: str,
+    source_range: tuple[float, float] | None = None,
+) -> str:
+    """Render a new media file with only the keep segments concatenated."""
+    if not Path(video_path).exists():
+        raise FileNotFoundError(video_path)
+    if not segments:
+        raise RuntimeError("No keep segments provided for silence removal render.")
+
+    logger = logging.getLogger(__name__)
+    clip_start = None
+    clip_end = None
+    if source_range:
+        clip_start = float(source_range[0])
+        clip_end = float(source_range[1])
+        if clip_end <= clip_start:
+            raise RuntimeError("Invalid source_range for silence render.")
+        logger.info(
+            "Silence render using source range: %.2f - %.2f",
+            clip_start,
+            clip_end,
+        )
+
+    merged = _merge_segments(segments)
+    if clip_start is not None and clip_end is not None:
+        trimmed: List[Dict[str, float]] = []
+        for seg in merged:
+            t0 = max(float(seg["t0"]), clip_start)
+            t1 = min(float(seg["t1"]), clip_end)
+            if t1 > t0:
+                trimmed.append({"t0": t0 - clip_start, "t1": t1 - clip_start})
+        if not trimmed:
+            raise RuntimeError("No keep segments within selected clip range.")
+        merged = trimmed
+    filters = []
+    concat_inputs = []
+    for idx, seg in enumerate(merged):
+        t0 = float(seg["t0"])
+        t1 = float(seg["t1"])
+        filters.append(
+            f"[0:v]trim=start={t0}:end={t1},setpts=PTS-STARTPTS[v{idx}]"
+        )
+        filters.append(
+            f"[0:a]atrim=start={t0}:end={t1},asetpts=PTS-STARTPTS[a{idx}]"
+        )
+        concat_inputs.append(f"[v{idx}][a{idx}]")
+    concat_filter = "".join(concat_inputs) + f"concat=n={len(merged)}:v=1:a=1[v][a]"
+    filter_complex = ";".join(filters + [concat_filter])
+
+    cmd = ["ffmpeg", "-y"]
+    if clip_start is not None and clip_end is not None:
+        cmd += ["-ss", str(clip_start), "-to", str(clip_end)]
+    cmd += [
+        "-i",
+        video_path,
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "[v]",
+        "-map",
+        "[a]",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "18",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        output_path,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Command timed out after 300s: {cmd[0]}") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip())
+    return output_path
+
+
+def _merge_segments(segments: List[Dict[str, float]]) -> List[Dict[str, float]]:
+    merged: List[Dict[str, float]] = []
+    ordered = sorted(segments, key=lambda s: float(s["t0"]))
+    for seg in ordered:
+        t0 = float(seg["t0"])
+        t1 = float(seg["t1"])
+        if not merged:
+            merged.append({"t0": t0, "t1": t1})
+            continue
+        last = merged[-1]
+        if t0 <= float(last["t1"]):
+            last["t1"] = max(float(last["t1"]), t1)
+        else:
+            merged.append({"t0": t0, "t1": t1})
+    return merged

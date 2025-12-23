@@ -15,6 +15,8 @@ from VideoForge.config.config_manager import Config
 from VideoForge.core.segment_store import SegmentStore
 from VideoForge.core.project_cleanup import cleanup_project_files
 from VideoForge.plugin.resolve_bridge import ResolveBridge
+from VideoForge.core.silence_processor import process_silence
+from VideoForge.adapters.audio_adapter import render_silence_removed
 
 try:
     from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer
@@ -30,6 +32,7 @@ try:
         QPushButton,
         QProgressBar,
         QSlider,
+        QTabWidget,
         QVBoxLayout,
         QWidget,
     )
@@ -48,6 +51,7 @@ except Exception:
             QPushButton,
             QProgressBar,
             QSlider,
+            QTabWidget,
             QVBoxLayout,
             QWidget,
         )
@@ -57,20 +61,21 @@ except Exception:
 
 # --- Color Palette (DaVinci Resolve Style) ---
 COLORS = {
-    "bg_window": "#1c1c1c",
-    "bg_card": "#2a2a2a",
+    "bg_window": "#252525",
+    "bg_card": "#2e2e2e",
     "text_main": "#ececec",
     "text_dim": "#9e9e9e",
     "accent": "#da8a35",
     "accent_hover": "#e69b4e",
     "button_bg": "#3e3e3e",
     "button_hover": "#4e4e4e",
-    "border": "#121212",
+    "border": "#1a1a1a",
+    "highlight": "#3a3a3a",
     "success": "#4caf50",
     "error": "#f44336",
 }
 
-VERSION = "v1.5.3"
+VERSION = "v1.5.8"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -282,28 +287,46 @@ class VideoForgePanel(QWidget):
         """Initialize the modernized UI."""
         self.setStyleSheet(STYLESHEET)
         self.setWindowTitle("VideoForge - Auto B-roll")
-        self.setMinimumWidth(520)
+        self.resize(600, 450)
+        self.setMinimumSize(520, 400)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
+        layout.setContentsMargins(12, 12, 12, 12)
 
-        # --- Header ---
+        # --- Header (Always Visible) ---
         self._setup_header(layout)
 
-        # --- Step 1: Analyze ---
-        self._setup_step1_analyze(layout)
+        # --- Tabs ---
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
 
-        # --- Step 2: Library ---
-        self._setup_step2_library(layout)
+        # Tab 1: Analyze
+        analyze_tab = QWidget()
+        analyze_layout = QVBoxLayout(analyze_tab)
+        analyze_layout.setContentsMargins(4, 8, 4, 4)
+        self._setup_step1_analyze(analyze_layout)
+        self._setup_step2_library(analyze_layout)
+        analyze_layout.addStretch()
+        self.tabs.addTab(analyze_tab, "📝 Analyze")
 
-        # --- Step 3: Match & Apply ---
-        self._setup_step3_match(layout)
+        # Tab 2: Match
+        match_tab = QWidget()
+        match_layout = QVBoxLayout(match_tab)
+        match_layout.setContentsMargins(4, 8, 4, 4)
+        self._setup_step3_match(match_layout)
+        match_layout.addStretch()
+        self.tabs.addTab(match_tab, "🎬 Match")
 
-        # --- Step 4: Advanced ---
-        self._setup_step4_advanced(layout)
+        # Tab 3: Settings
+        settings_tab = QWidget()
+        settings_layout = QVBoxLayout(settings_tab)
+        settings_layout.setContentsMargins(4, 8, 4, 4)
+        self._setup_step4_advanced(settings_layout)
+        settings_layout.addStretch()
+        self.tabs.addTab(settings_tab, "⚙️ Settings")
 
-        # --- Footer ---
+        # --- Footer (Always Visible) ---
         self._setup_footer(layout)
 
     def _setup_header(self, parent_layout: QVBoxLayout) -> None:
@@ -558,6 +581,47 @@ class VideoForgePanel(QWidget):
         )
         self.whisper_silence_checkbox.stateChanged.connect(self._on_whisper_silence_toggled)
         card_layout.addWidget(self.whisper_silence_checkbox)
+
+        self.silence_dry_run_checkbox = QCheckBox("Dry run (log only, no timeline changes)")
+        self.silence_dry_run_checkbox.setChecked(True)
+        card_layout.addWidget(self.silence_dry_run_checkbox)
+
+        self.silence_detect_btn = QPushButton("Detect Silence (log segments)")
+        self.silence_detect_btn.setCursor(Qt.PointingHandCursor)
+        self.silence_detect_btn.clicked.connect(self._on_detect_silence_clicked)
+        card_layout.addWidget(self.silence_detect_btn)
+
+        self.silence_apply_btn = QPushButton("Apply Silence Cuts to Timeline (debug)")
+        self.silence_apply_btn.setCursor(Qt.PointingHandCursor)
+        self.silence_apply_btn.clicked.connect(self._on_apply_silence_to_timeline_clicked)
+        card_layout.addWidget(self.silence_apply_btn)
+
+        self.silence_export_btn = QPushButton("Render Silence-Removed File (ffmpeg)")
+        self.silence_export_btn.setCursor(Qt.PointingHandCursor)
+        self.silence_export_btn.clicked.connect(self._on_render_silence_removed_clicked)
+        card_layout.addWidget(self.silence_export_btn)
+
+        card_layout.addWidget(QLabel("Rendered Output Action"))
+        self.silence_action_combo = QComboBox()
+        self.silence_action_combo.addItems(
+            [
+                "Manual (Media Pool only)",
+                "Insert Above Track (keep original)",
+            ]
+        )
+        saved_action = Config.get("silence_action", "Insert Above Track (keep original)")
+        if saved_action in {
+            "Manual (Media Pool only)",
+            "Insert Above Track (keep original)",
+        }:
+            self.silence_action_combo.setCurrentText(saved_action)
+        self.silence_action_combo.currentTextChanged.connect(self._on_silence_action_changed)
+        card_layout.addWidget(self.silence_action_combo)
+
+        self.silence_replace_btn = QPushButton("Insert/Replace Using Rendered File (debug)")
+        self.silence_replace_btn.setCursor(Qt.PointingHandCursor)
+        self.silence_replace_btn.clicked.connect(self._on_replace_with_rendered_clicked)
+        card_layout.addWidget(self.silence_replace_btn)
 
         cleanup_row = QHBoxLayout()
         cleanup_row.addWidget(QLabel("Project Cleanup"))
@@ -847,6 +911,160 @@ class VideoForgePanel(QWidget):
         enabled = state == Qt.Checked
         self.settings["silence"]["enable_removal"] = enabled
         Config.set("whisper_silence_enabled", enabled)
+
+    def _on_detect_silence_clicked(self) -> None:
+        clip = self.bridge.resolve_api.get_primary_clip()
+        if not clip:
+            self._set_status("Select a clip first.")
+            return
+        video_path = self.bridge._get_clip_path(clip)
+        if not video_path:
+            self._set_status("Selected clip has no file path.")
+            return
+        self._set_status("Detecting silence... (ffmpeg)")
+
+        def _detect():
+            segments = process_silence(
+                video_path=video_path,
+                threshold_db=self.settings["silence"]["threshold_db"],
+                min_keep=self.settings["silence"]["min_keep_duration"],
+                buffer_before=self.settings["silence"]["buffer_before"],
+                buffer_after=self.settings["silence"]["buffer_after"],
+            )
+            logging.getLogger("VideoForge.ui").info(
+                "Silence detect: %d keep segments for %s", len(segments), video_path
+            )
+            for idx, seg in enumerate(segments[:20], start=1):
+                logging.getLogger("VideoForge.ui").info(
+                    "Keep %d: %.2f - %.2f", idx, float(seg["t0"]), float(seg["t1"])
+                )
+            if len(segments) > 20:
+                logging.getLogger("VideoForge.ui").info("... (%d more)", len(segments) - 20)
+            return segments
+
+        def _done(result):
+            self._set_status(f"Silence segments: {len(result)} (see log)")
+
+        self._run_worker(_detect, on_done=_done)
+
+    def _on_apply_silence_to_timeline_clicked(self) -> None:
+        clip = self.bridge.resolve_api.get_primary_clip()
+        if not clip:
+            self._set_status("Select a clip first.")
+            return
+        video_path = self.bridge._get_clip_path(clip)
+        if not video_path:
+            self._set_status("Selected clip has no file path.")
+            return
+        dry_run = self.silence_dry_run_checkbox.isChecked()
+        self._set_status("Applying silence cuts... (debug)")
+
+        def _apply():
+            segments = process_silence(
+                video_path=video_path,
+                threshold_db=self.settings["silence"]["threshold_db"],
+                min_keep=self.settings["silence"]["min_keep_duration"],
+                buffer_before=self.settings["silence"]["buffer_before"],
+                buffer_after=self.settings["silence"]["buffer_after"],
+            )
+            return self.bridge.resolve_api.debug_apply_silence_cuts(
+                clip,
+                segments,
+                dry_run=dry_run,
+            )
+
+        def _done(result):
+            if result:
+                self._set_status("Silence cut debug complete (see log).")
+            else:
+                self._set_status("Silence cut not supported (see log).")
+
+        self._run_worker(_apply, on_done=_done)
+
+    def _on_render_silence_removed_clicked(self) -> None:
+        clip = self.bridge.resolve_api.get_primary_clip()
+        if not clip:
+            self._set_status("Select a clip first.")
+            return
+        video_path = self.bridge._get_clip_path(clip)
+        if not video_path:
+            self._set_status("Selected clip has no file path.")
+            return
+        source_range = self.bridge.resolve_api.get_clip_source_range_seconds(clip)
+        logging.getLogger("VideoForge.ui").info(
+            "Silence render source range: %s",
+            source_range,
+        )
+        self._set_status("Rendering silence-removed file...")
+
+        def _render():
+            keep_segments = process_silence(
+                video_path=video_path,
+                threshold_db=self.settings["silence"]["threshold_db"],
+                min_keep=self.settings["silence"]["min_keep_duration"],
+                buffer_before=self.settings["silence"]["buffer_before"],
+                buffer_after=self.settings["silence"]["buffer_after"],
+            )
+            output_path = str(Path(video_path).with_suffix("")) + "_silence_removed.mp4"
+            output_path = str(Path(output_path))
+            render_silence_removed(
+                video_path=video_path,
+                segments=keep_segments,
+                output_path=output_path,
+                source_range=source_range,
+            )
+            logging.getLogger("VideoForge.ui").info("Silence render output: %s", output_path)
+            Config.set("last_silence_render", output_path)
+            return output_path
+
+        def _done(result):
+            action = Config.get("silence_action", "Insert Above Track (keep original)")
+            if action == "Manual (Media Pool only)":
+                try:
+                    self.bridge.resolve_api.add_media_to_bin(str(result), "VideoForge Rendered")
+                except Exception:
+                    pass
+            self._set_status(f"Rendered: {Path(result).name}")
+
+        self._run_worker(_render, on_done=_done)
+
+    def _on_replace_with_rendered_clicked(self) -> None:
+        clip = self.bridge.resolve_api.get_primary_clip()
+        if not clip:
+            self._set_status("Select a clip first.")
+            return
+        rendered = Config.get("last_silence_render")
+        if not rendered or not Path(rendered).exists():
+            self._set_status("Render file first.")
+            return
+        action = Config.get("silence_action", "Insert Above Track (keep original)")
+        if action == "Manual (Media Pool only)":
+            self._set_status("Adding rendered clip to Media Pool...")
+        else:
+            self._set_status("Inserting rendered clip above selected track...")
+
+        def _replace():
+            if action == "Manual (Media Pool only)":
+                return self.bridge.resolve_api.add_media_to_bin(rendered, "VideoForge Rendered")
+            return self.bridge.resolve_api.insert_rendered_above_clip(
+                clip,
+                rendered,
+                include_audio=True,
+            )
+
+        def _done(result):
+            if result:
+                if action == "Manual (Media Pool only)":
+                    self._set_status("Rendered clip added to Media Pool (VideoForge Rendered).")
+                else:
+                    self._set_status("Rendered clip inserted above (original preserved).")
+            else:
+                self._set_status("Operation failed. See log.")
+
+        self._run_worker(_replace, on_done=_done)
+
+    def _on_silence_action_changed(self, value: str) -> None:
+        Config.set("silence_action", value)
 
     # --- Event Handlers ---
 
