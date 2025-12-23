@@ -12,37 +12,22 @@ import logging
 from VideoForge.core.segment_store import SegmentStore
 from VideoForge.config.config_manager import Config
 from VideoForge.integrations.resolve_api import ResolveAPI
-
-try:
-    from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import (
-        QFileDialog,
-        QFrame,
-        QHeaderView,
-        QHBoxLayout,
-        QLabel,
-        QLineEdit,
-        QPushButton,
-        QTableWidget,
-        QTableWidgetItem,
-        QVBoxLayout,
-        QWidget,
-    )
-except Exception:
-    from PySide2.QtCore import Qt
-    from PySide2.QtWidgets import (
-        QFileDialog,
-        QFrame,
-        QHeaderView,
-        QHBoxLayout,
-        QLabel,
-        QLineEdit,
-        QPushButton,
-        QTableWidget,
-        QTableWidgetItem,
-        QVBoxLayout,
-        QWidget,
-    )
+from VideoForge.core.transcript_utils import split_sentence, wrap_text
+from VideoForge.ai.llm_hooks import is_llm_enabled, suggest_reflow_lines
+from VideoForge.ui.qt_compat import (
+    QFileDialog,
+    QFrame,
+    QHeaderView,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+)
 
 COLORS = {
     "bg_window": "#252525",
@@ -210,7 +195,7 @@ class TranscriptEditorPanel(QWidget):
         options_row.addWidget(self.gap_frames_edit)
 
         options_row.addSpacing(20)
-        self.split_btn = QPushButton("✂️ Split Long Lines")
+        self.split_btn = QPushButton("?? Split Long Lines")
         self.split_btn.setCursor(Qt.PointingHandCursor)
         self.split_btn.setToolTip("Automatically split segments that exceed max chars")
         self.split_btn.clicked.connect(self._on_split_clicked)
@@ -228,7 +213,14 @@ class TranscriptEditorPanel(QWidget):
         self.merge_btn.clicked.connect(self._on_merge_clicked)
         options_row.addWidget(self.merge_btn)
 
-        options_row.addStretch()
+        self.ai_reflow_btn = QPushButton("AI Reflow (Draft)")
+        self.ai_reflow_btn.setCursor(Qt.PointingHandCursor)
+        self.ai_reflow_btn.setToolTip("Use external LLM to reflow lines (requires provider)")
+        self.ai_reflow_btn.setEnabled(is_llm_enabled())
+        self.ai_reflow_btn.clicked.connect(self._on_ai_reflow_clicked)
+        options_row.addWidget(self.ai_reflow_btn)
+
+options_row.addStretch()
         layout.addLayout(options_row)
 
         self.table = QTableWidget()
@@ -253,6 +245,10 @@ class TranscriptEditorPanel(QWidget):
         self.source_label.setText(f"Source: {model}")
         try:
             self.max_chars_edit.setText(str(Config.get("subtitle_max_chars", 42)))
+        except Exception:
+            pass
+        try:
+            self.ai_reflow_btn.setEnabled(is_llm_enabled())
         except Exception:
             pass
 
@@ -287,41 +283,9 @@ class TranscriptEditorPanel(QWidget):
                 continue
 
             changed = True
-            # Use existing wrap logic but discard max_lines for splitting
-            chunks = self._wrap_text(text, max_chars, 0)
-            if not chunks:
+            created = split_sentence(s, max_chars, gap_sec)
+            if not created or created == [s]:
                 continue
-
-            t0, t1 = float(s.get("t0", 0.0)), float(s.get("t1", 0.0))
-            duration = t1 - t0
-            weights = [max(1, len(c)) for c in chunks]
-            total = float(sum(weights))
-            if duration <= 0.0 or total <= 0.0:
-                continue
-
-            gap_total = gap_sec * (len(chunks) - 1)
-            if gap_total >= duration:
-                gap_sec = 0.0
-                gap_total = 0.0
-            available = max(0.0, duration - gap_total)
-            curr_t0 = t0
-            created: List[dict] = []
-            for idx, chunk in enumerate(chunks):
-                if idx == len(chunks) - 1:
-                    curr_t1 = t1
-                else:
-                    ratio = float(weights[idx]) / total
-                    curr_t1 = curr_t0 + (available * ratio)
-                new_seg = {
-                    "segment_id": s.get("segment_id"),
-                    "t0": float(curr_t0),
-                    "t1": float(curr_t1),
-                    "text": chunk,
-                    "confidence": s.get("confidence"),
-                    "metadata": {**(s.get("metadata") or {}), "split_from": s.get("id")},
-                }
-                created.append(new_seg)
-                curr_t0 = curr_t1 + gap_sec
 
             if s.get("id") is None:
                 continue
@@ -390,6 +354,30 @@ class TranscriptEditorPanel(QWidget):
         self._history.append(deepcopy(self.sentences))
         self.stats_label.setText(f"Merged {len(selected_rows)} rows.")
 
+    def _on_ai_reflow_clicked(self) -> None:
+        if not is_llm_enabled():
+            self.stats_label.setText("LLM provider not configured.")
+            return
+        max_chars = self._parse_int(self.max_chars_edit.text(), 42)
+        try:
+            reflowed = suggest_reflow_lines(self.sentences, max_chars)
+        except NotImplementedError as exc:
+            self.stats_label.setText(str(exc))
+            return
+        except Exception as exc:
+            self.stats_label.setText(f"AI reflow failed: {exc}")
+            return
+
+        if not reflowed:
+            self.stats_label.setText("AI reflow produced no changes.")
+            return
+        self._push_history("ai_reflow")
+        self.store.replace_all_sentences(reflowed)
+        self.sentences = reflowed
+        self._render_table()
+        self._history.append(deepcopy(self.sentences))
+        self.stats_label.setText("AI reflow applied.")
+
     def _export_to_resolve(self) -> None:
         if not self.sentences:
             self.logger.info("Export skipped: no sentences to export.")
@@ -431,7 +419,7 @@ class TranscriptEditorPanel(QWidget):
             t0 = self._format_srt_time(float(sentence.get("t0", 0.0)))
             t1 = self._format_srt_time(float(sentence.get("t1", 0.0)))
             text = str(sentence.get("text", "")).strip()
-            chunks = self._wrap_text(text, max_chars, 0)
+            chunks = wrap_text(text, max_chars, 0)
             if not chunks:
                 continue
             if len(chunks) == 1:
@@ -482,7 +470,7 @@ class TranscriptEditorPanel(QWidget):
             t0 = float(sentence.get("t0", 0.0))
             t1 = float(sentence.get("t1", 0.0))
             text = str(sentence.get("text", ""))
-            chunks = self._wrap_text(text, max_chars, max_lines)
+            chunks = wrap_text(text, max_chars, max_lines)
             if not chunks:
                 continue
             if len(chunks) == 1:
@@ -535,140 +523,6 @@ class TranscriptEditorPanel(QWidget):
             return
         self.logger.info("History snapshot saved (%s).", reason)
         self._history.append(deepcopy(self.sentences))
-
-    @staticmethod
-    def _wrap_text(text: str, max_chars: int, max_lines: int) -> List[str]:
-        words = text.replace("\n", " ").split()
-        if not words:
-            return []
-        lines: List[str] = []
-        current = ""
-        for word in words:
-            if not current:
-                current = word
-                continue
-            if len(current) + 1 + len(word) <= max_chars:
-                current = f"{current} {word}"
-            else:
-                lines.append(current)
-                current = word
-        if current:
-            lines.append(current)
-        if max_lines > 0:
-            return TranscriptEditorPanel._fix_korean_line_breaks(lines, max_chars)
-        return TranscriptEditorPanel._fix_korean_line_breaks(lines, max_chars)
-
-    @staticmethod
-    def _fix_korean_line_breaks(lines: List[str], max_chars: int) -> List[str]:
-        """
-        Heuristics to avoid awkward Korean splits like:
-          "거기 걸려버린" / "거예요"
-        This does not require any LLM and only rearranges word boundaries.
-        """
-
-        def normalize_token(token: str) -> str:
-            return token.strip().strip(".,!?…\"'”“’‘()[]{}")
-
-        suffix_words = {
-            "거예요",
-            "거에요",
-            "거죠",
-            "거야",
-            "거지",
-            "거",
-            "요",
-            "죠",
-            "네",
-            "예",
-            "음",
-        }
-
-        # Common Korean particles/endings that should not start a new line alone.
-        suffix_prefixes = (
-            "은",
-            "는",
-            "이",
-            "가",
-            "을",
-            "를",
-            "에",
-            "에서",
-            "으로",
-            "로",
-            "와",
-            "과",
-            "도",
-            "만",
-            "까지",
-            "부터",
-            "처럼",
-            "보다",
-            "조차",
-            "마저",
-            "라도",
-            "이나",
-            "든지",
-            "랑",
-            "하고",
-            "께",
-            "에게",
-            "한테",
-            "입니다",
-            "습니다",
-            "했다",
-            "했다면",
-            "한다",
-            "한다면",
-            "된다",
-            "돼요",
-        )
-
-        fixed = list(lines)
-        changed = True
-        while changed:
-            changed = False
-            for i in range(1, len(fixed)):
-                prev = fixed[i - 1].strip()
-                curr = fixed[i].strip()
-                if not prev or not curr:
-                    continue
-
-                curr_words = curr.split()
-                prev_words = prev.split()
-                if not curr_words or not prev_words:
-                    continue
-
-                first_norm = normalize_token(curr_words[0])
-                curr_is_suffixy = False
-                if len(curr_words) == 1:
-                    curr_is_suffixy = first_norm in suffix_words or first_norm.startswith(suffix_prefixes)
-                else:
-                    curr_is_suffixy = first_norm in suffix_words
-
-                if not curr_is_suffixy:
-                    continue
-
-                # If we can merge the entire current line into previous, do it.
-                merged = f"{prev} {curr}".strip()
-                if len(merged) <= max_chars:
-                    fixed[i - 1] = merged
-                    fixed.pop(i)
-                    changed = True
-                    break
-
-                # Otherwise, move one word from previous to current to avoid suffix-only lines.
-                if len(prev_words) >= 2:
-                    candidate_word = prev_words[-1]
-                    new_prev = " ".join(prev_words[:-1]).strip()
-                    new_curr = f"{candidate_word} {curr}".strip()
-                    if new_prev and len(new_prev) <= max_chars and len(new_curr) <= max_chars:
-                        fixed[i - 1] = new_prev
-                        fixed[i] = new_curr
-                        changed = True
-                        break
-
-        # Drop any empty lines that might have been created.
-        return [line for line in fixed if line.strip()]
 
     @staticmethod
     def _format_srt_time(seconds: float) -> str:

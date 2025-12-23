@@ -17,46 +17,32 @@ from VideoForge.core.project_cleanup import cleanup_project_files
 from VideoForge.plugin.resolve_bridge import ResolveBridge
 from VideoForge.core.silence_processor import process_silence
 from VideoForge.adapters.audio_adapter import render_silence_removed
-
-try:
-    from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer
-    from PySide6.QtWidgets import (
-        QApplication,
-        QCheckBox,
-        QComboBox,
-        QFileDialog,
-        QFrame,
-        QHBoxLayout,
-        QLabel,
-        QLineEdit,
-        QPushButton,
-        QProgressBar,
-        QSlider,
-        QTabWidget,
-        QVBoxLayout,
-        QWidget,
-    )
-except Exception:
-    try:
-        from PySide2.QtCore import QObject, QThread, Signal, Qt, QTimer
-        from PySide2.QtWidgets import (
-            QApplication,
-            QCheckBox,
-            QComboBox,
-            QFileDialog,
-            QFrame,
-            QHBoxLayout,
-            QLabel,
-            QLineEdit,
-            QPushButton,
-            QProgressBar,
-            QSlider,
-            QTabWidget,
-            QVBoxLayout,
-            QWidget,
-        )
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError("PySide6 or PySide2 is required for the VideoForge panel.") from exc
+from VideoForge.errors import VideoForgeError
+from VideoForge.ui.qt_compat import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QObject,
+    QProgressBar,
+    QPushButton,
+    QSlider,
+    QTabWidget,
+    QThread,
+    Qt,
+    QTimer,
+    QVBoxLayout,
+    QWidget,
+    Signal,
+)
+from VideoForge.ui.sections.analyze_section import build_analyze_section
+from VideoForge.ui.sections.library_section import build_library_section
+from VideoForge.ui.sections.match_section import build_match_section
+from VideoForge.ui.sections.settings_section import build_settings_section
 
 
 # --- Color Palette (DaVinci Resolve Style) ---
@@ -262,6 +248,7 @@ class VideoForgePanel(QWidget):
         super().__init__()
         logging.getLogger("VideoForge.ui").info("UI init start (%s)", VERSION)
         self._startup_warning: Optional[str] = None
+        self.colors = COLORS
         self.settings = self._load_settings()
         whisper_silence_override = Config.get("whisper_silence_enabled")
         if whisper_silence_override is not None:
@@ -305,8 +292,8 @@ class VideoForgePanel(QWidget):
         analyze_tab = QWidget()
         analyze_layout = QVBoxLayout(analyze_tab)
         analyze_layout.setContentsMargins(4, 8, 4, 4)
-        self._setup_step1_analyze(analyze_layout)
-        self._setup_step2_library(analyze_layout)
+        build_analyze_section(self, analyze_layout)
+        build_library_section(self, analyze_layout)
         analyze_layout.addStretch()
         self.tabs.addTab(analyze_tab, "📝 Analyze")
 
@@ -314,7 +301,7 @@ class VideoForgePanel(QWidget):
         match_tab = QWidget()
         match_layout = QVBoxLayout(match_tab)
         match_layout.setContentsMargins(4, 8, 4, 4)
-        self._setup_step3_match(match_layout)
+        build_match_section(self, match_layout)
         match_layout.addStretch()
         self.tabs.addTab(match_tab, "🎬 Match")
 
@@ -322,7 +309,7 @@ class VideoForgePanel(QWidget):
         settings_tab = QWidget()
         settings_layout = QVBoxLayout(settings_tab)
         settings_layout.setContentsMargins(4, 8, 4, 4)
-        self._setup_step4_advanced(settings_layout)
+        build_settings_section(self, settings_layout)
         settings_layout.addStretch()
         self.tabs.addTab(settings_tab, "⚙️ Settings")
 
@@ -365,338 +352,6 @@ class VideoForgePanel(QWidget):
         line.setFrameShape(QFrame.HLine)
         line.setFixedHeight(1)
         parent_layout.addWidget(line)
-
-    def _setup_step1_analyze(self, parent_layout: QVBoxLayout) -> None:
-        """Step 1: Main Clip Analysis Section."""
-        card = self._create_card()
-        card_layout = QVBoxLayout(card)
-        card_layout.setSpacing(8)
-
-        # Title
-        card_layout.addWidget(self._create_section_title("1. Analyze Main Clip"))
-
-        # Description
-        desc = QLabel("Select a clip in the timeline, then analyze its content.")
-        desc.setObjectName("Description")
-        desc.setWordWrap(True)
-        card_layout.addWidget(desc)
-
-        # Button
-        self.analyze_btn = QPushButton("Analyze Selected Clip")
-        self.analyze_btn.setObjectName("PrimaryButton")
-        self.analyze_btn.setCursor(Qt.PointingHandCursor)
-        self.analyze_btn.setFixedHeight(36)
-        self.analyze_btn.clicked.connect(self._on_analyze_clicked)
-        card_layout.addWidget(self.analyze_btn)
-
-        # Status
-        self.analyze_status = QLabel("Status: Not analyzed")
-        self.analyze_status.setObjectName("StatusLabel")
-        card_layout.addWidget(self.analyze_status)
-
-        self.edit_transcript_btn = QPushButton("Edit Transcript")
-        self.edit_transcript_btn.setCursor(Qt.PointingHandCursor)
-        self.edit_transcript_btn.setEnabled(False)
-        self.edit_transcript_btn.clicked.connect(self._on_edit_transcript)
-        card_layout.addWidget(self.edit_transcript_btn)
-
-        log_row = QHBoxLayout()
-        log_row.setSpacing(6)
-        self.log_path_label = QLabel("Log: VideoForge.log")
-        log_path = self._get_log_path()
-        if log_path:
-            self.log_path_label.setToolTip(str(log_path))
-        self.log_path_label.setStyleSheet(
-            f"color: {COLORS['text_dim']}; font-size: 11px; background: transparent;"
-        )
-        self.open_log_btn = QPushButton("Open Log File")
-        self.open_log_btn.setCursor(Qt.PointingHandCursor)
-        self.open_log_btn.clicked.connect(self._on_open_log)
-        log_row.addWidget(self.log_path_label)
-        log_row.addStretch()
-        log_row.addWidget(self.open_log_btn)
-        card_layout.addLayout(log_row)
-
-        parent_layout.addWidget(card)
-
-    def _setup_step2_library(self, parent_layout: QVBoxLayout) -> None:
-        """Step 2: B-roll Library Section."""
-        card = self._create_card()
-        card_layout = QVBoxLayout(card)
-        card_layout.setSpacing(8)
-
-        # Title
-        card_layout.addWidget(self._create_section_title("2. B-roll Library"))
-
-        # Path input row
-        path_layout = QHBoxLayout()
-        path_layout.setSpacing(6)
-
-        self.library_path_edit = QLineEdit()
-        self.library_path_edit.setPlaceholderText("Library DB path...")
-
-        self.browse_btn = QPushButton("Browse")
-        self.browse_btn.setFixedWidth(36)
-        self.browse_btn.setToolTip("Browse for library DB file")
-        self.browse_btn.setCursor(Qt.PointingHandCursor)
-        self.browse_btn.clicked.connect(self._on_browse_library)
-
-        path_layout.addWidget(self.library_path_edit)
-        path_layout.addWidget(self.browse_btn)
-        card_layout.addLayout(path_layout)
-
-        # Scan button
-        self.scan_library_btn = QPushButton("Scan Library Folder")
-        self.scan_library_btn.setCursor(Qt.PointingHandCursor)
-        self.scan_library_btn.clicked.connect(self._on_scan_library)
-        card_layout.addWidget(self.scan_library_btn)
-
-        # Status
-        self.library_status = QLabel("Status: Library not scanned")
-        self.library_status.setObjectName("StatusLabel")
-        card_layout.addWidget(self.library_status)
-
-        parent_layout.addWidget(card)
-
-    def _setup_step3_match(self, parent_layout: QVBoxLayout) -> None:
-        """Step 3: Match & Apply Section."""
-        card = self._create_card()
-        card_layout = QVBoxLayout(card)
-        card_layout.setSpacing(8)
-
-        # Title
-        card_layout.addWidget(self._create_section_title("3. Match & Apply"))
-
-        # Threshold slider header
-        slider_header = QHBoxLayout()
-        slider_label = QLabel("Matching Threshold")
-        slider_label.setStyleSheet("background: transparent;")
-
-        self.threshold_label = QLabel(
-            f"{int(self.settings['broll']['matching_threshold'] * 100)}%"
-        )
-        self.threshold_label.setStyleSheet(
-            f"color: {COLORS['accent']}; font-weight: bold; background: transparent;"
-        )
-        self.threshold_label.setAlignment(Qt.AlignRight)
-
-        slider_header.addWidget(slider_label)
-        slider_header.addWidget(self.threshold_label)
-        card_layout.addLayout(slider_header)
-
-        # Slider
-        self.threshold_slider = QSlider(Qt.Horizontal)
-        self.threshold_slider.setMinimum(0)
-        self.threshold_slider.setMaximum(100)
-        self.threshold_slider.setValue(
-            int(self.settings["broll"]["matching_threshold"] * 100)
-        )
-        self.threshold_slider.valueChanged.connect(self._on_threshold_changed)
-        card_layout.addWidget(self.threshold_slider)
-
-        card_layout.addSpacing(6)
-
-        # Action buttons
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(8)
-
-        self.match_btn = QPushButton("Match B-roll")
-        self.match_btn.setCursor(Qt.PointingHandCursor)
-        self.match_btn.clicked.connect(self._on_match_clicked)
-
-        self.apply_btn = QPushButton("Apply to Timeline")
-        self.apply_btn.setObjectName("PrimaryButton")
-        self.apply_btn.setCursor(Qt.PointingHandCursor)
-        self.apply_btn.clicked.connect(self._on_apply_clicked)
-
-        button_layout.addWidget(self.match_btn, 1)
-        button_layout.addWidget(self.apply_btn, 2)
-        card_layout.addLayout(button_layout)
-
-        parent_layout.addWidget(card)
-
-    def _setup_step4_advanced(self, parent_layout: QVBoxLayout) -> None:
-        """Step 4: Advanced Matching + Sidecar Tools."""
-        card = self._create_card()
-        card_layout = QVBoxLayout(card)
-        card_layout.setSpacing(8)
-
-        card_layout.addWidget(self._create_section_title("4. Advanced"))
-
-        card_layout.addWidget(QLabel("Transcription Engine"))
-        self.engine_combo = QComboBox()
-        self.engine_combo.addItems(["Resolve AI", "Whisper"])
-        saved_engine = Config.get("transcription_engine", "Resolve AI")
-        if saved_engine in {"Resolve AI", "Whisper"}:
-            self.engine_combo.setCurrentText(saved_engine)
-        self.engine_combo.currentTextChanged.connect(self._on_engine_changed)
-        card_layout.addWidget(self.engine_combo)
-
-        card_layout.addWidget(QLabel("Whisper Language"))
-        self.language_combo = QComboBox()
-        self.language_combo.addItems(["auto", "ko", "en"])
-        current_lang = self.settings.get("whisper", {}).get("language", "auto")
-        if current_lang in {"auto", "ko", "en"}:
-            self.language_combo.setCurrentText(current_lang)
-        else:
-            self.language_combo.setCurrentText("auto")
-        self.language_combo.currentTextChanged.connect(self._on_language_changed)
-        card_layout.addWidget(self.language_combo)
-
-        card_layout.addWidget(QLabel("Whisper Task"))
-        self.task_combo = QComboBox()
-        self.task_combo.addItems(["transcribe", "translate"])
-        current_task = self.settings.get("whisper", {}).get("task", "transcribe")
-        if current_task in {"transcribe", "translate"}:
-            self.task_combo.setCurrentText(current_task)
-        else:
-            self.task_combo.setCurrentText("transcribe")
-        self.task_combo.currentTextChanged.connect(self._on_task_changed)
-        card_layout.addWidget(self.task_combo)
-
-        self.transcript_chars_label = QLabel("Transcript max chars per line")
-        card_layout.addWidget(self.transcript_chars_label)
-        self.transcript_chars_edit = QLineEdit()
-        self.transcript_chars_edit.setFixedWidth(80)
-        self.transcript_chars_edit.setText(str(Config.get("subtitle_max_chars", 42)))
-        self.transcript_chars_edit.textChanged.connect(self._on_transcript_chars_changed)
-        card_layout.addWidget(self.transcript_chars_edit)
-
-        srt_row = QHBoxLayout()
-        srt_row.setSpacing(6)
-        self.srt_path_edit = QLineEdit()
-        self.srt_path_edit.setPlaceholderText("Optional SRT path...")
-        self.srt_browse_btn = QPushButton("Browse")
-        self.srt_browse_btn.setFixedWidth(72)
-        self.srt_browse_btn.setCursor(Qt.PointingHandCursor)
-        self.srt_browse_btn.clicked.connect(self._on_browse_srt)
-        srt_row.addWidget(self.srt_path_edit)
-        srt_row.addWidget(self.srt_browse_btn)
-        card_layout.addLayout(srt_row)
-
-        card_layout.addWidget(QLabel("Silence Removal"))
-        self.whisper_silence_checkbox = QCheckBox("Remove silence after transcription")
-        self.whisper_silence_checkbox.setChecked(
-            bool(self.settings["silence"].get("enable_removal", False))
-        )
-        self.whisper_silence_checkbox.stateChanged.connect(self._on_whisper_silence_toggled)
-        card_layout.addWidget(self.whisper_silence_checkbox)
-
-        self.silence_dry_run_checkbox = QCheckBox("Dry run (log only, no timeline changes)")
-        self.silence_dry_run_checkbox.setChecked(True)
-        card_layout.addWidget(self.silence_dry_run_checkbox)
-
-        self.silence_detect_btn = QPushButton("Detect Silence (log segments)")
-        self.silence_detect_btn.setCursor(Qt.PointingHandCursor)
-        self.silence_detect_btn.clicked.connect(self._on_detect_silence_clicked)
-        card_layout.addWidget(self.silence_detect_btn)
-
-        self.silence_apply_btn = QPushButton("Apply Silence Cuts to Timeline (debug)")
-        self.silence_apply_btn.setCursor(Qt.PointingHandCursor)
-        self.silence_apply_btn.clicked.connect(self._on_apply_silence_to_timeline_clicked)
-        card_layout.addWidget(self.silence_apply_btn)
-
-        self.silence_export_btn = QPushButton("Render Silence-Removed File (ffmpeg)")
-        self.silence_export_btn.setCursor(Qt.PointingHandCursor)
-        self.silence_export_btn.clicked.connect(self._on_render_silence_removed_clicked)
-        card_layout.addWidget(self.silence_export_btn)
-
-        card_layout.addWidget(QLabel("Rendered Output Action"))
-        self.silence_action_combo = QComboBox()
-        self.silence_action_combo.addItems(
-            [
-                "Manual (Media Pool only)",
-                "Insert Above Track (keep original)",
-            ]
-        )
-        saved_action = Config.get("silence_action", "Insert Above Track (keep original)")
-        if saved_action in {
-            "Manual (Media Pool only)",
-            "Insert Above Track (keep original)",
-        }:
-            self.silence_action_combo.setCurrentText(saved_action)
-        self.silence_action_combo.currentTextChanged.connect(self._on_silence_action_changed)
-        card_layout.addWidget(self.silence_action_combo)
-
-        self.silence_replace_btn = QPushButton("Insert/Replace Using Rendered File (debug)")
-        self.silence_replace_btn.setCursor(Qt.PointingHandCursor)
-        self.silence_replace_btn.clicked.connect(self._on_replace_with_rendered_clicked)
-        card_layout.addWidget(self.silence_replace_btn)
-
-        cleanup_row = QHBoxLayout()
-        cleanup_row.addWidget(QLabel("Project Cleanup"))
-        cleanup_row.addStretch()
-        self.cleanup_btn = QPushButton("Clean Old Projects")
-        self.cleanup_btn.setCursor(Qt.PointingHandCursor)
-        self.cleanup_btn.clicked.connect(self._on_cleanup_projects)
-        cleanup_row.addWidget(self.cleanup_btn)
-        card_layout.addLayout(cleanup_row)
-
-        self._update_transcript_option_visibility(self.engine_combo.currentText())
-
-        card_layout.addWidget(QLabel("Hybrid Weights"))
-        vector_weight = float(self.settings["broll"]["hybrid_weights"]["vector"])
-        text_weight = float(self.settings["broll"]["hybrid_weights"]["text"])
-        self.vector_weight_label = QLabel(
-            f"Vector: {vector_weight:.2f} / Text: {text_weight:.2f}"
-        )
-        self.vector_weight_label.setStyleSheet(
-            f"color: {COLORS['text_dim']}; background: transparent;"
-        )
-        card_layout.addWidget(self.vector_weight_label)
-
-        self.vector_weight_slider = QSlider(Qt.Horizontal)
-        self.vector_weight_slider.setMinimum(0)
-        self.vector_weight_slider.setMaximum(100)
-        self.vector_weight_slider.setValue(
-            int(self.settings["broll"]["hybrid_weights"]["vector"] * 100)
-        )
-        self.vector_weight_slider.valueChanged.connect(self._on_vector_weight_changed)
-        card_layout.addWidget(self.vector_weight_slider)
-
-        prior_weight = float(self.settings["broll"]["hybrid_weights"]["prior"])
-        self.prior_weight_label = QLabel(f"Prior Weight: {prior_weight:.2f}")
-        self.prior_weight_label.setStyleSheet(
-            f"color: {COLORS['text_dim']}; background: transparent;"
-        )
-        card_layout.addWidget(self.prior_weight_label)
-
-        self.prior_weight_slider = QSlider(Qt.Horizontal)
-        self.prior_weight_slider.setMinimum(0)
-        self.prior_weight_slider.setMaximum(30)
-        self.prior_weight_slider.setValue(
-            int(self.settings["broll"]["hybrid_weights"]["prior"] * 100)
-        )
-        self.prior_weight_slider.valueChanged.connect(self._on_prior_weight_changed)
-        card_layout.addWidget(self.prior_weight_slider)
-
-        visual_threshold = float(self.settings["broll"]["visual_similarity_threshold"])
-        self.visual_threshold_label = QLabel(f"Visual Filter: {visual_threshold:.2f}")
-        self.visual_threshold_label.setStyleSheet(
-            f"color: {COLORS['text_dim']}; background: transparent;"
-        )
-        card_layout.addWidget(self.visual_threshold_label)
-
-        self.visual_threshold_slider = QSlider(Qt.Horizontal)
-        self.visual_threshold_slider.setMinimum(70)
-        self.visual_threshold_slider.setMaximum(95)
-        self.visual_threshold_slider.setValue(
-            int(self.settings["broll"]["visual_similarity_threshold"] * 100)
-        )
-        self.visual_threshold_slider.valueChanged.connect(self._on_visual_threshold_changed)
-        card_layout.addWidget(self.visual_threshold_slider)
-
-        self.sidecar_btn = QPushButton("Generate Scene Sidecars")
-        self.sidecar_btn.setCursor(Qt.PointingHandCursor)
-        self.sidecar_btn.clicked.connect(self._on_generate_sidecars)
-        card_layout.addWidget(self.sidecar_btn)
-
-        self.comfyui_sidecar_btn = QPushButton("Generate ComfyUI Sidecars")
-        self.comfyui_sidecar_btn.setCursor(Qt.PointingHandCursor)
-        self.comfyui_sidecar_btn.clicked.connect(self._on_generate_comfyui_sidecars)
-        card_layout.addWidget(self.comfyui_sidecar_btn)
-
-        parent_layout.addWidget(card)
 
     def _setup_footer(self, parent_layout: QVBoxLayout) -> None:
         """Footer with progress bar and global status."""
@@ -836,6 +491,10 @@ class VideoForgePanel(QWidget):
     def _on_worker_done(self, thread: QThread, worker: Worker, result, err, on_done) -> None:
         self._set_busy(False)
         if err:
+            if isinstance(err, VideoForgeError):
+                logging.getLogger("VideoForge.ui").error(
+                    "VideoForge error: %s", err, extra=getattr(err, "details", None)
+                )
             self._set_status(f"Error: {err}")
             self.status.setStyleSheet(
                 f"color: {COLORS['error']}; font-size: 11px; background: transparent;"

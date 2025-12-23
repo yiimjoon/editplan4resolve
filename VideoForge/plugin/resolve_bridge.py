@@ -14,6 +14,7 @@ from VideoForge.core.srt_parser import parse_srt
 from VideoForge.core.transcriber import align_sentences_to_srt, transcribe_segments
 from VideoForge.integrations.resolve_api import ResolveAPI
 from VideoForge.plugin.project_manager import ProjectManager
+from VideoForge.errors import AnalysisError, MatchError, TimelineError
 
 
 class ResolveBridge:
@@ -173,7 +174,10 @@ class ResolveBridge:
             self.logger.info("[BRIDGE] Database save complete")
         except Exception as exc:
             self.logger.error("Analysis failed: %s", exc, exc_info=True)
-            raise
+            raise AnalysisError(
+                "Analysis failed",
+                details={"video_path": video_path, "engine": engine, "error": str(exc)},
+            ) from exc
 
         warning = ""
         if any(seg.get("metadata", {}).get("warning") for seg in segments):
@@ -241,7 +245,10 @@ class ResolveBridge:
             return {"project_db": project_db, "warning": ""}
         except Exception as exc:
             self.logger.error("Resolve AI analysis failed: %s", exc, exc_info=True)
-            raise
+            raise AnalysisError(
+                "Resolve AI analysis failed",
+                details={"video_path": video_path, "engine": "resolve_ai", "error": str(exc)},
+            ) from exc
 
     def match_broll(self, project_db_path: str, library_db_path: str) -> Dict[str, str | int]:
         """Match B-roll clips against stored sentences."""
@@ -259,7 +266,10 @@ class ResolveBridge:
             store.save_project_data(matches=matches)
         except Exception as exc:
             self.logger.error("Match failed: %s", exc, exc_info=True)
-            raise
+            raise MatchError(
+                "B-roll matching failed",
+                details={"project_db": project_db_path, "library_db": library_db_path, "error": str(exc)},
+            ) from exc
         warning = ""
         if embedding_adapter.consume_fallback_used():
             warning = "CLIP model unavailable. Using deterministic embeddings."
@@ -273,28 +283,35 @@ class ResolveBridge:
         timeline_data = builder.build(main_video_path)
         self.logger.info("Apply to timeline: %s", main_video_path)
 
-        timeline = self.resolve_api.get_current_timeline()
-        fps = self.resolve_api.get_timeline_fps()
+        try:
+            timeline = self.resolve_api.get_current_timeline()
+            fps = self.resolve_api.get_timeline_fps()
 
-        for track in timeline_data["tracks"]:
-            track_type = "video"
-            track_index = int(track["index"])
-            self.resolve_api.ensure_track(track_type, track_index)
-            for clip_data in track["clips"]:
-                media_item = self.resolve_api.import_media_if_needed(clip_data["file"])
-                if media_item is None:
-                    continue
-                timeline_pos = self._time_to_frames(clip_data["timeline_start"], fps)
-                self.resolve_api.insert_clip_at_position(track_type, track_index, media_item, timeline_pos)
+            for track in timeline_data["tracks"]:
+                track_type = "video"
+                track_index = int(track["index"])
+                self.resolve_api.ensure_track(track_type, track_index)
+                for clip_data in track["clips"]:
+                    media_item = self.resolve_api.import_media_if_needed(clip_data["file"])
+                    if media_item is None:
+                        continue
+                    timeline_pos = self._time_to_frames(clip_data["timeline_start"], fps)
+                    self.resolve_api.insert_clip_at_position(track_type, track_index, media_item, timeline_pos)
 
-                if track["type"] == "video_broll" and not clip_data.get("audio_enabled", False):
-                    items = timeline.GetItemListInTrack(track_type, track_index)
-                    if items:
-                        last_item = items[-1]
-                        try:
-                            last_item.SetProperty("Audio Enabled", False)
-                        except Exception:
-                            pass
+                    if track["type"] == "video_broll" and not clip_data.get("audio_enabled", False):
+                        items = timeline.GetItemListInTrack(track_type, track_index)
+                        if items:
+                            last_item = items[-1]
+                            try:
+                                last_item.SetProperty("Audio Enabled", False)
+                            except Exception:
+                                pass
+        except Exception as exc:
+            self.logger.error("Timeline apply failed: %s", exc, exc_info=True)
+            raise TimelineError(
+                "Apply to timeline failed",
+                details={"video_path": main_video_path, "error": str(exc)},
+            ) from exc
 
     def save_library_path(self, library_path: str) -> None:
         """Persist library path for the current Resolve project."""

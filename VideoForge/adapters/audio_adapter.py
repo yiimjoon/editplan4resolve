@@ -198,9 +198,38 @@ def render_silence_removed(
         if not trimmed:
             raise RuntimeError("No keep segments within selected clip range.")
         merged = trimmed
+    cmd = build_silence_render_command(
+        video_path,
+        merged,
+        output_path,
+        source_range=(clip_start, clip_end) if clip_start is not None else None,
+    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Command timed out after 300s: {cmd[0]}") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip())
+    return output_path
+
+
+def build_silence_render_command(
+    video_path: str,
+    segments: List[Dict[str, float]],
+    output_path: str,
+    source_range: tuple[float, float] | None = None,
+) -> List[str]:
+    """Build ffmpeg command for silence removal render."""
     filters = []
     concat_inputs = []
-    for idx, seg in enumerate(merged):
+    for idx, seg in enumerate(segments):
         t0 = float(seg["t0"])
         t1 = float(seg["t1"])
         filters.append(
@@ -210,12 +239,12 @@ def render_silence_removed(
             f"[0:a]atrim=start={t0}:end={t1},asetpts=PTS-STARTPTS[a{idx}]"
         )
         concat_inputs.append(f"[v{idx}][a{idx}]")
-    concat_filter = "".join(concat_inputs) + f"concat=n={len(merged)}:v=1:a=1[v][a]"
+    concat_filter = "".join(concat_inputs) + f"concat=n={len(segments)}:v=1:a=1[v][a]"
     filter_complex = ";".join(filters + [concat_filter])
 
     cmd = ["ffmpeg", "-y"]
-    if clip_start is not None and clip_end is not None:
-        cmd += ["-ss", str(clip_start), "-to", str(clip_end)]
+    if source_range and source_range[0] is not None and source_range[1] is not None:
+        cmd += ["-ss", str(source_range[0]), "-to", str(source_range[1])]
     cmd += [
         "-i",
         video_path,
@@ -237,20 +266,7 @@ def render_silence_removed(
         "192k",
         output_path,
     ]
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            encoding="utf-8",
-            errors="ignore",
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"Command timed out after 300s: {cmd[0]}") from exc
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip())
-    return output_path
+    return cmd
 
 
 def _merge_segments(segments: List[Dict[str, float]]) -> List[Dict[str, float]]:

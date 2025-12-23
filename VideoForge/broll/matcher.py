@@ -92,6 +92,69 @@ class QueryGenerator:
         )
 
 
+class CooldownManager:
+    def __init__(self, db: LibraryDB, cooldown_sec: float, penalty: float) -> None:
+        self.db = db
+        self.cooldown_sec = cooldown_sec
+        self.penalty = penalty
+
+    def get_recent_ids(self, sentence_t0: float, recent: List[Dict[str, float]]) -> List[str]:
+        return [
+            r["clip_id"]
+            for r in recent
+            if sentence_t0 - float(r["t0"]) <= self.cooldown_sec
+        ]
+
+    def apply_penalty(self, recent_ids: List[str]) -> None:
+        if recent_ids:
+            self.db.set_cooldown(recent_ids, penalty=self.penalty)
+
+
+class VisualSimilarityFilter:
+    def __init__(self, threshold: float) -> None:
+        self.threshold = threshold
+        self.recent_embeddings: List[np.ndarray] = []
+
+    def is_too_similar(self, candidate_emb: np.ndarray | None) -> bool:
+        if candidate_emb is None:
+            return False
+        return _is_visually_similar(candidate_emb, self.recent_embeddings, threshold=self.threshold)
+
+    def remember(self, candidate_emb: np.ndarray | None) -> None:
+        if candidate_emb is not None:
+            self.recent_embeddings.append(candidate_emb)
+
+
+class ScriptIndexSelector:
+    def __init__(self, db: LibraryDB, visual_filter: VisualSimilarityFilter, threshold: float) -> None:
+        self.db = db
+        self.visual_filter = visual_filter
+        self.threshold = threshold
+
+    def select(
+        self,
+        results: List[Dict],
+        recent_ids: List[str],
+        script_index: str,
+    ) -> Dict | None:
+        candidates = []
+        for result in results:
+            if result["clip_id"] in recent_ids or result["score"] < self.threshold:
+                continue
+            clip = self.db.get_clip(result["clip_id"]) or {}
+            if not BrollMatcher._clip_has_script_index(clip, script_index):
+                continue
+            candidate_emb = self.db.get_embedding(result["clip_id"])
+            if self.visual_filter.is_too_similar(candidate_emb):
+                continue
+            self.visual_filter.remember(candidate_emb)
+            candidates.append((result, clip))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0]["score"], reverse=True)
+        return candidates[0][0]
+
+
 class BrollMatcher:
     def __init__(self, db: LibraryDB, settings: Dict[str, Dict[str, float]]) -> None:
         self.db = db
@@ -106,15 +169,17 @@ class BrollMatcher:
         visual_threshold = float(self.settings["broll"].get("visual_similarity_threshold", 0.85))
         cooldown_penalty = float(self.settings["broll"].get("cooldown_penalty", 0.4))
         recent: List[Dict[str, float]] = []
-        recent_embeddings: List[np.ndarray] = []
+        cooldown_manager = CooldownManager(self.db, cooldown, cooldown_penalty)
+        visual_filter = VisualSimilarityFilter(visual_threshold)
+        script_selector = ScriptIndexSelector(self.db, visual_filter, threshold)
 
         for idx, sentence in enumerate(sorted(sentences, key=lambda s: s["t0"]), start=1):
             script_index = self._extract_script_index(sentence, idx)
             query = self.query_generator.generate(sentence["text"])
             embedding = encode_text_clip(query["primary"]).astype(np.float32)
 
-            recent_ids = [r["clip_id"] for r in recent if sentence["t0"] - r["t0"] <= cooldown]
-            self.db.set_cooldown(recent_ids, penalty=cooldown_penalty)
+            recent_ids = cooldown_manager.get_recent_ids(float(sentence["t0"]), recent)
+            cooldown_manager.apply_penalty(recent_ids)
 
             weights = self.settings["broll"].get("hybrid_weights")
             results = self.db.hybrid_search(
@@ -122,24 +187,14 @@ class BrollMatcher:
             )
             selected = None
             if script_index:
-                selected = self._select_by_script_index(
-                    results,
-                    recent_ids,
-                    threshold,
-                    script_index,
-                    recent_embeddings,
-                    visual_threshold,
-                )
+                selected = script_selector.select(results, recent_ids, script_index)
             for result in results:
                 if result["clip_id"] not in recent_ids and result["score"] >= threshold:
                     candidate_emb = self.db.get_embedding(result["clip_id"])
-                    if candidate_emb is not None and _is_visually_similar(
-                        candidate_emb, recent_embeddings, threshold=visual_threshold
-                    ):
+                    if visual_filter.is_too_similar(candidate_emb):
                         continue
                     selected = result
-                    if candidate_emb is not None:
-                        recent_embeddings.append(candidate_emb)
+                    visual_filter.remember(candidate_emb)
                     break
 
             if not selected:
@@ -177,35 +232,6 @@ class BrollMatcher:
     def _clip_has_script_index(clip: Dict, script_index: str) -> bool:
         folder_tags = str(clip.get("folder_tags") or "")
         return f"script {script_index}".lower() in folder_tags.lower()
-
-    def _select_by_script_index(
-        self,
-        results: List[Dict],
-        recent_ids: List[str],
-        threshold: float,
-        script_index: str,
-        recent_embeddings: List[np.ndarray],
-        visual_threshold: float,
-    ) -> Dict | None:
-        candidates = []
-        for result in results:
-            if result["clip_id"] in recent_ids or result["score"] < threshold:
-                continue
-            clip = self.db.get_clip(result["clip_id"]) or {}
-            if self._clip_has_script_index(clip, script_index):
-                candidate_emb = self.db.get_embedding(result["clip_id"])
-                if candidate_emb is not None and _is_visually_similar(
-                    candidate_emb, recent_embeddings, threshold=visual_threshold
-                ):
-                    continue
-                if candidate_emb is not None:
-                    recent_embeddings.append(candidate_emb)
-                candidates.append((result, clip))
-        if not candidates:
-            return None
-        candidates.sort(key=lambda item: item[0]["score"], reverse=True)
-        return candidates[0][0]
-
 
 def _is_visually_similar(
     new_embedding: np.ndarray, recent_embeddings: List[np.ndarray], threshold: float = 0.85
