@@ -1,5 +1,7 @@
+import os
 import subprocess
 import logging
+import threading
 from pathlib import Path
 from typing import Any, List, Optional, Iterable, Dict
 
@@ -13,6 +15,14 @@ class ResolveAPI:
 
     def __init__(self) -> None:
         """Initialize Resolve scripting instance."""
+        self._main_thread_id = threading.get_ident()
+        self._strict_thread_guard = os.environ.get("VIDEOFORGE_STRICT_RESOLVE_THREAD", "0").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        self._non_main_threads_warned: set[int] = set()
+
         try:
             self._resolve = _get_resolve()
         except Exception as exc:
@@ -20,8 +30,30 @@ class ResolveAPI:
                 "DaVinci Resolve scripting API is not available. Start Resolve and enable scripting."
             ) from exc
 
+    def _ensure_main_thread(self, operation: str) -> None:
+        """Warn (or error) if Resolve API is called off the main thread."""
+        current_thread_id = threading.get_ident()
+        if current_thread_id == self._main_thread_id:
+            return
+
+        if current_thread_id not in self._non_main_threads_warned:
+            logger.warning(
+                "Resolve API called off main thread (op=%s, thread=%s, main=%s).",
+                operation,
+                current_thread_id,
+                self._main_thread_id,
+            )
+            self._non_main_threads_warned.add(current_thread_id)
+
+        if self._strict_thread_guard:
+            raise RuntimeError(
+                "Resolve API must be called from the main thread. "
+                f"Operation={operation} thread={current_thread_id} main={self._main_thread_id}"
+            )
+
     def is_available(self) -> bool:
         """Return True if Resolve scripting API is still reachable."""
+        self._ensure_main_thread("is_available")
         try:
             manager = self._resolve.GetProjectManager()
             return manager is not None
@@ -30,6 +62,7 @@ class ResolveAPI:
 
     def get_current_project(self) -> Any:
         """Return the current Resolve project."""
+        self._ensure_main_thread("get_current_project")
         manager = self._resolve.GetProjectManager()
         project = manager.GetCurrentProject()
         if project is None:
@@ -38,6 +71,7 @@ class ResolveAPI:
 
     def get_current_timeline(self) -> Any:
         """Return the active timeline."""
+        self._ensure_main_thread("get_current_timeline")
         project = self.get_current_project()
         timeline = project.GetCurrentTimeline()
         if timeline is None:
@@ -46,6 +80,7 @@ class ResolveAPI:
 
     def get_selected_clips(self) -> List[Any]:
         """Return the currently selected timeline clips."""
+        self._ensure_main_thread("get_selected_clips")
         timeline = self.get_current_timeline()
         selected: List[Any] = []
         track_count = int(timeline.GetTrackCount("video") or 0)
@@ -61,6 +96,7 @@ class ResolveAPI:
 
     def get_primary_clip(self) -> Optional[Any]:
         """Return selected clip or fallback to the clip under the playhead."""
+        self._ensure_main_thread("get_primary_clip")
         selected = self.get_selected_clips()
         if selected:
             return selected[0]
@@ -68,6 +104,7 @@ class ResolveAPI:
 
     def create_subtitles_from_audio(self, language: str = "auto") -> bool:
         """Run Resolve Studio auto-captioning on the current timeline."""
+        self._ensure_main_thread("create_subtitles_from_audio")
         timeline = self.get_current_timeline()
         resolve = self._resolve
         settings = {}
@@ -93,6 +130,7 @@ class ResolveAPI:
 
     def get_subtitle_items(self) -> List[Any]:
         """Return subtitle timeline items across all subtitle tracks."""
+        self._ensure_main_thread("get_subtitle_items")
         timeline = self.get_current_timeline()
         items: List[Any] = []
         track_count = int(timeline.GetTrackCount("subtitle") or 0)
@@ -105,6 +143,7 @@ class ResolveAPI:
         clip_range: tuple[float, float] | None = None,
     ) -> List[dict]:
         """Extract subtitle items into sentence-like dicts (t0/t1/text)."""
+        self._ensure_main_thread("export_subtitles_as_sentences")
         fps = self.get_timeline_fps()
         sentences: List[dict] = []
         min_t = clip_range[0] if clip_range else None
@@ -131,6 +170,7 @@ class ResolveAPI:
 
     def get_item_range_seconds(self, item: Any) -> tuple[float, float] | None:
         """Return timeline item range as seconds (t0, t1)."""
+        self._ensure_main_thread("get_item_range_seconds")
         fps = self.get_timeline_fps()
         start, end = self._get_item_range(item)
         if start is None or end is None or fps <= 0:
@@ -139,6 +179,7 @@ class ResolveAPI:
 
     def get_clip_source_range_seconds(self, item: Any) -> tuple[float, float] | None:
         """Return source in/out range for a timeline item in seconds."""
+        self._ensure_main_thread("get_clip_source_range_seconds")
         fps = self.get_timeline_fps()
         if fps <= 0:
             return None
