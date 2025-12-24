@@ -191,6 +191,7 @@ class ResolveBridge:
         video_path: str,
         language: str = "auto",
         clip_range: tuple[float, float] | None = None,
+        source_range: tuple[float, float] | None = None,
     ) -> Dict[str, str]:
         """Analyze using Resolve Studio auto-captioning (must run on UI thread)."""
         project_id = self._generate_project_id(video_path)
@@ -212,6 +213,23 @@ class ResolveBridge:
                 )
             sentences = self.resolve_api.export_subtitles_as_sentences(clip_range=clip_range)
             self.logger.info("[BRIDGE] Resolve AI subtitles extracted: %d", len(sentences))
+            if clip_range and source_range:
+                try:
+                    offset = float(source_range[0]) - float(clip_range[0])
+                except Exception:
+                    offset = 0.0
+                if abs(offset) > 1e-3:
+                    self.logger.info(
+                        "[BRIDGE] Resolve AI time offset: %.3fs (timeline->source)",
+                        offset,
+                    )
+                    for sentence in sentences:
+                        sentence["t0"] = float(sentence.get("t0", 0.0)) + offset
+                        sentence["t1"] = float(sentence.get("t1", 0.0)) + offset
+                        metadata = sentence.get("metadata") or {}
+                        metadata["timeline_offset"] = float(clip_range[0])
+                        metadata["source_offset"] = float(source_range[0])
+                        sentence["metadata"] = metadata
 
             if self.settings.get("silence", {}).get("enable_removal", False):
                 self.logger.info("[BRIDGE] Applying silence removal after Resolve AI")

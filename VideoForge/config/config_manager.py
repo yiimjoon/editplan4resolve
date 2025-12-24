@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -25,9 +27,30 @@ class ConfigManager:
 
     def _initialize(self) -> None:
         """Initialize config path and load existing settings."""
-        self._config_path = Path(__file__).resolve().parents[1] / "data" / "user_config.json"
+        legacy_path = Path(__file__).resolve().parents[1] / "data" / "user_config.json"
+        self._config_path = self._resolve_config_path()
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self._config_path.exists() and legacy_path.exists():
+            try:
+                shutil.copy2(legacy_path, self._config_path)
+                logger.info("Migrated legacy config to %s", self._config_path)
+            except Exception as exc:
+                logger.warning("Failed to migrate legacy config: %s", exc)
         self._load()
+
+    @staticmethod
+    def _resolve_config_path() -> Path:
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return (
+                Path(appdata)
+                / "Blackmagic Design"
+                / "DaVinci Resolve"
+                / "Support"
+                / "VideoForge"
+                / "user_config.json"
+            )
+        return Path(__file__).resolve().parents[1] / "data" / "user_config.json"
 
     def _load(self) -> None:
         """Load config from JSON file."""

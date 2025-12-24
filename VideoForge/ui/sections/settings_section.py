@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from VideoForge.config.config_manager import Config
+from VideoForge.ai.llm_hooks import get_llm_api_key, get_llm_model, get_llm_provider
 from VideoForge.ui.qt_compat import (
     QCheckBox,
     QComboBox,
@@ -27,7 +28,7 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     card_layout.addWidget(QLabel("Transcription Engine"))
     panel.engine_combo = QComboBox()
     panel.engine_combo.addItems(["Resolve AI", "Whisper"])
-    saved_engine = Config.get("transcription_engine", "Resolve AI")
+    saved_engine = Config.get("transcription_engine", "Whisper")
     if saved_engine in {"Resolve AI", "Whisper"}:
         panel.engine_combo.setCurrentText(saved_engine)
     panel.engine_combo.currentTextChanged.connect(panel._on_engine_changed)
@@ -62,6 +63,53 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.transcript_chars_edit.setText(str(Config.get("subtitle_max_chars", 42)))
     panel.transcript_chars_edit.textChanged.connect(panel._on_transcript_chars_changed)
     card_layout.addWidget(panel.transcript_chars_edit)
+
+    card_layout.addWidget(QLabel("LLM Provider"))
+    panel.llm_provider_combo = QComboBox()
+    panel.llm_provider_combo.addItems(["disabled", "gemini"])
+    saved_provider = Config.get("llm_provider")
+    if not saved_provider:
+        saved_provider = get_llm_provider() or "disabled"
+    saved_provider = saved_provider or "disabled"
+    if saved_provider in {"disabled", "gemini"}:
+        panel.llm_provider_combo.setCurrentText(saved_provider)
+    else:
+        panel.llm_provider_combo.setCurrentText("disabled")
+    panel.llm_provider_combo.currentTextChanged.connect(panel._on_llm_provider_changed)
+    card_layout.addWidget(panel.llm_provider_combo)
+
+    card_layout.addWidget(QLabel("LLM Model"))
+    panel.llm_model_edit = QLineEdit()
+    llm_model_value = str(Config.get("llm_model") or get_llm_model())
+    if llm_model_value.startswith("models/"):
+        llm_model_value = llm_model_value[len("models/") :]
+    panel.llm_model_edit.setText(llm_model_value)
+    panel.llm_model_edit.textChanged.connect(panel._on_llm_model_changed)
+    card_layout.addWidget(panel.llm_model_edit)
+
+    card_layout.addWidget(QLabel("LLM API Key"))
+    panel.llm_key_edit = QLineEdit()
+    panel.llm_key_edit.setEchoMode(QLineEdit.Password)
+    panel.llm_key_edit.setPlaceholderText("Gemini API key")
+    panel.llm_key_edit.setText(str(Config.get("llm_api_key") or (get_llm_api_key() or "")))
+    panel.llm_key_edit.textChanged.connect(panel._on_llm_key_changed)
+    card_layout.addWidget(panel.llm_key_edit)
+
+    panel.llm_status_label = QLabel("LLM Status: Inactive")
+    panel.llm_status_label.setStyleSheet(
+        f"color: {panel.colors['text_dim']}; background: transparent;"
+    )
+    card_layout.addWidget(panel.llm_status_label)
+
+    panel.llm_hint_label = QLabel("Stored in AppData/VideoForge (user_config.json, llm.env).")
+    panel.llm_hint_label.setStyleSheet(
+        f"color: {panel.colors['text_dim']}; background: transparent;"
+    )
+    card_layout.addWidget(panel.llm_hint_label)
+
+    llm_enabled = panel.llm_provider_combo.currentText() != "disabled"
+    panel.llm_model_edit.setEnabled(llm_enabled)
+    panel.llm_key_edit.setEnabled(llm_enabled)
 
     srt_row = QHBoxLayout()
     srt_row.setSpacing(6)

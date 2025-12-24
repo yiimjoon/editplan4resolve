@@ -15,9 +15,13 @@ from VideoForge.config.config_manager import Config
 from VideoForge.core.segment_store import SegmentStore
 from VideoForge.core.project_cleanup import cleanup_project_files
 from VideoForge.plugin.resolve_bridge import ResolveBridge
-from VideoForge.core.silence_processor import process_silence
+from VideoForge.core.silence_processor import (
+    process_silence,
+    render_silence_removed_with_reorder,
+)
 from VideoForge.adapters.audio_adapter import render_silence_removed
 from VideoForge.errors import VideoForgeError
+from VideoForge.ai.llm_hooks import is_llm_enabled, write_llm_env
 from VideoForge.ui.qt_compat import (
     QApplication,
     QCheckBox,
@@ -274,8 +278,8 @@ class VideoForgePanel(QWidget):
         """Initialize the modernized UI."""
         self.setStyleSheet(STYLESHEET)
         self.setWindowTitle("VideoForge - Auto B-roll")
-        self.resize(600, 450)
-        self.setMinimumSize(520, 400)
+        self.resize(860, 520)
+        self.setMinimumSize(720, 420)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
@@ -431,6 +435,19 @@ class VideoForgePanel(QWidget):
             raise RuntimeError("Failed to resolve VideoForge root path.")
         return root
 
+    @staticmethod
+    def _ensure_unique_path(path: Path) -> Path:
+        if not path.exists():
+            return path
+        stem = path.stem
+        suffix = path.suffix
+        parent = path.parent
+        for idx in range(2, 1000):
+            candidate = parent / f"{stem}_{idx}{suffix}"
+            if not candidate.exists():
+                return candidate
+        return path
+
     def _set_status(self, message: str) -> None:
         self.status.setText(message)
 
@@ -556,6 +573,39 @@ class VideoForgePanel(QWidget):
         except Exception:
             return
 
+    def _on_llm_provider_changed(self, value: str) -> None:
+        provider = str(value).strip().lower()
+        if provider == "disabled":
+            Config.set("llm_provider", "")
+            write_llm_env(provider="")
+        else:
+            Config.set("llm_provider", provider)
+            write_llm_env(provider=provider)
+        enabled = provider != "disabled"
+        if hasattr(self, "llm_model_edit"):
+            self.llm_model_edit.setEnabled(enabled)
+        if hasattr(self, "llm_key_edit"):
+            self.llm_key_edit.setEnabled(enabled)
+        self._update_llm_buttons()
+
+    def _on_llm_model_changed(self, value: str) -> None:
+        model = str(value).strip()
+        if model.startswith("models/"):
+            model = model[len("models/"):]
+            try:
+                self.llm_model_edit.setText(model)
+            except Exception:
+                pass
+        if model:
+            Config.set("llm_model", model)
+            write_llm_env(model=model)
+        self._update_llm_buttons()
+
+    def _on_llm_key_changed(self, value: str) -> None:
+        Config.set("llm_api_key", str(value))
+        write_llm_env(api_key=str(value))
+        self._update_llm_buttons()
+
     def _on_engine_changed(self, value: str) -> None:
         Config.set("transcription_engine", value)
         self._update_transcript_option_visibility(value)
@@ -565,6 +615,22 @@ class VideoForgePanel(QWidget):
         show = engine_key in {"resolve ai", "resolve_ai", "resolve"}
         self.transcript_chars_label.setVisible(show)
         self.transcript_chars_edit.setVisible(show)
+        self._update_llm_buttons()
+
+    def _update_llm_buttons(self) -> None:
+        try:
+            enabled = is_llm_enabled()
+        except Exception:
+            enabled = False
+        if hasattr(self, "llm_status_label"):
+            status = "Active" if enabled else "Inactive"
+            self.llm_status_label.setText(f"LLM Status: {status}")
+        if getattr(self, "transcript_panel", None):
+            try:
+                self.transcript_panel.ai_reflow_btn.setEnabled(enabled)
+                self.transcript_panel.ai_reorder_btn.setEnabled(enabled)
+            except Exception:
+                pass
 
     def _on_whisper_silence_toggled(self, state: int) -> None:
         enabled = state == Qt.Checked
@@ -664,17 +730,64 @@ class VideoForgePanel(QWidget):
                 buffer_before=self.settings["silence"]["buffer_before"],
                 buffer_after=self.settings["silence"]["buffer_after"],
             )
-            output_path = str(Path(video_path).with_suffix("")) + "_silence_removed.mp4"
-            output_path = str(Path(output_path))
-            render_silence_removed(
-                video_path=video_path,
-                segments=keep_segments,
-                output_path=output_path,
-                source_range=source_range,
+            sentences = []
+            draft_order = None
+            if self.project_db:
+                store = SegmentStore(self.project_db)
+                sentences = store.get_sentences()
+                if store.has_draft_order():
+                    draft_order = store.get_draft_order()
+                    logging.getLogger("VideoForge.ui").info(
+                        "Silence render using draft order (%d entries).",
+                        len(draft_order),
+                    )
+            base_path = Path(video_path)
+            output_path = self._ensure_unique_path(
+                base_path.with_name(f"{base_path.stem}_silence_removed{base_path.suffix}")
             )
+            if draft_order:
+                temp_path = self._ensure_unique_path(
+                    base_path.with_name(f"{base_path.stem}_reordered{base_path.suffix}")
+                )
+                logging.getLogger("VideoForge.ui").info("Draft render temp: %s", temp_path)
+                render_silence_removed_with_reorder(
+                    video_path=video_path,
+                    sentences=sentences,
+                    draft_order=draft_order,
+                    silence_segments=None,
+                    output_path=str(temp_path),
+                    source_range=source_range,
+                )
+                logging.getLogger("VideoForge.ui").info("Detecting silence on draft render...")
+                post_segments = process_silence(
+                    video_path=str(temp_path),
+                    threshold_db=self.settings["silence"]["threshold_db"],
+                    min_keep=self.settings["silence"]["min_keep_duration"],
+                    buffer_before=self.settings["silence"]["buffer_before"],
+                    buffer_after=self.settings["silence"]["buffer_after"],
+                )
+                render_silence_removed(
+                    video_path=str(temp_path),
+                    segments=post_segments,
+                    output_path=str(output_path),
+                    source_range=None,
+                )
+                try:
+                    temp_path.unlink()
+                except Exception:
+                    logging.getLogger("VideoForge.ui").info(
+                        "Draft render temp retained: %s", temp_path
+                    )
+            else:
+                render_silence_removed(
+                    video_path=video_path,
+                    segments=keep_segments,
+                    output_path=str(output_path),
+                    source_range=source_range,
+                )
             logging.getLogger("VideoForge.ui").info("Silence render output: %s", output_path)
-            Config.set("last_silence_render", output_path)
-            return output_path
+            Config.set("last_silence_render", str(output_path))
+            return str(output_path)
 
         def _done(result):
             action = Config.get("silence_action", "Insert Above Track (keep original)")
@@ -773,6 +886,7 @@ class VideoForgePanel(QWidget):
                     video_path=video_path,
                     language=language,
                     clip_range=clip_range,
+                    source_range=source_range,
                 )
                 self.project_db = result.get("project_db")
                 self.main_video_path = video_path

@@ -220,6 +220,72 @@ def render_silence_removed(
     return output_path
 
 
+def render_ordered_segments(
+    video_path: str,
+    segments: List[Dict[str, float]],
+    output_path: str,
+    source_range: tuple[float, float] | None = None,
+) -> str:
+    """Render segments in the given order without merging."""
+    if not Path(video_path).exists():
+        raise FileNotFoundError(video_path)
+    if not segments:
+        raise RuntimeError("No segments provided for ordered render.")
+
+    logger = logging.getLogger(__name__)
+    clip_start = None
+    clip_end = None
+    if source_range:
+        clip_start = float(source_range[0])
+        clip_end = float(source_range[1])
+        if clip_end <= clip_start:
+            raise RuntimeError("Invalid source_range for ordered render.")
+        logger.info(
+            "Ordered render using source range: %.2f - %.2f",
+            clip_start,
+            clip_end,
+        )
+
+    ordered: List[Dict[str, float]] = []
+    for seg in segments:
+        t0 = float(seg["t0"])
+        t1 = float(seg["t1"])
+        if clip_start is not None and clip_end is not None:
+            if t1 <= clip_start or t0 >= clip_end:
+                continue
+            t0 = max(t0, clip_start)
+            t1 = min(t1, clip_end)
+            if t1 <= t0:
+                continue
+            ordered.append({"t0": t0 - clip_start, "t1": t1 - clip_start})
+        else:
+            ordered.append({"t0": t0, "t1": t1})
+
+    if not ordered:
+        raise RuntimeError("No segments within selected clip range.")
+
+    cmd = build_ordered_render_command(
+        video_path,
+        ordered,
+        output_path,
+        source_range=(clip_start, clip_end) if clip_start is not None else None,
+    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Command timed out after 300s: {cmd[0]}") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip())
+    return output_path
+
+
 def build_silence_render_command(
     video_path: str,
     segments: List[Dict[str, float]],
@@ -227,6 +293,55 @@ def build_silence_render_command(
     source_range: tuple[float, float] | None = None,
 ) -> List[str]:
     """Build ffmpeg command for silence removal render."""
+    filters = []
+    concat_inputs = []
+    for idx, seg in enumerate(segments):
+        t0 = float(seg["t0"])
+        t1 = float(seg["t1"])
+        filters.append(
+            f"[0:v]trim=start={t0}:end={t1},setpts=PTS-STARTPTS[v{idx}]"
+        )
+        filters.append(
+            f"[0:a]atrim=start={t0}:end={t1},asetpts=PTS-STARTPTS[a{idx}]"
+        )
+        concat_inputs.append(f"[v{idx}][a{idx}]")
+    concat_filter = "".join(concat_inputs) + f"concat=n={len(segments)}:v=1:a=1[v][a]"
+    filter_complex = ";".join(filters + [concat_filter])
+
+    cmd = ["ffmpeg", "-y"]
+    if source_range and source_range[0] is not None and source_range[1] is not None:
+        cmd += ["-ss", str(source_range[0]), "-to", str(source_range[1])]
+    cmd += [
+        "-i",
+        video_path,
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "[v]",
+        "-map",
+        "[a]",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "18",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        output_path,
+    ]
+    return cmd
+
+
+def build_ordered_render_command(
+    video_path: str,
+    segments: List[Dict[str, float]],
+    output_path: str,
+    source_range: tuple[float, float] | None = None,
+) -> List[str]:
+    """Build ffmpeg command for ordered segment rendering."""
     filters = []
     concat_inputs = []
     for idx, seg in enumerate(segments):

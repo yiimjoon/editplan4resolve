@@ -1,13 +1,14 @@
 import json
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 
 class SegmentStore:
-    SCHEMA_VERSION = "1.0"
-    SCHEMA_VERSION_INT = 1
+    SCHEMA_VERSION = "1.1"
+    SCHEMA_VERSION_INT = 2
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self._ensure_schema()
@@ -54,6 +55,10 @@ class SegmentStore:
                   confidence REAL,
                   metadata TEXT
                 );
+                CREATE TABLE IF NOT EXISTS draft_order (
+                  uid TEXT PRIMARY KEY,
+                  position INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS matches (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   sentence_id INTEGER NOT NULL,
@@ -69,6 +74,7 @@ class SegmentStore:
                 CREATE INDEX IF NOT EXISTS idx_segments_time ON segments(t0, t1);
                 CREATE INDEX IF NOT EXISTS idx_sentences_time ON sentences(t0, t1);
                 CREATE INDEX IF NOT EXISTS idx_matches_sentence ON matches(sentence_id);
+                CREATE INDEX IF NOT EXISTS idx_draft_order_position ON draft_order(position);
                 """
             )
             conn.execute(
@@ -95,6 +101,7 @@ class SegmentStore:
                 sentence_id = sentence.get("id")
                 if sentence_id is None:
                     continue
+                self._ensure_sentence_uid(sentence)
                 conn.execute(
                     """
                     UPDATE sentences
@@ -124,6 +131,7 @@ class SegmentStore:
             conn.execute("DELETE FROM sentences")
             cur = conn.cursor()
             for sentence in sentences:
+                self._ensure_sentence_uid(sentence)
                 cur.execute(
                     """
                     INSERT INTO sentences (id, segment_id, t0, t1, text, confidence, metadata)
@@ -163,6 +171,7 @@ class SegmentStore:
             conn.execute("DELETE FROM matches")
             conn.execute("DELETE FROM sentences")
             conn.execute("DELETE FROM segments")
+            conn.execute("DELETE FROM draft_order")
 
     def clear_matches(self) -> None:
         """Clear existing matches before re-matching."""
@@ -197,6 +206,53 @@ class SegmentStore:
             if not row:
                 return None
             return json.loads(row["value"])
+
+    def save_draft_order(self, uids: List[str]) -> None:
+        with self._connect_ctx() as conn:
+            conn.execute("DELETE FROM draft_order")
+            cur = conn.cursor()
+            for idx, uid in enumerate(uids):
+                cur.execute(
+                    "INSERT INTO draft_order (uid, position) VALUES (?, ?)",
+                    (uid, int(idx)),
+                )
+
+    def get_draft_order(self) -> List[str]:
+        with self._connect_ctx() as conn:
+            rows = conn.execute(
+                "SELECT uid FROM draft_order ORDER BY position"
+            ).fetchall()
+            return [row["uid"] for row in rows]
+
+    def clear_draft_order(self) -> None:
+        with self._connect_ctx() as conn:
+            conn.execute("DELETE FROM draft_order")
+
+    def has_draft_order(self) -> bool:
+        with self._connect_ctx() as conn:
+            row = conn.execute("SELECT 1 FROM draft_order LIMIT 1").fetchone()
+            return bool(row)
+
+    def ensure_sentence_uids(self) -> int:
+        updated = 0
+        with self._connect_ctx() as conn:
+            rows = conn.execute("SELECT id, metadata FROM sentences").fetchall()
+            for row in rows:
+                metadata = {}
+                if row["metadata"]:
+                    try:
+                        metadata = json.loads(row["metadata"])
+                    except json.JSONDecodeError:
+                        metadata = {}
+                if metadata.get("uid"):
+                    continue
+                metadata["uid"] = str(uuid.uuid4())
+                conn.execute(
+                    "UPDATE sentences SET metadata = ? WHERE id = ?",
+                    (json.dumps(metadata), int(row["id"])),
+                )
+                updated += 1
+        return updated
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
@@ -235,6 +291,7 @@ class SegmentStore:
         saved = []
         cur = conn.cursor()
         for sent in sentences:
+            SegmentStore._ensure_sentence_uid(sent)
             confidence = sent.get("confidence", 0.0)
             if confidence is None:
                 confidence = 0.0
@@ -255,6 +312,15 @@ class SegmentStore:
             sent_id = cur.lastrowid
             saved.append({**sent, "id": sent_id})
         return saved
+
+    @staticmethod
+    def _ensure_sentence_uid(sentence: Dict[str, Any]) -> None:
+        metadata = sentence.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        if not metadata.get("uid"):
+            metadata["uid"] = str(uuid.uuid4())
+        sentence["metadata"] = metadata
 
     @staticmethod
     def _insert_matches(

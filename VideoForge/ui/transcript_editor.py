@@ -13,11 +13,18 @@ from VideoForge.core.segment_store import SegmentStore
 from VideoForge.config.config_manager import Config
 from VideoForge.integrations.resolve_api import ResolveAPI
 from VideoForge.core.transcript_utils import split_sentence, wrap_text
-from VideoForge.ai.llm_hooks import is_llm_enabled, suggest_reflow_lines
+from VideoForge.ai.llm_hooks import (
+    get_llm_instructions,
+    is_llm_enabled,
+    suggest_reflow_lines,
+    suggest_reorder,
+    write_llm_env,
+)
 from VideoForge.ui.qt_compat import (
     QFileDialog,
     QFrame,
     QHeaderView,
+    QInputDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -111,6 +118,8 @@ STYLESHEET = f"""
 class TranscriptEditorPanel(QWidget):
     """Editable transcript viewer backed by the project DB."""
 
+    MAX_HISTORY = 50
+
     def __init__(self, project_db_path: str) -> None:
         super().__init__()
         self.setStyleSheet(STYLESHEET)
@@ -118,6 +127,7 @@ class TranscriptEditorPanel(QWidget):
         self.store = SegmentStore(project_db_path)
         self.sentences: List[dict] = []
         self._history: List[List[dict]] = []
+        self._redo: List[List[dict]] = []
         self.resolve_api = ResolveAPI()
         self.logger = logging.getLogger("VideoForge.ui.Transcript")
         self._build_ui()
@@ -171,6 +181,13 @@ class TranscriptEditorPanel(QWidget):
         export_layout.addWidget(export_json_btn)
         header.addLayout(export_layout)
 
+        header.addSpacing(12)
+        instructions_btn = QPushButton("LLM Instructions")
+        instructions_btn.setCursor(Qt.PointingHandCursor)
+        instructions_btn.setToolTip("Edit optional LLM guidance")
+        instructions_btn.clicked.connect(self._on_edit_instructions)
+        header.addWidget(instructions_btn)
+
         layout.addLayout(header)
 
         # Separator
@@ -195,7 +212,7 @@ class TranscriptEditorPanel(QWidget):
         options_row.addWidget(self.gap_frames_edit)
 
         options_row.addSpacing(20)
-        self.split_btn = QPushButton("?? Split Long Lines")
+        self.split_btn = QPushButton("Split Long Lines")
         self.split_btn.setCursor(Qt.PointingHandCursor)
         self.split_btn.setToolTip("Automatically split segments that exceed max chars")
         self.split_btn.clicked.connect(self._on_split_clicked)
@@ -206,6 +223,12 @@ class TranscriptEditorPanel(QWidget):
         self.undo_btn.setToolTip("Undo last transcript edit")
         self.undo_btn.clicked.connect(self._on_undo_clicked)
         options_row.addWidget(self.undo_btn)
+
+        self.redo_btn = QPushButton("Redo")
+        self.redo_btn.setCursor(Qt.PointingHandCursor)
+        self.redo_btn.setToolTip("Redo last transcript edit")
+        self.redo_btn.clicked.connect(self._on_redo_clicked)
+        options_row.addWidget(self.redo_btn)
 
         self.merge_btn = QPushButton("Merge Selected")
         self.merge_btn.setCursor(Qt.PointingHandCursor)
@@ -220,7 +243,14 @@ class TranscriptEditorPanel(QWidget):
         self.ai_reflow_btn.clicked.connect(self._on_ai_reflow_clicked)
         options_row.addWidget(self.ai_reflow_btn)
 
-options_row.addStretch()
+        self.ai_reorder_btn = QPushButton("AI Reorder (Draft)")
+        self.ai_reorder_btn.setCursor(Qt.PointingHandCursor)
+        self.ai_reorder_btn.setToolTip("Use LLM to reorder transcript (draft workflow)")
+        self.ai_reorder_btn.setEnabled(is_llm_enabled())
+        self.ai_reorder_btn.clicked.connect(self._on_ai_reorder_clicked)
+        options_row.addWidget(self.ai_reorder_btn)
+
+        options_row.addStretch()
         layout.addLayout(options_row)
 
         self.table = QTableWidget()
@@ -239,8 +269,15 @@ options_row.addStretch()
     def _load_transcript(self, reset_history: bool = True) -> None:
         self.logger.info("Transcript load: %s", self.project_db)
         self.sentences = self.store.get_sentences()
+        updated = self.store.ensure_sentence_uids()
+        if updated:
+            self.logger.info("Transcript uid update: %d rows", updated)
+            self.sentences = self.store.get_sentences()
+        if self.store.has_draft_order():
+            self.sentences = self._apply_draft_order(self.sentences)
         if reset_history:
             self._history = [deepcopy(self.sentences)]
+            self._redo = []
         model = self.store.get_artifact("whisper_model") or "unknown"
         self.source_label.setText(f"Source: {model}")
         try:
@@ -293,8 +330,10 @@ options_row.addStretch()
             replaced += 1
 
         if changed:
+            self.store.clear_draft_order()
             self._load_transcript(reset_history=False)
             self._history.append(deepcopy(self.sentences))
+            self._redo = []
             self.stats_label.setText(f"Split {replaced} long segments (> {max_chars} chars).")
         else:
             self._history.pop()
@@ -303,12 +342,23 @@ options_row.addStretch()
         if len(self._history) < 2:
             self.stats_label.setText("Nothing to undo.")
             return
-        self._history.pop()
+        self._redo.append(deepcopy(self._history.pop()))
         snapshot = deepcopy(self._history[-1])
         self.store.replace_all_sentences(snapshot)
         self.sentences = snapshot
         self._render_table()
         self.stats_label.setText("Undo applied.")
+
+    def _on_redo_clicked(self) -> None:
+        if not self._redo:
+            self.stats_label.setText("Nothing to redo.")
+            return
+        snapshot = deepcopy(self._redo.pop())
+        self._history.append(deepcopy(snapshot))
+        self.store.replace_all_sentences(snapshot)
+        self.sentences = snapshot
+        self._render_table()
+        self.stats_label.setText("Redo applied.")
 
     def _on_merge_clicked(self) -> None:
         selected_rows = sorted({idx.row() for idx in self.table.selectionModel().selectedRows()})
@@ -349,9 +399,11 @@ options_row.addStretch()
             new_sentences.append(sentence)
 
         self.store.replace_all_sentences(new_sentences)
+        self.store.clear_draft_order()
         self.sentences = new_sentences
         self._render_table()
         self._history.append(deepcopy(self.sentences))
+        self._redo = []
         self.stats_label.setText(f"Merged {len(selected_rows)} rows.")
 
     def _on_ai_reflow_clicked(self) -> None:
@@ -363,9 +415,11 @@ options_row.addStretch()
             reflowed = suggest_reflow_lines(self.sentences, max_chars)
         except NotImplementedError as exc:
             self.stats_label.setText(str(exc))
+            self.logger.warning("AI reflow not configured: %s", exc)
             return
         except Exception as exc:
             self.stats_label.setText(f"AI reflow failed: {exc}")
+            self.logger.error("AI reflow failed: %s", exc, exc_info=True)
             return
 
         if not reflowed:
@@ -373,10 +427,80 @@ options_row.addStretch()
             return
         self._push_history("ai_reflow")
         self.store.replace_all_sentences(reflowed)
+        self.store.clear_draft_order()
         self.sentences = reflowed
         self._render_table()
         self._history.append(deepcopy(self.sentences))
+        self._redo = []
         self.stats_label.setText("AI reflow applied.")
+
+    def _on_ai_reorder_clicked(self) -> None:
+        if not is_llm_enabled():
+            self.stats_label.setText("LLM provider not configured.")
+            return
+
+        profile = Config.get("llm_reorder_profile", "hook_build_payoff")
+        cut_strength = float(Config.get("llm_reorder_cut_strength", 0.2))
+        try:
+            result = suggest_reorder(self.sentences, profile=profile, cut_strength=cut_strength)
+        except NotImplementedError as exc:
+            self.stats_label.setText(str(exc))
+            self.logger.warning("AI reorder not configured: %s", exc)
+            return
+        except Exception as exc:
+            self.stats_label.setText(f"AI reorder failed: {exc}")
+            self.logger.error("AI reorder failed: %s", exc, exc_info=True)
+            return
+
+        order = result.get("order") or []
+        drops = set(result.get("drops") or [])
+        if not order:
+            self.stats_label.setText("AI reorder produced no changes.")
+            return
+
+        invalid_indices = 0
+        ordered_uids: List[str] = []
+        for idx in order:
+            if idx in drops:
+                continue
+            if idx < 1 or idx > len(self.sentences):
+                invalid_indices += 1
+                continue
+            metadata = self.sentences[idx - 1].get("metadata") or {}
+            uid = metadata.get("uid")
+            if not uid:
+                invalid_indices += 1
+                continue
+            ordered_uids.append(uid)
+
+        if not ordered_uids:
+            self.stats_label.setText("AI reorder produced an empty transcript.")
+            return
+
+        self.store.save_draft_order(ordered_uids)
+        self.sentences = self._apply_draft_order(self.sentences)
+        self._render_table()
+        self.stats_label.setText("AI reorder saved as draft order.")
+        if invalid_indices:
+            self.logger.warning(
+                "AI reorder ignored %d invalid indices (valid range: 1-%d).",
+                invalid_indices,
+                len(self.sentences),
+            )
+
+    def _on_edit_instructions(self) -> None:
+        current = str(get_llm_instructions() or Config.get("llm_instructions", ""))
+        text, ok = QInputDialog.getMultiLineText(
+            self,
+            "LLM Instructions",
+            "Optional guidance for LLM actions:",
+            current,
+        )
+        if not ok:
+            return
+        Config.set("llm_instructions", text)
+        write_llm_env(instructions=text)
+        self.stats_label.setText("LLM instructions updated.")
 
     def _export_to_resolve(self) -> None:
         if not self.sentences:
@@ -523,6 +647,25 @@ options_row.addStretch()
             return
         self.logger.info("History snapshot saved (%s).", reason)
         self._history.append(deepcopy(self.sentences))
+        if len(self._history) > self.MAX_HISTORY:
+            self._history.pop(0)
+
+    def _apply_draft_order(self, sentences: List[dict]) -> List[dict]:
+        order = self.store.get_draft_order()
+        if not order:
+            return sentences
+        by_uid = {}
+        for sentence in sentences:
+            metadata = sentence.get("metadata") or {}
+            uid = metadata.get("uid")
+            if uid:
+                by_uid[uid] = sentence
+        ordered = []
+        for uid in order:
+            if uid in by_uid:
+                ordered.append(by_uid.pop(uid))
+        ordered.extend(by_uid.values())
+        return ordered
 
     @staticmethod
     def _format_srt_time(seconds: float) -> str:

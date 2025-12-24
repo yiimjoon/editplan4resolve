@@ -14,6 +14,7 @@ __pycache__/
 .vscode/
 .idea/
 VideoForge/data/
+VideoForge/data/*.env
 !VideoForge/data/.keep
 # Local data
 test_media/
