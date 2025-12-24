@@ -925,82 +925,75 @@ class VideoForgePanel(QWidget):
             output_path = self._ensure_unique_path(
                 base_path.with_name(f"{base_path.stem}_silence_removed{base_path.suffix}")
             )
+            if render_mode == "J/L-cut":
+                if not sentences:
+                    logging.getLogger("VideoForge.ui").warning(
+                        "J/L-cut requested but no transcript data is available."
+                    )
+                    return False
+                ordered_segments = build_ordered_segments_for_draft(
+                    sentences,
+                    draft_order,
+                    min_duration=self.settings["silence"].get("render_min_duration", 0.6),
+                    tail_min_duration=self.settings["silence"].get("tail_min_duration", 0.8),
+                    tail_ratio=self.settings["silence"].get("tail_ratio", 0.2),
+                    source_range=source_range,
+                )
+                ok = self.bridge.resolve_api.insert_overlapped_segments(
+                    clip,
+                    ordered_segments,
+                    overlap_frames=overlap_frames,
+                    include_audio=True,
+                )
+                return ok
             if draft_order:
                 temp_path = self._ensure_unique_path(
                     base_path.with_name(f"{base_path.stem}_reordered{base_path.suffix}")
                 )
                 logging.getLogger("VideoForge.ui").info("Draft render temp: %s", temp_path)
-                if render_mode == "J/L-cut":
-                    ordered_segments = build_ordered_segments_for_draft(
-                        sentences,
-                        draft_order,
-                        min_duration=self.settings["silence"].get("render_min_duration", 0.6),
-                        tail_min_duration=self.settings["silence"].get("tail_min_duration", 0.8),
-                        tail_ratio=self.settings["silence"].get("tail_ratio", 0.2),
-                        source_range=source_range,
+                render_silence_removed_with_reorder(
+                    video_path=video_path,
+                    sentences=sentences,
+                    draft_order=draft_order,
+                    silence_segments=None,
+                    output_path=str(temp_path),
+                    source_range=source_range,
+                    min_duration=self.settings["silence"].get("render_min_duration", 0.6),
+                    tail_min_duration=self.settings["silence"].get("tail_min_duration", 0.8),
+                    tail_ratio=self.settings["silence"].get("tail_ratio", 0.2),
+                    jlcut_mode=jlcut_mode,
+                    jcut_offset=jcut_offset,
+                    lcut_offset=lcut_offset,
+                )
+                logging.getLogger("VideoForge.ui").info("Detecting silence on draft render...")
+                post_segments = process_silence(
+                    video_path=str(temp_path),
+                    threshold_db=self.settings["silence"]["threshold_db"],
+                    min_keep=self.settings["silence"]["min_keep_duration"],
+                    buffer_before=self.settings["silence"]["buffer_before"],
+                    buffer_after=self.settings["silence"]["buffer_after"],
+                )
+                if post_segments:
+                    total_keep = sum(float(seg["t1"]) - float(seg["t0"]) for seg in post_segments)
+                    logging.getLogger("VideoForge.ui").info(
+                        "Draft silence keep: %d segments (total %.2fs)",
+                        len(post_segments),
+                        total_keep,
                     )
-                    ok = self.bridge.resolve_api.insert_overlapped_segments(
-                        clip,
-                        ordered_segments,
-                        overlap_frames=overlap_frames,
-                        include_audio=True,
+                render_silence_removed(
+                    video_path=str(temp_path),
+                    segments=post_segments,
+                    output_path=str(output_path),
+                    source_range=None,
+                    min_duration=self.settings["silence"].get("render_min_duration", 0.6),
+                )
+                try:
+                    temp_path.unlink()
+                except Exception:
+                    logging.getLogger("VideoForge.ui").info(
+                        "Draft render temp retained: %s", temp_path
                     )
-                    return ok
-                else:
-                    render_silence_removed_with_reorder(
-                        video_path=video_path,
-                        sentences=sentences,
-                        draft_order=draft_order,
-                        silence_segments=None,
-                        output_path=str(temp_path),
-                        source_range=source_range,
-                        min_duration=self.settings["silence"].get("render_min_duration", 0.6),
-                        tail_min_duration=self.settings["silence"].get("tail_min_duration", 0.8),
-                        tail_ratio=self.settings["silence"].get("tail_ratio", 0.2),
-                        jlcut_mode=jlcut_mode,
-                        jcut_offset=jcut_offset,
-                        lcut_offset=lcut_offset,
-                    )
-                    logging.getLogger("VideoForge.ui").info("Detecting silence on draft render...")
-                    post_segments = process_silence(
-                        video_path=str(temp_path),
-                        threshold_db=self.settings["silence"]["threshold_db"],
-                        min_keep=self.settings["silence"]["min_keep_duration"],
-                        buffer_before=self.settings["silence"]["buffer_before"],
-                        buffer_after=self.settings["silence"]["buffer_after"],
-                    )
-                    if post_segments:
-                        total_keep = sum(
-                            float(seg["t1"]) - float(seg["t0"]) for seg in post_segments
-                        )
-                        logging.getLogger("VideoForge.ui").info(
-                            "Draft silence keep: %d segments (total %.2fs)",
-                            len(post_segments),
-                            total_keep,
-                        )
-                    render_silence_removed(
-                        video_path=str(temp_path),
-                        segments=post_segments,
-                        output_path=str(output_path),
-                        source_range=None,
-                        min_duration=self.settings["silence"].get("render_min_duration", 0.6),
-                    )
-                if render_mode != "J/L-cut":
-                    try:
-                        temp_path.unlink()
-                    except Exception:
-                        logging.getLogger("VideoForge.ui").info(
-                            "Draft render temp retained: %s", temp_path
-                        )
             else:
-                if render_mode == "J/L-cut":
-                    logging.getLogger("VideoForge.ui").info(
-                        "J/L-cut requested without draft order; using silence removal."
-                    )
-                if jlcut_mode and str(jlcut_mode).lower() not in {"off", "none"}:
-                    logging.getLogger("VideoForge.ui").info(
-                        "J/L-cut skipped (no draft order)."
-                    )
                 render_silence_removed(
                     video_path=video_path,
                     segments=keep_segments,
@@ -1015,6 +1008,9 @@ class VideoForgePanel(QWidget):
         def _done(result):
             if result is True and Config.get("render_mode", "Silence Removal") == "J/L-cut":
                 self._set_status("J/L-cut overlap inserted above tracks.")
+                return
+            if result is False:
+                self._set_status("Render failed. See log for details.")
                 return
             action = Config.get("silence_action", "Insert Above Track (keep original)")
             if action == "Manual (Media Pool only)":
