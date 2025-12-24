@@ -131,6 +131,34 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.whisper_silence_checkbox.stateChanged.connect(panel._on_whisper_silence_toggled)
     card_layout.addWidget(panel.whisper_silence_checkbox)
 
+    panel.render_min_duration_label = QLabel("Min Segment Duration (sec)")
+    card_layout.addWidget(panel.render_min_duration_label)
+    panel.render_min_duration_edit = QLineEdit()
+    panel.render_min_duration_edit.setFixedWidth(80)
+    panel.render_min_duration_edit.setText(
+        str(panel.settings["silence"].get("render_min_duration", 0.6))
+    )
+    panel.render_min_duration_edit.textChanged.connect(panel._on_render_min_duration_changed)
+    card_layout.addWidget(panel.render_min_duration_edit)
+
+    panel.tail_min_duration_label = QLabel("Tail Fragment Min Duration (sec)")
+    card_layout.addWidget(panel.tail_min_duration_label)
+    panel.tail_min_duration_edit = QLineEdit()
+    panel.tail_min_duration_edit.setFixedWidth(80)
+    panel.tail_min_duration_edit.setText(
+        str(panel.settings["silence"].get("tail_min_duration", 0.8))
+    )
+    panel.tail_min_duration_edit.textChanged.connect(panel._on_tail_min_duration_changed)
+    card_layout.addWidget(panel.tail_min_duration_edit)
+
+    panel.tail_ratio_label = QLabel("Tail Ratio Threshold (0-1)")
+    card_layout.addWidget(panel.tail_ratio_label)
+    panel.tail_ratio_edit = QLineEdit()
+    panel.tail_ratio_edit.setFixedWidth(80)
+    panel.tail_ratio_edit.setText(str(panel.settings["silence"].get("tail_ratio", 0.2)))
+    panel.tail_ratio_edit.textChanged.connect(panel._on_tail_ratio_changed)
+    card_layout.addWidget(panel.tail_ratio_edit)
+
     panel.silence_dry_run_checkbox = QCheckBox("Dry run (log only, no timeline changes)")
     panel.silence_dry_run_checkbox.setChecked(True)
     card_layout.addWidget(panel.silence_dry_run_checkbox)

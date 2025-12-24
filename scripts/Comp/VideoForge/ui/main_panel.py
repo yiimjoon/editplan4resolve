@@ -260,6 +260,9 @@ class VideoForgePanel(QWidget):
         whisper_silence_override = Config.get("whisper_silence_enabled")
         if whisper_silence_override is not None:
             self.settings["silence"]["enable_removal"] = bool(whisper_silence_override)
+        self._apply_silence_override("render_min_duration")
+        self._apply_silence_override("tail_min_duration")
+        self._apply_silence_override("tail_ratio")
         self.bridge = ResolveBridge(self.settings)
         self.saved_broll_dir = Config.get("broll_dir")
         self.project_db: Optional[str] = None
@@ -454,6 +457,16 @@ class VideoForgePanel(QWidget):
     def _set_status(self, message: str) -> None:
         self.status.setText(message)
 
+    def _apply_silence_override(self, key: str) -> None:
+        override = Config.get(f"silence_{key}")
+        if override is None:
+            return
+        try:
+            value = float(override)
+        except (TypeError, ValueError):
+            return
+        self.settings["silence"][key] = value
+
     def _update_status_safe(self, message: str) -> None:
         logging.getLogger(__name__).info(message)
         self.status_signal.emit(message)
@@ -575,6 +588,36 @@ class VideoForgePanel(QWidget):
             Config.set("subtitle_max_chars", int(str(value).strip()))
         except Exception:
             return
+
+    def _on_render_min_duration_changed(self, value: str) -> None:
+        try:
+            duration = float(str(value).strip())
+        except ValueError:
+            return
+        if duration <= 0:
+            return
+        self.settings["silence"]["render_min_duration"] = duration
+        Config.set("silence_render_min_duration", duration)
+
+    def _on_tail_min_duration_changed(self, value: str) -> None:
+        try:
+            duration = float(str(value).strip())
+        except ValueError:
+            return
+        if duration <= 0:
+            return
+        self.settings["silence"]["tail_min_duration"] = duration
+        Config.set("silence_tail_min_duration", duration)
+
+    def _on_tail_ratio_changed(self, value: str) -> None:
+        try:
+            ratio = float(str(value).strip())
+        except ValueError:
+            return
+        if ratio <= 0 or ratio >= 1:
+            return
+        self.settings["silence"]["tail_ratio"] = ratio
+        Config.set("silence_tail_ratio", ratio)
 
     def _on_llm_provider_changed(self, value: str) -> None:
         provider = str(value).strip().lower()
