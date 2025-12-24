@@ -728,6 +728,40 @@ class VideoForgePanel(QWidget):
             except Exception:
                 pass
 
+    def _update_draft_render_emphasis(self) -> None:
+        draft_active = False
+        try:
+            if self.project_db:
+                store = SegmentStore(self.project_db)
+                draft_active = bool(store.has_draft_order())
+        except Exception:
+            draft_active = False
+
+        prev = bool(getattr(self, "_draft_render_emphasis", False))
+        if prev == draft_active:
+            return
+        self._draft_render_emphasis = draft_active
+        logging.getLogger("VideoForge.ui").info("Draft render emphasis: %s", draft_active)
+
+        self._set_button_primary(getattr(self, "silence_export_btn", None), draft_active)
+        self._set_button_primary(getattr(self, "silence_replace_btn", None), draft_active)
+
+    @staticmethod
+    def _set_button_primary(button: QPushButton | None, enabled: bool) -> None:
+        if button is None:
+            return
+        target = "PrimaryButton" if enabled else ""
+        if button.objectName() == target:
+            return
+        button.setObjectName(target)
+        try:
+            style = button.style()
+            style.unpolish(button)
+            style.polish(button)
+            button.update()
+        except Exception:
+            return
+
     def _on_whisper_silence_toggled(self, state: int) -> None:
         enabled = state == Qt.Checked
         self.settings["silence"]["enable_removal"] = enabled
@@ -1327,6 +1361,11 @@ class VideoForgePanel(QWidget):
                 logging.getLogger("VideoForge.ui").info("Resolve API unavailable; closing panel.")
                 self.close()
                 QApplication.quit()
+                return
+        except Exception:
+            return
+        try:
+            self._update_draft_render_emphasis()
         except Exception:
             return
 

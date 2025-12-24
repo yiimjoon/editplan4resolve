@@ -30,6 +30,7 @@ from VideoForge.ui.qt_compat import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -169,20 +170,20 @@ class TranscriptEditorPanel(QWidget):
 
         # Group 2: Export
         export_layout = QHBoxLayout()
-        export_btn = QPushButton("Export to Resolve")
-        export_btn.setCursor(Qt.PointingHandCursor)
-        export_btn.clicked.connect(self._export_to_resolve)
-        export_layout.addWidget(export_btn)
+        self.export_resolve_btn = QPushButton("Export to Resolve")
+        self.export_resolve_btn.setCursor(Qt.PointingHandCursor)
+        self.export_resolve_btn.clicked.connect(self._export_to_resolve)
+        export_layout.addWidget(self.export_resolve_btn)
 
-        export_txt_btn = QPushButton("TXT")
-        export_txt_btn.setCursor(Qt.PointingHandCursor)
-        export_txt_btn.clicked.connect(self._export_txt)
-        export_layout.addWidget(export_txt_btn)
+        self.export_txt_btn = QPushButton("TXT")
+        self.export_txt_btn.setCursor(Qt.PointingHandCursor)
+        self.export_txt_btn.clicked.connect(self._export_txt)
+        export_layout.addWidget(self.export_txt_btn)
 
-        export_json_btn = QPushButton("JSON")
-        export_json_btn.setCursor(Qt.PointingHandCursor)
-        export_json_btn.clicked.connect(self._export_json)
-        export_layout.addWidget(export_json_btn)
+        self.export_json_btn = QPushButton("JSON")
+        self.export_json_btn.setCursor(Qt.PointingHandCursor)
+        self.export_json_btn.clicked.connect(self._export_json)
+        export_layout.addWidget(self.export_json_btn)
         header.addLayout(export_layout)
 
         header.addSpacing(12)
@@ -302,6 +303,7 @@ class TranscriptEditorPanel(QWidget):
 
     def _load_transcript(self, reset_history: bool = True) -> None:
         self.logger.info("Transcript load: %s", self.project_db)
+        prev_draft_active = bool(getattr(self, "_draft_active", False))
         self.sentences = self.store.get_sentences()
         updated = self.store.ensure_sentence_uids()
         if updated:
@@ -309,6 +311,8 @@ class TranscriptEditorPanel(QWidget):
             self.sentences = self.store.get_sentences()
         self._draft_original_count = len(self.sentences)
         self._draft_active = self.store.has_draft_order()
+        if prev_draft_active != self._draft_active:
+            self.logger.info("Draft mode changed: %s", self._draft_active)
         if self._draft_active:
             self.sentences = self._apply_draft_order(self.sentences)
         if reset_history:
@@ -401,13 +405,32 @@ class TranscriptEditorPanel(QWidget):
         if not self.store.has_draft_order():
             self.stats_label.setText("Draft mode is not active.")
             return
+        try:
+            order_len = len(self.store.get_draft_order())
+        except Exception:
+            order_len = -1
+        self.logger.info("Draft clear requested (order_len=%s).", order_len)
         self.store.clear_draft_order()
         self._load_transcript(reset_history=False)
         self.stats_label.setText("Draft order cleared.")
+        self.logger.info("Draft cleared.")
 
     def _on_apply_draft(self) -> None:
         if not self.store.has_draft_order():
             self.stats_label.setText("Draft mode is not active.")
+            return
+        choice = QMessageBox.question(
+            self,
+            "Apply Draft to Original",
+            "This will overwrite the original transcript order and recalculate timestamps.\n\n"
+            "Timing will no longer match the source audio until you re-render/re-transcribe.\n\n"
+            "Continue?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if choice != QMessageBox.Yes:
+            self.stats_label.setText("Draft apply canceled.")
+            self.logger.info("Draft apply canceled by user.")
             return
         try:
             fps = self.resolve_api.get_timeline_fps()
@@ -415,6 +438,7 @@ class TranscriptEditorPanel(QWidget):
             fps = 24.0
         gap_frames = self._parse_int(self.gap_frames_edit.text(), 0)
         gap_sec = float(gap_frames) / float(fps) if gap_frames > 0 else 0.0
+        self.logger.info("Draft apply started (gap_frames=%d, fps=%.3f).", gap_frames, fps)
 
         base_sentences = self.store.get_sentences()
         ordered = self._apply_draft_order(base_sentences)
@@ -431,11 +455,13 @@ class TranscriptEditorPanel(QWidget):
             cursor = updated["t1"] + gap_sec
         if not applied:
             self.stats_label.setText("Draft apply produced no valid rows.")
+            self.logger.warning("Draft apply produced no valid rows.")
             return
         self.store.replace_all_sentences(applied)
         self.store.clear_draft_order()
         self._load_transcript(reset_history=False)
         self.stats_label.setText("Draft applied to original transcript.")
+        self.logger.info("Draft applied (rows=%d).", len(applied))
 
     def _on_merge_clicked(self) -> None:
         selected_rows = sorted({idx.row() for idx in self.table.selectionModel().selectedRows()})
@@ -750,6 +776,25 @@ class TranscriptEditorPanel(QWidget):
         except Exception:
             pass
         self._set_table_style(active)
+        self._set_button_primary(getattr(self, "export_resolve_btn", None), active)
+        self._set_button_primary(getattr(self, "export_txt_btn", None), active)
+        self._set_button_primary(getattr(self, "export_json_btn", None), active)
+
+    @staticmethod
+    def _set_button_primary(button: QPushButton | None, enabled: bool) -> None:
+        if button is None:
+            return
+        target = "PrimaryButton" if enabled else ""
+        if button.objectName() == target:
+            return
+        button.setObjectName(target)
+        try:
+            style = button.style()
+            style.unpolish(button)
+            style.polish(button)
+            button.update()
+        except Exception:
+            return
 
     def _set_table_style(self, draft_active: bool) -> None:
         if draft_active:
