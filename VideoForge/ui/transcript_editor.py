@@ -130,6 +130,8 @@ class TranscriptEditorPanel(QWidget):
         self._redo: List[List[dict]] = []
         self.resolve_api = ResolveAPI()
         self.logger = logging.getLogger("VideoForge.ui.Transcript")
+        self._draft_active = False
+        self._draft_original_count = 0
         self._build_ui()
         self._load_transcript()
 
@@ -196,6 +198,26 @@ class TranscriptEditorPanel(QWidget):
         line.setStyleSheet(f"background-color: {COLORS['button_bg']};")
         line.setFixedHeight(1)
         layout.addWidget(line)
+
+        self.draft_banner = QLabel("Draft Order Active (Reordered view)")
+        self.draft_banner.setStyleSheet(
+            "background-color: #3a2a1a; color: #f5c26b; padding: 6px; border-radius: 4px;"
+        )
+        self.draft_banner.setVisible(False)
+        layout.addWidget(self.draft_banner)
+
+        draft_controls = QHBoxLayout()
+        self.clear_draft_btn = QPushButton("Clear Draft")
+        self.clear_draft_btn.setCursor(Qt.PointingHandCursor)
+        self.clear_draft_btn.clicked.connect(self._on_clear_draft)
+        draft_controls.addWidget(self.clear_draft_btn)
+
+        self.apply_draft_btn = QPushButton("Apply Draft to Original")
+        self.apply_draft_btn.setCursor(Qt.PointingHandCursor)
+        self.apply_draft_btn.clicked.connect(self._on_apply_draft)
+        draft_controls.addWidget(self.apply_draft_btn)
+        draft_controls.addStretch()
+        layout.addLayout(draft_controls)
 
         options_row = QHBoxLayout()
         options_row.addWidget(QLabel("Max chars per line"))
@@ -273,7 +295,9 @@ class TranscriptEditorPanel(QWidget):
         if updated:
             self.logger.info("Transcript uid update: %d rows", updated)
             self.sentences = self.store.get_sentences()
-        if self.store.has_draft_order():
+        self._draft_original_count = len(self.sentences)
+        self._draft_active = self.store.has_draft_order()
+        if self._draft_active:
             self.sentences = self._apply_draft_order(self.sentences)
         if reset_history:
             self._history = [deepcopy(self.sentences)]
@@ -290,6 +314,7 @@ class TranscriptEditorPanel(QWidget):
             pass
 
         self._render_table()
+        self._update_draft_ui()
         self.logger.info("Transcript loaded: %d sentences", len(self.sentences))
 
     def _save_transcript(self) -> None:
@@ -359,6 +384,46 @@ class TranscriptEditorPanel(QWidget):
         self.sentences = snapshot
         self._render_table()
         self.stats_label.setText("Redo applied.")
+
+    def _on_clear_draft(self) -> None:
+        if not self.store.has_draft_order():
+            self.stats_label.setText("Draft mode is not active.")
+            return
+        self.store.clear_draft_order()
+        self._load_transcript(reset_history=False)
+        self.stats_label.setText("Draft order cleared.")
+
+    def _on_apply_draft(self) -> None:
+        if not self.store.has_draft_order():
+            self.stats_label.setText("Draft mode is not active.")
+            return
+        try:
+            fps = self.resolve_api.get_timeline_fps()
+        except Exception:
+            fps = 24.0
+        gap_frames = self._parse_int(self.gap_frames_edit.text(), 0)
+        gap_sec = float(gap_frames) / float(fps) if gap_frames > 0 else 0.0
+
+        base_sentences = self.store.get_sentences()
+        ordered = self._apply_draft_order(base_sentences)
+        cursor = 0.0
+        applied: List[dict] = []
+        for sentence in ordered:
+            duration = float(sentence.get("t1", 0.0)) - float(sentence.get("t0", 0.0))
+            if duration <= 0:
+                continue
+            updated = deepcopy(sentence)
+            updated["t0"] = cursor
+            updated["t1"] = cursor + duration
+            applied.append(updated)
+            cursor = updated["t1"] + gap_sec
+        if not applied:
+            self.stats_label.setText("Draft apply produced no valid rows.")
+            return
+        self.store.replace_all_sentences(applied)
+        self.store.clear_draft_order()
+        self._load_transcript(reset_history=False)
+        self.stats_label.setText("Draft applied to original transcript.")
 
     def _on_merge_clicked(self) -> None:
         selected_rows = sorted({idx.row() for idx in self.table.selectionModel().selectedRows()})
@@ -638,9 +703,52 @@ class TranscriptEditorPanel(QWidget):
             text_item.setFlags(text_item.flags() | Qt.ItemIsEditable)
             self.table.setItem(i, 3, text_item)
         duration = self.sentences[-1]["t1"] if self.sentences else 0.0
-        self.stats_label.setText(
-            f"Total: {len(self.sentences)} sentences | Duration: {self._format_time(duration)}"
-        )
+        if self._draft_active:
+            self.stats_label.setText(
+                f"Draft Mode Active | Total: {len(self.sentences)} (Original: {self._draft_original_count})"
+                f" | Duration: {self._format_time(duration)}"
+            )
+        else:
+            self.stats_label.setText(
+                f"Total: {len(self.sentences)} sentences | Duration: {self._format_time(duration)}"
+            )
+
+    def _update_draft_ui(self) -> None:
+        active = self._draft_active
+        try:
+            self.draft_banner.setVisible(active)
+        except Exception:
+            pass
+        try:
+            self.clear_draft_btn.setEnabled(active)
+            self.apply_draft_btn.setEnabled(active)
+        except Exception:
+            pass
+        self._set_table_style(active)
+
+    def _set_table_style(self, draft_active: bool) -> None:
+        if draft_active:
+            self.table.setStyleSheet(
+                "QTableWidget {"
+                "background-color: #3a2a1a;"
+                "gridline-color: #4a3a2a;"
+                "border: 1px solid #4a3a2a;"
+                "border-radius: 4px;"
+                "selection-background-color: #55402f;"
+                "}"
+                "QTableWidget::item:hover { background-color: #4a3727; }"
+            )
+        else:
+            self.table.setStyleSheet(
+                "QTableWidget {"
+                "background-color: #1a1a1a;"
+                "gridline-color: #3e3e3e;"
+                "border: 1px solid #3e3e3e;"
+                "border-radius: 4px;"
+                "selection-background-color: #4a4a4a;"
+                "}"
+                "QTableWidget::item:hover { background-color: #3a3a3a; }"
+            )
 
     def _push_history(self, reason: str) -> None:
         if not self.sentences:
