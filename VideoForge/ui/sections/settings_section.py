@@ -204,6 +204,37 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.silence_replace_btn.clicked.connect(panel._on_replace_with_rendered_clicked)
     card_layout.addWidget(panel.silence_replace_btn)
 
+    card_layout.addWidget(QLabel("J/L-cut Mode"))
+    panel.jlcut_mode_combo = QComboBox()
+    panel.jlcut_mode_combo.addItems(["Off", "J-cut", "L-cut", "Both", "Auto"])
+    saved_jlcut = str(panel.settings["broll"].get("jlcut_mode", "off")).strip().lower()
+    jlcut_map = {
+        "off": "Off",
+        "jcut": "J-cut",
+        "lcut": "L-cut",
+        "both": "Both",
+        "auto": "Auto",
+    }
+    panel.jlcut_mode_combo.setCurrentText(jlcut_map.get(saved_jlcut, "Off"))
+    panel.jlcut_mode_combo.currentTextChanged.connect(panel._on_jlcut_mode_changed)
+    card_layout.addWidget(panel.jlcut_mode_combo)
+
+    panel.jcut_offset_label = QLabel("J-cut offset (sec)")
+    card_layout.addWidget(panel.jcut_offset_label)
+    panel.jcut_offset_edit = QLineEdit()
+    panel.jcut_offset_edit.setFixedWidth(80)
+    panel.jcut_offset_edit.setText(str(panel.settings["broll"].get("jcut_offset", 0.0)))
+    panel.jcut_offset_edit.textChanged.connect(panel._on_jcut_offset_changed)
+    card_layout.addWidget(panel.jcut_offset_edit)
+
+    panel.lcut_offset_label = QLabel("L-cut offset (sec)")
+    card_layout.addWidget(panel.lcut_offset_label)
+    panel.lcut_offset_edit = QLineEdit()
+    panel.lcut_offset_edit.setFixedWidth(80)
+    panel.lcut_offset_edit.setText(str(panel.settings["broll"].get("lcut_offset", 0.0)))
+    panel.lcut_offset_edit.textChanged.connect(panel._on_lcut_offset_changed)
+    card_layout.addWidget(panel.lcut_offset_edit)
+
     cleanup_row = QHBoxLayout()
     cleanup_row.addWidget(QLabel("Project Cleanup"))
     cleanup_row.addStretch()

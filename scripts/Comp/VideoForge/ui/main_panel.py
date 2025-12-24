@@ -973,6 +973,35 @@ class VideoForgePanel(QWidget):
     def _on_silence_action_changed(self, value: str) -> None:
         Config.set("silence_action", value)
 
+    def _on_jlcut_mode_changed(self, value: str) -> None:
+        mode = str(value).strip().lower()
+        mode_map = {
+            "off": "off",
+            "j-cut": "jcut",
+            "l-cut": "lcut",
+            "both": "both",
+            "auto": "auto",
+        }
+        normalized = mode_map.get(mode, "off")
+        self.settings["broll"]["jlcut_mode"] = normalized
+        Config.set("jlcut_mode", normalized)
+
+    def _on_jcut_offset_changed(self, value: str) -> None:
+        try:
+            offset = float(value)
+        except Exception:
+            return
+        self.settings["broll"]["jcut_offset"] = max(0.0, offset)
+        Config.set("jcut_offset", float(self.settings["broll"]["jcut_offset"]))
+
+    def _on_lcut_offset_changed(self, value: str) -> None:
+        try:
+            offset = float(value)
+        except Exception:
+            return
+        self.settings["broll"]["lcut_offset"] = max(0.0, offset)
+        Config.set("lcut_offset", float(self.settings["broll"]["lcut_offset"]))
+
     # --- Event Handlers ---
 
     def _on_analyze_clicked(self) -> None:

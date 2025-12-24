@@ -9,6 +9,9 @@ broll:
   max_overlay_duration: 3.0
   fit_mode: center
   crossfade: 0.3
+  jlcut_mode: off
+  jcut_offset: 0.0
+  lcut_offset: 0.0
   cooldown_sec: 30
   hybrid_weights:
     vector: 0.50
