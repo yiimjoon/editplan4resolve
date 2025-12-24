@@ -122,15 +122,23 @@ def get_llm_instructions_for_mode(mode: str) -> str:
         return env["VIDEOFORGE_LLM_INSTRUCTIONS_SHORTFORM"].replace("\\n", "\n").strip()
     if normalized == "longform" and env.get("VIDEOFORGE_LLM_INSTRUCTIONS_LONGFORM"):
         return env["VIDEOFORGE_LLM_INSTRUCTIONS_LONGFORM"].replace("\\n", "\n").strip()
-    if env.get("VIDEOFORGE_LLM_INSTRUCTIONS"):
+    has_mode_specific = bool(
+        env.get("VIDEOFORGE_LLM_INSTRUCTIONS_SHORTFORM")
+        or env.get("VIDEOFORGE_LLM_INSTRUCTIONS_LONGFORM")
+    )
+    if env.get("VIDEOFORGE_LLM_INSTRUCTIONS") and not has_mode_specific:
         return env["VIDEOFORGE_LLM_INSTRUCTIONS"].replace("\\n", "\n").strip()
     try:
+        cfg_short = str(Config.get("llm_instructions_shortform", "")).strip()
+        cfg_long = str(Config.get("llm_instructions_longform", "")).strip()
+        cfg_has_mode_specific = bool(cfg_short or cfg_long)
         if normalized == "longform":
-            return str(Config.get("llm_instructions_longform", "")).strip()
+            return cfg_long
         if normalized == "shortform":
-            value = str(Config.get("llm_instructions_shortform", "")).strip()
-            if value:
-                return value
+            if cfg_short:
+                return cfg_short
+            if cfg_has_mode_specific:
+                return ""
         return str(Config.get("llm_instructions", "")).strip()
     except Exception:
         return ""
@@ -198,10 +206,12 @@ def write_llm_env(
             key = "VIDEOFORGE_LLM_INSTRUCTIONS"
         if instructions:
             env[key] = instructions.replace("\n", "\\n")
-            env["VIDEOFORGE_LLM_INSTRUCTIONS"] = instructions.replace("\n", "\\n")
+            if key != "VIDEOFORGE_LLM_INSTRUCTIONS":
+                env.pop("VIDEOFORGE_LLM_INSTRUCTIONS", None)
         else:
             env.pop(key, None)
-            env.pop("VIDEOFORGE_LLM_INSTRUCTIONS", None)
+            if key == "VIDEOFORGE_LLM_INSTRUCTIONS":
+                env.pop("VIDEOFORGE_LLM_INSTRUCTIONS", None)
 
     if instructions_mode is not None:
         mode = str(instructions_mode).strip().lower()
