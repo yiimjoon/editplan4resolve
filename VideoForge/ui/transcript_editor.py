@@ -15,12 +15,14 @@ from VideoForge.integrations.resolve_api import ResolveAPI
 from VideoForge.core.transcript_utils import split_sentence, wrap_text
 from VideoForge.ai.llm_hooks import (
     get_llm_instructions,
+    get_llm_instructions_mode,
     is_llm_enabled,
     suggest_reflow_lines,
     suggest_reorder,
     write_llm_env,
 )
 from VideoForge.ui.qt_compat import (
+    QComboBox,
     QFileDialog,
     QFrame,
     QHeaderView,
@@ -184,6 +186,16 @@ class TranscriptEditorPanel(QWidget):
         header.addLayout(export_layout)
 
         header.addSpacing(12)
+        self.instructions_mode_combo = QComboBox()
+        self.instructions_mode_combo.addItems(["shortform", "longform"])
+        current_mode = str(Config.get("llm_instructions_mode") or get_llm_instructions_mode())
+        if current_mode in {"shortform", "longform"}:
+            self.instructions_mode_combo.setCurrentText(current_mode)
+        else:
+            self.instructions_mode_combo.setCurrentText("shortform")
+        self.instructions_mode_combo.currentTextChanged.connect(self._on_instructions_mode_changed)
+        header.addWidget(self.instructions_mode_combo)
+
         instructions_btn = QPushButton("LLM Instructions")
         instructions_btn.setCursor(Qt.PointingHandCursor)
         instructions_btn.setToolTip("Edit optional LLM guidance")
@@ -554,6 +566,7 @@ class TranscriptEditorPanel(QWidget):
             )
 
     def _on_edit_instructions(self) -> None:
+        mode = str(Config.get("llm_instructions_mode") or get_llm_instructions_mode())
         current = str(get_llm_instructions() or Config.get("llm_instructions", ""))
         text, ok = QInputDialog.getMultiLineText(
             self,
@@ -563,9 +576,21 @@ class TranscriptEditorPanel(QWidget):
         )
         if not ok:
             return
-        Config.set("llm_instructions", text)
-        write_llm_env(instructions=text)
+        if mode == "longform":
+            Config.set("llm_instructions_longform", text)
+        else:
+            Config.set("llm_instructions_shortform", text)
+        Config.set("llm_instructions_mode", mode)
+        write_llm_env(instructions=text, instructions_mode=mode)
         self.stats_label.setText("LLM instructions updated.")
+
+    def _on_instructions_mode_changed(self, value: str) -> None:
+        mode = str(value).strip().lower()
+        if mode not in {"shortform", "longform"}:
+            return
+        Config.set("llm_instructions_mode", mode)
+        write_llm_env(instructions_mode=mode)
+        self.stats_label.setText(f"LLM mode set: {mode}")
 
     def _export_to_resolve(self) -> None:
         if not self.sentences:

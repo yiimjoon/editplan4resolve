@@ -111,6 +111,19 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.llm_model_edit.setEnabled(llm_enabled)
     panel.llm_key_edit.setEnabled(llm_enabled)
 
+    card_layout.addWidget(QLabel("LLM Instructions Preset"))
+    panel.llm_instructions_mode_combo = QComboBox()
+    panel.llm_instructions_mode_combo.addItems(["shortform", "longform"])
+    saved_mode = str(Config.get("llm_instructions_mode") or "shortform").strip().lower()
+    if saved_mode in {"shortform", "longform"}:
+        panel.llm_instructions_mode_combo.setCurrentText(saved_mode)
+    else:
+        panel.llm_instructions_mode_combo.setCurrentText("shortform")
+    panel.llm_instructions_mode_combo.currentTextChanged.connect(
+        panel._on_llm_instructions_mode_changed
+    )
+    card_layout.addWidget(panel.llm_instructions_mode_combo)
+
     srt_row = QHBoxLayout()
     srt_row.setSpacing(6)
     panel.srt_path_edit = QLineEdit()
@@ -124,12 +137,12 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     card_layout.addLayout(srt_row)
 
     card_layout.addWidget(QLabel("Silence Removal"))
-    panel.whisper_silence_checkbox = QCheckBox("Remove silence after transcription")
-    panel.whisper_silence_checkbox.setChecked(
-        bool(panel.settings["silence"].get("enable_removal", False))
-    )
-    panel.whisper_silence_checkbox.stateChanged.connect(panel._on_whisper_silence_toggled)
-    card_layout.addWidget(panel.whisper_silence_checkbox)
+    card_layout.addWidget(QLabel("Silence Preset"))
+    panel.silence_preset_combo = QComboBox()
+    panel.silence_preset_combo.addItems(["Balanced", "Aggressive", "Conservative", "Custom"])
+    panel.silence_preset_combo.setCurrentText(str(Config.get("silence_preset") or "Balanced"))
+    panel.silence_preset_combo.currentTextChanged.connect(panel._on_silence_preset_changed)
+    card_layout.addWidget(panel.silence_preset_combo)
 
     panel.render_min_duration_label = QLabel("Min Segment Duration (sec)")
     card_layout.addWidget(panel.render_min_duration_label)
@@ -159,19 +172,10 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.tail_ratio_edit.textChanged.connect(panel._on_tail_ratio_changed)
     card_layout.addWidget(panel.tail_ratio_edit)
 
-    panel.silence_dry_run_checkbox = QCheckBox("Dry run (log only, no timeline changes)")
-    panel.silence_dry_run_checkbox.setChecked(True)
-    card_layout.addWidget(panel.silence_dry_run_checkbox)
-
-    panel.silence_detect_btn = QPushButton("Detect Silence (log segments)")
-    panel.silence_detect_btn.setCursor(Qt.PointingHandCursor)
-    panel.silence_detect_btn.clicked.connect(panel._on_detect_silence_clicked)
-    card_layout.addWidget(panel.silence_detect_btn)
-
-    panel.silence_apply_btn = QPushButton("Apply Silence Cuts to Timeline (debug)")
-    panel.silence_apply_btn.setCursor(Qt.PointingHandCursor)
-    panel.silence_apply_btn.clicked.connect(panel._on_apply_silence_to_timeline_clicked)
-    card_layout.addWidget(panel.silence_apply_btn)
+    try:
+        panel._on_silence_preset_changed(panel.silence_preset_combo.currentText())
+    except Exception:
+        pass
 
     panel.silence_export_btn = QPushButton("Render Silence-Removed File (ffmpeg)")
     panel.silence_export_btn.setCursor(Qt.PointingHandCursor)

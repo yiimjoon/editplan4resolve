@@ -277,6 +277,12 @@ class VideoForgePanel(QWidget):
         self._start_resolve_watchdog()
         if self._startup_warning:
             self._set_status(self._startup_warning)
+        try:
+            preset = Config.get("silence_preset")
+            if preset:
+                self._on_silence_preset_changed(str(preset))
+        except Exception:
+            pass
         self._restore_library_path()
         logging.getLogger("VideoForge.ui").info("UI init done (%s)", VERSION)
 
@@ -598,6 +604,10 @@ class VideoForgePanel(QWidget):
             return
         self.settings["silence"]["render_min_duration"] = duration
         Config.set("silence_render_min_duration", duration)
+        try:
+            self.silence_preset_combo.setCurrentText("Custom")
+        except Exception:
+            pass
 
     def _on_tail_min_duration_changed(self, value: str) -> None:
         try:
@@ -608,6 +618,10 @@ class VideoForgePanel(QWidget):
             return
         self.settings["silence"]["tail_min_duration"] = duration
         Config.set("silence_tail_min_duration", duration)
+        try:
+            self.silence_preset_combo.setCurrentText("Custom")
+        except Exception:
+            pass
 
     def _on_tail_ratio_changed(self, value: str) -> None:
         try:
@@ -618,6 +632,10 @@ class VideoForgePanel(QWidget):
             return
         self.settings["silence"]["tail_ratio"] = ratio
         Config.set("silence_tail_ratio", ratio)
+        try:
+            self.silence_preset_combo.setCurrentText("Custom")
+        except Exception:
+            pass
 
     def _on_llm_provider_changed(self, value: str) -> None:
         provider = str(value).strip().lower()
@@ -652,9 +670,41 @@ class VideoForgePanel(QWidget):
         write_llm_env(api_key=str(value))
         self._update_llm_buttons()
 
+    def _on_llm_instructions_mode_changed(self, value: str) -> None:
+        mode = str(value).strip().lower()
+        if mode not in {"shortform", "longform"}:
+            return
+        Config.set("llm_instructions_mode", mode)
+        write_llm_env(instructions_mode=mode)
+        self._update_llm_buttons()
+
     def _on_engine_changed(self, value: str) -> None:
         Config.set("transcription_engine", value)
         self._update_transcript_option_visibility(value)
+
+    def _on_silence_preset_changed(self, value: str) -> None:
+        preset = str(value).strip()
+        presets = {
+            "Balanced": {"render_min_duration": 0.6, "tail_min_duration": 0.8, "tail_ratio": 0.2},
+            "Aggressive": {"render_min_duration": 0.8, "tail_min_duration": 1.0, "tail_ratio": 0.25},
+            "Conservative": {"render_min_duration": 0.4, "tail_min_duration": 0.6, "tail_ratio": 0.15},
+        }
+        if preset not in presets and preset != "Custom":
+            return
+        Config.set("silence_preset", preset)
+        if preset == "Custom":
+            return
+        values = presets[preset]
+        self.settings["silence"].update(values)
+        Config.set("silence_render_min_duration", values["render_min_duration"])
+        Config.set("silence_tail_min_duration", values["tail_min_duration"])
+        Config.set("silence_tail_ratio", values["tail_ratio"])
+        try:
+            self.render_min_duration_edit.setText(str(values["render_min_duration"]))
+            self.tail_min_duration_edit.setText(str(values["tail_min_duration"]))
+            self.tail_ratio_edit.setText(str(values["tail_ratio"]))
+        except Exception:
+            pass
 
     def _update_transcript_option_visibility(self, engine: str) -> None:
         engine_key = str(engine).strip().lower()

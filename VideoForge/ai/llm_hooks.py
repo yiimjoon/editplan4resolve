@@ -91,10 +91,46 @@ def get_llm_api_key() -> str | None:
 
 
 def get_llm_instructions() -> str:
+    return get_llm_instructions_for_mode(get_llm_instructions_mode())
+
+
+def get_llm_instructions_mode() -> str:
+    mode = os.environ.get("VIDEOFORGE_LLM_INSTRUCTIONS_MODE")
+    if mode:
+        return str(mode).strip().lower()
     env = load_llm_env()
+    if env.get("VIDEOFORGE_LLM_INSTRUCTIONS_MODE"):
+        return str(env["VIDEOFORGE_LLM_INSTRUCTIONS_MODE"]).strip().lower()
+    try:
+        cfg_mode = Config.get("llm_instructions_mode")
+        if cfg_mode:
+            return str(cfg_mode).strip().lower()
+    except Exception:
+        pass
+    return "shortform"
+
+
+def get_llm_instructions_for_mode(mode: str) -> str:
+    env = load_llm_env()
+    normalized = str(mode).strip().lower()
+    if normalized in {"short", "shortform", "short_form"}:
+        normalized = "shortform"
+    if normalized in {"long", "longform", "long_form"}:
+        normalized = "longform"
+
+    if normalized == "shortform" and env.get("VIDEOFORGE_LLM_INSTRUCTIONS_SHORTFORM"):
+        return env["VIDEOFORGE_LLM_INSTRUCTIONS_SHORTFORM"].replace("\\n", "\n").strip()
+    if normalized == "longform" and env.get("VIDEOFORGE_LLM_INSTRUCTIONS_LONGFORM"):
+        return env["VIDEOFORGE_LLM_INSTRUCTIONS_LONGFORM"].replace("\\n", "\n").strip()
     if env.get("VIDEOFORGE_LLM_INSTRUCTIONS"):
         return env["VIDEOFORGE_LLM_INSTRUCTIONS"].replace("\\n", "\n").strip()
     try:
+        if normalized == "longform":
+            return str(Config.get("llm_instructions_longform", "")).strip()
+        if normalized == "shortform":
+            value = str(Config.get("llm_instructions_shortform", "")).strip()
+            if value:
+                return value
         return str(Config.get("llm_instructions", "")).strip()
     except Exception:
         return ""
@@ -130,6 +166,7 @@ def write_llm_env(
     model: str | None = None,
     api_key: str | None = None,
     instructions: str | None = None,
+    instructions_mode: str | None = None,
 ) -> None:
     env = load_llm_env()
     if provider is not None:
@@ -148,10 +185,32 @@ def write_llm_env(
         else:
             env.pop("VIDEOFORGE_GEMINI_API_KEY", None)
     if instructions is not None:
+        mode = (
+            str(instructions_mode).strip().lower()
+            if instructions_mode is not None
+            else get_llm_instructions_mode()
+        )
+        if mode in {"short", "shortform", "short_form"}:
+            key = "VIDEOFORGE_LLM_INSTRUCTIONS_SHORTFORM"
+        elif mode in {"long", "longform", "long_form"}:
+            key = "VIDEOFORGE_LLM_INSTRUCTIONS_LONGFORM"
+        else:
+            key = "VIDEOFORGE_LLM_INSTRUCTIONS"
         if instructions:
+            env[key] = instructions.replace("\n", "\\n")
             env["VIDEOFORGE_LLM_INSTRUCTIONS"] = instructions.replace("\n", "\\n")
         else:
+            env.pop(key, None)
             env.pop("VIDEOFORGE_LLM_INSTRUCTIONS", None)
+
+    if instructions_mode is not None:
+        mode = str(instructions_mode).strip().lower()
+        if mode in {"short", "shortform", "short_form"}:
+            env["VIDEOFORGE_LLM_INSTRUCTIONS_MODE"] = "shortform"
+        elif mode in {"long", "longform", "long_form"}:
+            env["VIDEOFORGE_LLM_INSTRUCTIONS_MODE"] = "longform"
+        else:
+            env.pop("VIDEOFORGE_LLM_INSTRUCTIONS_MODE", None)
 
     LLM_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"{key}={value}" for key, value in env.items()]
