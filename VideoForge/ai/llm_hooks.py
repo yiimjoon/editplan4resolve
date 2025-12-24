@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import logging
 from pathlib import Path
 from typing import Any, Dict, List
 from urllib import request
@@ -12,6 +13,7 @@ from urllib.error import HTTPError, URLError
 from VideoForge.config.config_manager import Config
 
 LEGACY_LLM_ENV_PATH = Path(__file__).resolve().parents[1] / "data" / "llm.env"
+logger = logging.getLogger("VideoForge.ai.llm")
 
 
 def _resolve_llm_env_path() -> Path:
@@ -29,6 +31,43 @@ def _resolve_llm_env_path() -> Path:
 
 
 LLM_ENV_PATH = _resolve_llm_env_path()
+
+def _llm_debug_prompt_enabled() -> bool:
+    flag = os.environ.get("VIDEOFORGE_LLM_DEBUG_PROMPT")
+    if flag is None:
+        try:
+            flag = load_llm_env().get("VIDEOFORGE_LLM_DEBUG_PROMPT")
+        except Exception:
+            flag = None
+    if flag is not None:
+        return str(flag).strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        cfg = Config.get("llm_debug_prompt")
+        if cfg is not None:
+            return bool(cfg)
+    except Exception:
+        pass
+    return False
+
+
+def _log_llm_prompt(label: str, prompt: str) -> None:
+    if not _llm_debug_prompt_enabled():
+        return
+    text = str(prompt)
+    head = text[:600].replace("\r", "\\r")
+    tail = text[-300:].replace("\r", "\\r") if len(text) > 600 else ""
+    try:
+        model = get_llm_model().strip()
+    except Exception:
+        model = "unknown"
+    try:
+        mode = get_llm_instructions_mode()
+    except Exception:
+        mode = "unknown"
+    logger.info("[LLM PROMPT] %s | model=%s | mode=%s | chars=%d", label, model, mode, len(text))
+    logger.info("[LLM PROMPT] head:\n%s", head)
+    if tail:
+        logger.info("[LLM PROMPT] tail:\n%s", tail)
 
 
 def get_llm_provider() -> str | None:
@@ -243,6 +282,7 @@ def _call_gemini(prompt: str) -> str:
             "Gemini API key missing. Set VIDEOFORGE_GEMINI_API_KEY or "
             "Config llm_api_key."
         )
+    _log_llm_prompt("gemini", prompt)
     model = get_llm_model().strip()
     if model.startswith("models/"):
         model = model[len("models/"):]
