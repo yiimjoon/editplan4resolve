@@ -224,6 +224,9 @@ DEFAULT_SETTINGS = {
         "min_keep_duration": 0.4,
         "buffer_before": 0.2,
         "buffer_after": 0.3,
+        "render_min_duration": 0.6,
+        "tail_min_duration": 0.8,
+        "tail_ratio": 0.2,
     },
     "broll": {
         "matching_threshold": 0.65,
@@ -757,6 +760,9 @@ class VideoForgePanel(QWidget):
                     silence_segments=None,
                     output_path=str(temp_path),
                     source_range=source_range,
+                    min_duration=self.settings["silence"].get("render_min_duration", 0.6),
+                    tail_min_duration=self.settings["silence"].get("tail_min_duration", 0.8),
+                    tail_ratio=self.settings["silence"].get("tail_ratio", 0.2),
                 )
                 logging.getLogger("VideoForge.ui").info("Detecting silence on draft render...")
                 post_segments = process_silence(
@@ -771,6 +777,7 @@ class VideoForgePanel(QWidget):
                     segments=post_segments,
                     output_path=str(output_path),
                     source_range=None,
+                    min_duration=self.settings["silence"].get("render_min_duration", 0.6),
                 )
                 try:
                     temp_path.unlink()
@@ -784,6 +791,7 @@ class VideoForgePanel(QWidget):
                     segments=keep_segments,
                     output_path=str(output_path),
                     source_range=source_range,
+                    min_duration=self.settings["silence"].get("render_min_duration", 0.6),
                 )
             logging.getLogger("VideoForge.ui").info("Silence render output: %s", output_path)
             Config.set("last_silence_render", str(output_path))

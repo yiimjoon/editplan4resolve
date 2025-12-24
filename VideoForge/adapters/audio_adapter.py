@@ -166,6 +166,7 @@ def render_silence_removed(
     segments: List[Dict[str, float]],
     output_path: str,
     source_range: tuple[float, float] | None = None,
+    min_duration: float = 0.4,
 ) -> str:
     """Render a new media file with only the keep segments concatenated."""
     if not Path(video_path).exists():
@@ -174,6 +175,28 @@ def render_silence_removed(
         raise RuntimeError("No keep segments provided for silence removal render.")
 
     logger = logging.getLogger(__name__)
+    filtered: List[Dict[str, float]] = []
+    short_segments: List[tuple[float, float, float]] = []
+    for seg in segments:
+        t0 = float(seg.get("t0", 0.0))
+        t1 = float(seg.get("t1", 0.0))
+        dur = t1 - t0
+        if dur < min_duration:
+            short_segments.append((t0, t1, dur))
+            continue
+        filtered.append(seg)
+    if short_segments:
+        sample = ", ".join(
+            f"{t0:.2f}-{t1:.2f} ({dur:.2f}s)" for t0, t1, dur in short_segments[:6]
+        )
+        logger.info(
+            "Silence render: dropped %d short segments (< %.2fs). Sample: %s",
+            len(short_segments),
+            min_duration,
+            sample,
+        )
+    if not filtered:
+        raise RuntimeError("No keep segments after min duration filter.")
     clip_start = None
     clip_end = None
     if source_range:
@@ -187,7 +210,7 @@ def render_silence_removed(
             clip_end,
         )
 
-    merged = _merge_segments(segments)
+    merged = _merge_segments(filtered)
     if clip_start is not None and clip_end is not None:
         trimmed: List[Dict[str, float]] = []
         for seg in merged:
