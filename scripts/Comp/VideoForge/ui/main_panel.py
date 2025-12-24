@@ -18,6 +18,7 @@ from VideoForge.plugin.resolve_bridge import ResolveBridge
 from VideoForge.core.silence_processor import (
     process_silence,
     render_silence_removed_with_reorder,
+    build_ordered_segments_for_draft,
 )
 from VideoForge.adapters.audio_adapter import render_silence_removed
 from VideoForge.errors import VideoForgeError
@@ -237,6 +238,10 @@ DEFAULT_SETTINGS = {
         "hybrid_weights": {"vector": 0.5, "text": 0.5, "prior": 0.1},
         "visual_similarity_threshold": 0.85,
         "cooldown_penalty": 0.4,
+        "jlcut_mode": "off",
+        "jcut_offset": 0.0,
+        "lcut_offset": 0.0,
+        "jlcut_overlap_frames": 15,
     },
     "whisper": {"task": "transcribe", "language": "auto"},
     "query": {"top_n_tokens": 6},
@@ -257,6 +262,7 @@ class VideoForgePanel(QWidget):
         self._startup_warning: Optional[str] = None
         self.colors = COLORS
         self.settings = self._load_settings()
+        self._apply_broll_overrides()
         whisper_silence_override = Config.get("whisper_silence_enabled")
         if whisper_silence_override is not None:
             self.settings["silence"]["enable_removal"] = bool(whisper_silence_override)
@@ -473,6 +479,23 @@ class VideoForgePanel(QWidget):
             return
         self.settings["silence"][key] = value
 
+    def _apply_broll_overrides(self) -> None:
+        broll = self.settings.setdefault("broll", {})
+        mode = Config.get("jlcut_mode")
+        if isinstance(mode, str) and mode.strip():
+            broll["jlcut_mode"] = mode.strip().lower()
+        for key in ("jcut_offset", "lcut_offset", "jlcut_overlap_frames"):
+            override = Config.get(key)
+            if override is None:
+                continue
+            try:
+                if key == "jlcut_overlap_frames":
+                    broll[key] = int(float(override))
+                else:
+                    broll[key] = float(override)
+            except (TypeError, ValueError):
+                continue
+
     def _update_status_safe(self, message: str) -> None:
         logging.getLogger(__name__).info(message)
         self.status_signal.emit(message)
@@ -636,6 +659,12 @@ class VideoForgePanel(QWidget):
             self.silence_preset_combo.setCurrentText("Custom")
         except Exception:
             pass
+
+    def _on_render_mode_changed(self, value: str) -> None:
+        mode = str(value).strip()
+        if mode not in {"Silence Removal", "J/L-cut"}:
+            mode = "Silence Removal"
+        Config.set("render_mode", mode)
 
     def _on_llm_provider_changed(self, value: str) -> None:
         provider = str(value).strip().lower()
@@ -853,6 +882,27 @@ class VideoForgePanel(QWidget):
         self._set_status("Rendering silence-removed file...")
 
         def _render():
+            jlcut_mode = self.settings.get("broll", {}).get("jlcut_mode", "off")
+            jcut_offset = float(self.settings.get("broll", {}).get("jcut_offset", 0.0))
+            lcut_offset = float(self.settings.get("broll", {}).get("lcut_offset", 0.0))
+            render_mode = Config.get("render_mode", "Silence Removal")
+            if render_mode not in {"Silence Removal", "J/L-cut"}:
+                render_mode = "Silence Removal"
+            overlap_frames = int(Config.get("jlcut_overlap_frames", 15) or 15)
+            logging.getLogger("VideoForge.ui").info(
+                "Silence render J/L-cut settings: mode=%s j=%.3fs l=%.3fs",
+                jlcut_mode,
+                jcut_offset,
+                lcut_offset,
+            )
+            logging.getLogger("VideoForge.ui").info(
+                "Silence render mode: %s",
+                render_mode,
+            )
+            logging.getLogger("VideoForge.ui").info(
+                "J/L-cut overlap frames: %d",
+                overlap_frames,
+            )
             keep_segments = process_silence(
                 video_path=video_path,
                 threshold_db=self.settings["silence"]["threshold_db"],
@@ -880,39 +930,77 @@ class VideoForgePanel(QWidget):
                     base_path.with_name(f"{base_path.stem}_reordered{base_path.suffix}")
                 )
                 logging.getLogger("VideoForge.ui").info("Draft render temp: %s", temp_path)
-                render_silence_removed_with_reorder(
-                    video_path=video_path,
-                    sentences=sentences,
-                    draft_order=draft_order,
-                    silence_segments=None,
-                    output_path=str(temp_path),
-                    source_range=source_range,
-                    min_duration=self.settings["silence"].get("render_min_duration", 0.6),
-                    tail_min_duration=self.settings["silence"].get("tail_min_duration", 0.8),
-                    tail_ratio=self.settings["silence"].get("tail_ratio", 0.2),
-                )
-                logging.getLogger("VideoForge.ui").info("Detecting silence on draft render...")
-                post_segments = process_silence(
-                    video_path=str(temp_path),
-                    threshold_db=self.settings["silence"]["threshold_db"],
-                    min_keep=self.settings["silence"]["min_keep_duration"],
-                    buffer_before=self.settings["silence"]["buffer_before"],
-                    buffer_after=self.settings["silence"]["buffer_after"],
-                )
-                render_silence_removed(
-                    video_path=str(temp_path),
-                    segments=post_segments,
-                    output_path=str(output_path),
-                    source_range=None,
-                    min_duration=self.settings["silence"].get("render_min_duration", 0.6),
-                )
-                try:
-                    temp_path.unlink()
-                except Exception:
-                    logging.getLogger("VideoForge.ui").info(
-                        "Draft render temp retained: %s", temp_path
+                if render_mode == "J/L-cut":
+                    ordered_segments = build_ordered_segments_for_draft(
+                        sentences,
+                        draft_order,
+                        min_duration=self.settings["silence"].get("render_min_duration", 0.6),
+                        tail_min_duration=self.settings["silence"].get("tail_min_duration", 0.8),
+                        tail_ratio=self.settings["silence"].get("tail_ratio", 0.2),
+                        source_range=source_range,
                     )
+                    ok = self.bridge.resolve_api.insert_overlapped_segments(
+                        clip,
+                        ordered_segments,
+                        overlap_frames=overlap_frames,
+                        include_audio=True,
+                    )
+                    return ok
+                else:
+                    render_silence_removed_with_reorder(
+                        video_path=video_path,
+                        sentences=sentences,
+                        draft_order=draft_order,
+                        silence_segments=None,
+                        output_path=str(temp_path),
+                        source_range=source_range,
+                        min_duration=self.settings["silence"].get("render_min_duration", 0.6),
+                        tail_min_duration=self.settings["silence"].get("tail_min_duration", 0.8),
+                        tail_ratio=self.settings["silence"].get("tail_ratio", 0.2),
+                        jlcut_mode=jlcut_mode,
+                        jcut_offset=jcut_offset,
+                        lcut_offset=lcut_offset,
+                    )
+                    logging.getLogger("VideoForge.ui").info("Detecting silence on draft render...")
+                    post_segments = process_silence(
+                        video_path=str(temp_path),
+                        threshold_db=self.settings["silence"]["threshold_db"],
+                        min_keep=self.settings["silence"]["min_keep_duration"],
+                        buffer_before=self.settings["silence"]["buffer_before"],
+                        buffer_after=self.settings["silence"]["buffer_after"],
+                    )
+                    if post_segments:
+                        total_keep = sum(
+                            float(seg["t1"]) - float(seg["t0"]) for seg in post_segments
+                        )
+                        logging.getLogger("VideoForge.ui").info(
+                            "Draft silence keep: %d segments (total %.2fs)",
+                            len(post_segments),
+                            total_keep,
+                        )
+                    render_silence_removed(
+                        video_path=str(temp_path),
+                        segments=post_segments,
+                        output_path=str(output_path),
+                        source_range=None,
+                        min_duration=self.settings["silence"].get("render_min_duration", 0.6),
+                    )
+                if render_mode != "J/L-cut":
+                    try:
+                        temp_path.unlink()
+                    except Exception:
+                        logging.getLogger("VideoForge.ui").info(
+                            "Draft render temp retained: %s", temp_path
+                        )
             else:
+                if render_mode == "J/L-cut":
+                    logging.getLogger("VideoForge.ui").info(
+                        "J/L-cut requested without draft order; using silence removal."
+                    )
+                if jlcut_mode and str(jlcut_mode).lower() not in {"off", "none"}:
+                    logging.getLogger("VideoForge.ui").info(
+                        "J/L-cut skipped (no draft order)."
+                    )
                 render_silence_removed(
                     video_path=video_path,
                     segments=keep_segments,
@@ -925,6 +1013,9 @@ class VideoForgePanel(QWidget):
             return str(output_path)
 
         def _done(result):
+            if result is True and Config.get("render_mode", "Silence Removal") == "J/L-cut":
+                self._set_status("J/L-cut overlap inserted above tracks.")
+                return
             action = Config.get("silence_action", "Insert Above Track (keep original)")
             if action == "Manual (Media Pool only)":
                 try:
@@ -1001,6 +1092,15 @@ class VideoForgePanel(QWidget):
             return
         self.settings["broll"]["lcut_offset"] = max(0.0, offset)
         Config.set("lcut_offset", float(self.settings["broll"]["lcut_offset"]))
+
+    def _on_jlcut_overlap_changed(self, value: str) -> None:
+        try:
+            frames = int(float(value))
+        except Exception:
+            return
+        frames = max(0, frames)
+        self.settings["broll"]["jlcut_overlap_frames"] = frames
+        Config.set("jlcut_overlap_frames", frames)
 
     # --- Event Handlers ---
 

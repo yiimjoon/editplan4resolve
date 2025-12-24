@@ -172,12 +172,22 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.tail_ratio_edit.textChanged.connect(panel._on_tail_ratio_changed)
     card_layout.addWidget(panel.tail_ratio_edit)
 
+    card_layout.addWidget(QLabel("Render Mode"))
+    panel.render_mode_combo = QComboBox()
+    panel.render_mode_combo.addItems(["Silence Removal", "J/L-cut"])
+    saved_render_mode = Config.get("render_mode", "Silence Removal")
+    if saved_render_mode not in {"Silence Removal", "J/L-cut"}:
+        saved_render_mode = "Silence Removal"
+    panel.render_mode_combo.setCurrentText(saved_render_mode)
+    panel.render_mode_combo.currentTextChanged.connect(panel._on_render_mode_changed)
+    card_layout.addWidget(panel.render_mode_combo)
+
     try:
         panel._on_silence_preset_changed(panel.silence_preset_combo.currentText())
     except Exception:
         pass
 
-    panel.silence_export_btn = QPushButton("Render Silence-Removed File (ffmpeg)")
+    panel.silence_export_btn = QPushButton("Render File (ffmpeg)")
     panel.silence_export_btn.setCursor(Qt.PointingHandCursor)
     panel.silence_export_btn.clicked.connect(panel._on_render_silence_removed_clicked)
     card_layout.addWidget(panel.silence_export_btn)
@@ -234,6 +244,21 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.lcut_offset_edit.setText(str(panel.settings["broll"].get("lcut_offset", 0.0)))
     panel.lcut_offset_edit.textChanged.connect(panel._on_lcut_offset_changed)
     card_layout.addWidget(panel.lcut_offset_edit)
+
+    panel.jlcut_overlap_label = QLabel("J/L overlap (frames)")
+    card_layout.addWidget(panel.jlcut_overlap_label)
+    panel.jlcut_overlap_edit = QLineEdit()
+    panel.jlcut_overlap_edit.setFixedWidth(80)
+    panel.jlcut_overlap_edit.setText(
+        str(
+            panel.settings["broll"].get(
+                "jlcut_overlap_frames",
+                Config.get("jlcut_overlap_frames", 15),
+            )
+        )
+    )
+    panel.jlcut_overlap_edit.textChanged.connect(panel._on_jlcut_overlap_changed)
+    card_layout.addWidget(panel.jlcut_overlap_edit)
 
     cleanup_row = QHBoxLayout()
     cleanup_row.addWidget(QLabel("Project Cleanup"))

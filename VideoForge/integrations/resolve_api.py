@@ -927,6 +927,53 @@ class ResolveAPI:
         logger.info("Insert clip debug: no supported insert method")
         return None
 
+    def insert_clip_at_position_with_range(
+        self,
+        track_type: str,
+        track_index: int,
+        clip: Any,
+        timeline_position: int,
+        source_start: int,
+        source_end: int,
+    ) -> Optional[Any]:
+        """Insert a media pool clip with source in/out frames at a timeline position."""
+        self.ensure_track(track_type, track_index)
+        media_pool = self.get_media_pool()
+        record_frame = int(timeline_position)
+        start_frame = max(0, int(source_start))
+        end_frame = max(start_frame + 1, int(source_end))
+
+        logger.info(
+            "Insert clip range debug: track=%s index=%s record=%s source=%s-%s",
+            track_type,
+            track_index,
+            record_frame,
+            start_frame,
+            end_frame,
+        )
+
+        append_method = getattr(media_pool, "AppendToTimeline", None)
+        if callable(append_method):
+            payload = {
+                "mediaPoolItem": clip,
+                "startFrame": start_frame,
+                "endFrame": end_frame,
+                "recordFrame": record_frame,
+                "trackIndex": int(track_index),
+                "trackType": track_type,
+            }
+            try:
+                append_method([payload])
+                logger.info("Insert clip range debug: AppendToTimeline payload succeeded: %s", payload)
+                return self._find_item_near_frame(
+                    track_type, track_index, int(record_frame)
+                )
+            except Exception as exc:
+                logger.info("Insert clip range debug: AppendToTimeline failed: %s", exc)
+
+        logger.info("Insert clip range debug: no supported insert method")
+        return None
+
     def get_timeline_fps(self) -> float:
         """Return timeline FPS or 24 if missing."""
         project = self.get_current_project()
@@ -1111,6 +1158,110 @@ class ResolveAPI:
                 logger.info("Insert above debug: no linked audio track detected; skipping audio insert")
 
         return ok
+
+    def insert_overlapped_segments(
+        self,
+        timeline_clip: Any,
+        segments: List[Dict[str, float]],
+        overlap_frames: int = 15,
+        include_audio: bool = True,
+    ) -> bool:
+        """Insert segments on alternating tracks with frame overlap."""
+        if not timeline_clip:
+            return False
+        if not segments:
+            logger.info("Overlap insert skipped: no segments")
+            return False
+
+        media_path = self._timeline_item_media_path(timeline_clip)
+        if not media_path:
+            logger.info("Overlap insert failed: missing media path")
+            return False
+        media_item = self.import_media_if_needed(str(media_path))
+        if media_item is None:
+            logger.info("Overlap insert failed: import failed for %s", media_path)
+            return False
+
+        timeline_start, _timeline_end = self._get_item_range(timeline_clip)
+        if timeline_start is None:
+            logger.info("Overlap insert failed: missing timeline start frame")
+            return False
+
+        fps = self.get_timeline_fps()
+        overlap_frames = max(0, int(overlap_frames))
+
+        base_video_index = self._safe_call(timeline_clip, "GetTrackIndex") or 1
+        video_track_a = int(base_video_index) + 1
+        video_track_b = int(base_video_index) + 2
+        audio_track_a = None
+        audio_track_b = None
+        if include_audio:
+            audio_index = self._find_linked_audio_track_index(timeline_clip)
+            if audio_index is not None:
+                audio_track_a = int(audio_index) + 1
+                audio_track_b = int(audio_index) + 2
+
+        logger.info(
+            "Overlap insert: video tracks %s/%s audio tracks %s/%s overlap=%s frames",
+            video_track_a,
+            video_track_b,
+            audio_track_a,
+            audio_track_b,
+            overlap_frames,
+        )
+
+        cursor = int(timeline_start)
+        inserted = 0
+        dropped = 0
+
+        for idx, seg in enumerate(segments):
+            t0 = float(seg.get("t0", 0.0))
+            t1 = float(seg.get("t1", 0.0))
+            if t1 <= t0:
+                dropped += 1
+                continue
+            start_frame = int(round(t0 * fps))
+            end_frame = int(round(t1 * fps))
+            duration = end_frame - start_frame
+            if duration <= 0:
+                dropped += 1
+                continue
+            if overlap_frames and duration <= overlap_frames:
+                dropped += 1
+                continue
+
+            track_video = video_track_a if (idx % 2 == 0) else video_track_b
+            track_audio = audio_track_a if (idx % 2 == 0) else audio_track_b
+
+            video_item = self.insert_clip_at_position_with_range(
+                "video",
+                track_video,
+                media_item,
+                cursor,
+                start_frame,
+                end_frame,
+            )
+            ok = video_item is not None
+            if include_audio and track_audio is not None:
+                audio_item = self.insert_clip_at_position_with_range(
+                    "audio",
+                    track_audio,
+                    media_item,
+                    cursor,
+                    start_frame,
+                    end_frame,
+                )
+                ok = ok and (audio_item is not None)
+
+            if ok:
+                inserted += 1
+
+            cursor += max(1, duration - overlap_frames)
+
+        logger.info(
+            "Overlap insert complete: inserted=%d dropped=%d", inserted, dropped
+        )
+        return inserted > 0
 
     def _find_linked_audio_track_index(self, video_item: Any) -> Optional[int]:
         """Try to find an audio timeline item that matches the given video item."""

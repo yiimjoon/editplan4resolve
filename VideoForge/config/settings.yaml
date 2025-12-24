@@ -12,6 +12,7 @@ broll:
   jlcut_mode: off
   jcut_offset: 0.0
   lcut_offset: 0.0
+  jlcut_overlap_frames: 15
   cooldown_sec: 30
   hybrid_weights:
     vector: 0.50

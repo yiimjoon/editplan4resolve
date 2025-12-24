@@ -248,6 +248,9 @@ def render_ordered_segments(
     segments: List[Dict[str, float]],
     output_path: str,
     source_range: tuple[float, float] | None = None,
+    jlcut_mode: str | None = None,
+    jcut_offset: float = 0.0,
+    lcut_offset: float = 0.0,
 ) -> str:
     """Render segments in the given order without merging."""
     if not Path(video_path).exists():
@@ -292,6 +295,9 @@ def render_ordered_segments(
         ordered,
         output_path,
         source_range=(clip_start, clip_end) if clip_start is not None else None,
+        jlcut_mode=jlcut_mode,
+        jcut_offset=jcut_offset,
+        lcut_offset=lcut_offset,
     )
     try:
         proc = subprocess.run(
@@ -363,22 +369,105 @@ def build_ordered_render_command(
     segments: List[Dict[str, float]],
     output_path: str,
     source_range: tuple[float, float] | None = None,
+    jlcut_mode: str | None = None,
+    jcut_offset: float = 0.0,
+    lcut_offset: float = 0.0,
 ) -> List[str]:
     """Build ffmpeg command for ordered segment rendering."""
-    filters = []
-    concat_inputs = []
-    for idx, seg in enumerate(segments):
-        t0 = float(seg["t0"])
-        t1 = float(seg["t1"])
-        filters.append(
-            f"[0:v]trim=start={t0}:end={t1},setpts=PTS-STARTPTS[v{idx}]"
+    logger = logging.getLogger(__name__)
+    mode = (jlcut_mode or "off").strip().lower()
+    use_jcut = mode in {"jcut", "j-cut", "j", "both", "auto"}
+    use_lcut = mode in {"lcut", "l-cut", "l", "both", "auto"}
+    jcut = max(0.0, float(jcut_offset)) if use_jcut else 0.0
+    lcut = max(0.0, float(lcut_offset)) if use_lcut else 0.0
+
+    if jcut <= 0.0 and lcut <= 0.0:
+        use_jcut = False
+        use_lcut = False
+
+    source_len = None
+    if source_range and source_range[0] is not None and source_range[1] is not None:
+        source_len = max(0.0, float(source_range[1]) - float(source_range[0]))
+
+    if not (use_jcut or use_lcut):
+        logger.info(
+            "Ordered render J/L-cut disabled (mode=%s j=%.3fs l=%.3fs)",
+            mode,
+            jcut,
+            lcut,
         )
-        filters.append(
-            f"[0:a]atrim=start={t0}:end={t1},asetpts=PTS-STARTPTS[a{idx}]"
+        filters = []
+        concat_inputs = []
+        for idx, seg in enumerate(segments):
+            t0 = float(seg["t0"])
+            t1 = float(seg["t1"])
+            filters.append(
+                f"[0:v]trim=start={t0}:end={t1},setpts=PTS-STARTPTS[v{idx}]"
+            )
+            filters.append(
+                f"[0:a]atrim=start={t0}:end={t1},asetpts=PTS-STARTPTS[a{idx}]"
+            )
+            concat_inputs.append(f"[v{idx}][a{idx}]")
+        concat_filter = "".join(concat_inputs) + f"concat=n={len(segments)}:v=1:a=1[v][a]"
+        filter_complex = ";".join(filters + [concat_filter])
+    else:
+        logger.info(
+            "Ordered render J/L-cut mode=%s j=%.3fs l=%.3fs",
+            mode,
+            jcut,
+            lcut,
         )
-        concat_inputs.append(f"[v{idx}][a{idx}]")
-    concat_filter = "".join(concat_inputs) + f"concat=n={len(segments)}:v=1:a=1[v][a]"
-    filter_complex = ";".join(filters + [concat_filter])
+        filters = []
+        video_inputs = []
+        audio_inputs = []
+        cursor = 0.0
+        total_duration = 0.0
+
+        for idx, seg in enumerate(segments):
+            t0 = float(seg["t0"])
+            t1 = float(seg["t1"])
+            duration = max(0.0, t1 - t0)
+            if duration <= 0.0:
+                continue
+
+            filters.append(
+                f"[0:v]trim=start={t0}:end={t1},setpts=PTS-STARTPTS[v{idx}]"
+            )
+            video_inputs.append(f"[v{idx}]")
+
+            a_start = max(0.0, t0 - jcut)
+            a_end = t1 + lcut
+            if source_len is not None:
+                a_end = min(a_end, source_len)
+            if a_end <= a_start:
+                a_end = min(a_start + 0.01, source_len) if source_len else a_start + 0.01
+
+            delay_sec = max(0.0, cursor - jcut)
+            delay_ms = int(round(delay_sec * 1000.0))
+            filters.append(
+                f"[0:a]atrim=start={a_start}:end={a_end},asetpts=PTS-STARTPTS,adelay={delay_ms}|{delay_ms}[a{idx}]"
+            )
+            audio_inputs.append(f"[a{idx}]")
+
+            cursor += duration
+            total_duration += duration
+
+        logger.info(
+            "Ordered render J/L-cut timeline duration: %.2fs (%d segments)",
+            total_duration,
+            len(video_inputs),
+        )
+
+        if not video_inputs or not audio_inputs:
+            raise RuntimeError("No segments provided for ordered render.")
+
+        video_concat = "".join(video_inputs) + f"concat=n={len(video_inputs)}:v=1:a=0[v]"
+        audio_mix = (
+            "".join(audio_inputs)
+            + f"amix=inputs={len(audio_inputs)}:duration=longest:dropout_transition=0,"
+            f"atrim=0:{total_duration},asetpts=PTS-STARTPTS[a]"
+        )
+        filter_complex = ";".join(filters + [video_concat, audio_mix])
 
     cmd = ["ffmpeg", "-y"]
     if source_range and source_range[0] is not None and source_range[1] is not None:
