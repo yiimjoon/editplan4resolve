@@ -69,6 +69,33 @@ class ResolveAPI:
             project = manager.CreateProject("VideoForge")
         return project
 
+    def get_project_key(self) -> str:
+        """Return a stable key for the current project/timeline."""
+        self._ensure_main_thread("get_project_key")
+        project = self.get_current_project()
+        project_name = None
+        for getter in ("GetName", "GetProjectName"):
+            func = getattr(project, getter, None)
+            if callable(func):
+                try:
+                    project_name = func()
+                    break
+                except Exception:
+                    continue
+        timeline_name = None
+        try:
+            timeline = self.get_current_timeline()
+            for getter in ("GetName",):
+                func = getattr(timeline, getter, None)
+                if callable(func):
+                    timeline_name = func()
+                    break
+        except Exception:
+            timeline = None
+        project_name = project_name or "ResolveProject"
+        timeline_name = timeline_name or "Timeline"
+        return f"{project_name}::{timeline_name}"
+
     def get_current_timeline(self) -> Any:
         """Return the active timeline."""
         self._ensure_main_thread("get_current_timeline")

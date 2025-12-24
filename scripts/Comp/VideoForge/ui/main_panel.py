@@ -35,6 +35,7 @@ from VideoForge.ui.qt_compat import (
     QObject,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSlider,
     QTabWidget,
     QThread,
@@ -50,29 +51,29 @@ from VideoForge.ui.sections.match_section import build_match_section
 from VideoForge.ui.sections.settings_section import build_settings_section
 
 
-# --- Color Palette (DaVinci Resolve Style) ---
+# --- Color Palette (Parchment & Mist) ---
 COLORS = {
-    "bg_window": "#252525",
-    "bg_card": "#2e2e2e",
-    "text_main": "#ececec",
-    "text_dim": "#9e9e9e",
-    "accent": "#da8a35",
-    "accent_hover": "#e69b4e",
-    "button_bg": "#3e3e3e",
-    "button_hover": "#4e4e4e",
-    "border": "#1a1a1a",
-    "highlight": "#3a3a3a",
+    "bg_window": "#e9e5de",
+    "bg_card": "#fdfbf7",
+    "text_main": "#1a1a1a",
+    "text_dim": "rgba(26, 26, 26, 0.6)",
+    "accent": "#d4cfc3",
+    "accent_hover": "#c9c4b8",
+    "button_bg": "rgba(255, 255, 255, 0.5)",
+    "button_hover": "rgba(255, 255, 255, 0.8)",
+    "border": "rgba(0, 0, 0, 0.05)",
+    "highlight": "rgba(0, 0, 0, 0.02)",
     "success": "#4caf50",
-    "error": "#f44336",
+    "error": "#d32f2f",
 }
 
-VERSION = "v1.5.8"
+VERSION = "v1.6.0"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
     QWidget {{
         background-color: {COLORS['bg_window']};
-        font-family: 'Segoe UI', 'Open Sans', sans-serif;
+        font-family: 'Inter', 'Segoe UI', sans-serif;
         font-size: 13px;
         color: {COLORS['text_main']};
     }}
@@ -80,117 +81,102 @@ STYLESHEET = f"""
     /* Section Cards */
     QFrame#SectionCard {{
         background-color: {COLORS['bg_card']};
-        border-radius: 8px;
+        border-radius: 4px;
         border: 1px solid {COLORS['border']};
-        padding: 12px;
+        padding: 16px;
     }}
 
     /* Section Titles */
     QLabel#SectionTitle {{
-        font-size: 14px;
+        font-family: 'Space Mono', monospace;
+        font-size: 11px;
         font-weight: bold;
-        color: {COLORS['accent']};
-        padding-bottom: 4px;
+        color: {COLORS['text_main']};
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+        padding-bottom: 8px;
+        opacity: 0.8;
     }}
 
     /* Description Labels */
     QLabel#Description {{
         color: {COLORS['text_dim']};
-        margin-bottom: 6px;
-    }}
-
-    /* Status Labels */
-    QLabel#StatusLabel {{
-        color: {COLORS['text_dim']};
-        margin-top: 6px;
+        margin-bottom: 8px;
+        font-style: italic;
     }}
 
     /* Buttons */
     QPushButton {{
         background-color: {COLORS['button_bg']};
-        border: none;
-        border-radius: 4px;
-        padding: 8px 16px;
+        border: 1px solid {COLORS['border']};
+        border-radius: 2px;
+        padding: 6px 12px;
         color: {COLORS['text_main']};
-        font-weight: 500;
+        font-family: 'Space Mono', monospace;
+        font-size: 11px;
+        text-transform: lowercase;
     }}
     QPushButton:hover {{
         background-color: {COLORS['button_hover']};
+        border: 1px solid {COLORS['accent']};
     }}
-    QPushButton:pressed {{
-        background-color: {COLORS['border']};
-    }}
-    QPushButton:disabled {{
-        background-color: {COLORS['border']};
-        color: {COLORS['text_dim']};
-    }}
-
-    /* Primary Action Button (Orange) */
     QPushButton#PrimaryButton {{
         background-color: {COLORS['accent']};
-        color: #1a1a1a;
-        font-weight: bold;
+        border: none;
     }}
     QPushButton#PrimaryButton:hover {{
         background-color: {COLORS['accent_hover']};
     }}
-    QPushButton#PrimaryButton:pressed {{
-        background-color: #c67a2a;
-    }}
 
-    /* Text Inputs */
-    QLineEdit {{
-        background-color: {COLORS['border']};
-        border: 1px solid {COLORS['button_bg']};
-        border-radius: 4px;
-        padding: 6px 8px;
+    /* Text Inputs & Combos */
+    QLineEdit, QComboBox {{
+        background-color: white;
+        border: 1px solid {COLORS['border']};
+        border-radius: 2px;
+        padding: 4px 8px;
         color: {COLORS['text_main']};
-        selection-background-color: {COLORS['accent']};
     }}
-    QLineEdit:focus {{
+    QLineEdit:focus, QComboBox:focus {{
         border: 1px solid {COLORS['accent']};
     }}
 
+    /* Tabs */
+    QTabWidget::pane {{
+        border: none;
+        background: transparent;
+    }}
+    QTabBar::tab {{
+        background: transparent;
+        padding: 8px 16px;
+        font-family: 'Space Mono', monospace;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: {COLORS['text_dim']};
+    }}
+    QTabBar::tab:selected {{
+        color: {COLORS['text_main']};
+        border-bottom: 2px solid {COLORS['text_main']};
+    }}
+
+    /* Scroll Area */
+    QScrollArea {{
+        border: none;
+        background: transparent;
+    }}
+    
     /* Sliders */
     QSlider::groove:horizontal {{
         border: none;
-        height: 6px;
+        height: 2px;
         background: {COLORS['border']};
-        border-radius: 3px;
     }}
     QSlider::handle:horizontal {{
         background: {COLORS['text_main']};
-        border: 2px solid {COLORS['bg_window']};
-        width: 14px;
-        height: 14px;
-        margin: -5px 0;
-        border-radius: 8px;
-    }}
-    QSlider::handle:horizontal:hover {{
-        background: {COLORS['accent']};
-    }}
-    QSlider::sub-page:horizontal {{
-        background: {COLORS['accent']};
-        border-radius: 3px;
-    }}
-
-    /* Progress Bar */
-    QProgressBar {{
-        border: none;
-        background-color: {COLORS['border']};
-        border-radius: 2px;
-        text-align: center;
-        max-height: 4px;
-    }}
-    QProgressBar::chunk {{
-        background-color: {COLORS['accent']};
-        border-radius: 2px;
-    }}
-
-    /* Separator Line */
-    QFrame#Separator {{
-        background-color: {COLORS['button_bg']};
-        max-height: 1px;
+        width: 10px;
+        height: 10px;
+        margin: -4px 0;
+        border-radius: 5px;
     }}
 """
 
@@ -290,14 +276,58 @@ class VideoForgePanel(QWidget):
         except Exception:
             pass
         self._restore_library_path()
+        self._restore_project_state()
         logging.getLogger("VideoForge.ui").info("UI init done (%s)", VERSION)
 
+    def _get_project_key(self) -> Optional[str]:
+        try:
+            return self.bridge.resolve_api.get_project_key()
+        except Exception as exc:
+            logging.getLogger("VideoForge.ui").warning(
+                "Failed to read project key: %s", exc
+            )
+            return None
+
+    def _save_project_state(self) -> None:
+        project_key = self._get_project_key()
+        if not project_key or not self.project_db:
+            return
+        project_map = Config.get("project_db_map", {})
+        if not isinstance(project_map, dict):
+            project_map = {}
+        project_map[project_key] = {
+            "project_db": self.project_db,
+            "main_video_path": self.main_video_path,
+        }
+        Config.set("project_db_map", project_map)
+
+    def _restore_project_state(self) -> None:
+        project_key = self._get_project_key()
+        if not project_key:
+            return
+        project_map = Config.get("project_db_map", {})
+        if not isinstance(project_map, dict):
+            return
+        payload = project_map.get(project_key)
+        if not isinstance(payload, dict):
+            return
+        project_db = payload.get("project_db")
+        main_path = payload.get("main_video_path")
+        if project_db and Path(str(project_db)).exists():
+            self.project_db = str(project_db)
+            self.main_video_path = str(main_path) if main_path else None
+            self.analyze_status.setText("Status: Loaded")
+            self.analyze_status.setStyleSheet(f"color: {COLORS['success']}; margin-top: 6px;")
+            self.edit_transcript_btn.setEnabled(True)
+            logging.getLogger("VideoForge.ui").info(
+                "Restored project DB for %s", project_key
+            )
     def _init_ui(self) -> None:
         """Initialize the modernized UI."""
         self.setStyleSheet(STYLESHEET)
         self.setWindowTitle("VideoForge - Auto B-roll")
-        self.resize(860, 520)
-        self.setMinimumSize(720, 420)
+        self.resize(1200, 720)
+        self.setMinimumSize(800, 500)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
@@ -311,29 +341,56 @@ class VideoForgePanel(QWidget):
         layout.addWidget(self.tabs)
 
         # Tab 1: Analyze
+        analyze_scroll = QScrollArea()
+        analyze_scroll.setWidgetResizable(True)
+        analyze_scroll.setFrameShape(QFrame.NoFrame)
         analyze_tab = QWidget()
-        analyze_layout = QVBoxLayout(analyze_tab)
-        analyze_layout.setContentsMargins(4, 8, 4, 4)
-        build_analyze_section(self, analyze_layout)
-        build_library_section(self, analyze_layout)
-        analyze_layout.addStretch()
-        self.tabs.addTab(analyze_tab, "📝 Analyze")
+        analyze_scroll.setWidget(analyze_tab)
+        
+        analyze_layout = QHBoxLayout(analyze_tab)
+        analyze_layout.setContentsMargins(8, 8, 8, 8)
+        analyze_layout.setSpacing(12)
+        
+        # Left side: Analyze Main Clip
+        analyze_left_col = QVBoxLayout()
+        build_analyze_section(self, analyze_left_col)
+        analyze_left_col.addStretch()
+        
+        # Right side: B-roll Library
+        analyze_right_col = QVBoxLayout()
+        build_library_section(self, analyze_right_col)
+        analyze_right_col.addStretch()
+        
+        analyze_layout.addLayout(analyze_left_col, 1)
+        analyze_layout.addLayout(analyze_right_col, 1)
+        
+        self.tabs.addTab(analyze_scroll, "📝 Analyze")
 
         # Tab 2: Match
+        match_scroll = QScrollArea()
+        match_scroll.setWidgetResizable(True)
+        match_scroll.setFrameShape(QFrame.NoFrame)
         match_tab = QWidget()
+        match_scroll.setWidget(match_tab)
+        
         match_layout = QVBoxLayout(match_tab)
-        match_layout.setContentsMargins(4, 8, 4, 4)
+        match_layout.setContentsMargins(8, 8, 8, 8)
         build_match_section(self, match_layout)
         match_layout.addStretch()
-        self.tabs.addTab(match_tab, "🎬 Match")
+        self.tabs.addTab(match_scroll, "🎬 Match")
 
         # Tab 3: Settings
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setFrameShape(QFrame.NoFrame)
         settings_tab = QWidget()
+        settings_scroll.setWidget(settings_tab)
+        
         settings_layout = QVBoxLayout(settings_tab)
-        settings_layout.setContentsMargins(4, 8, 4, 4)
+        settings_layout.setContentsMargins(8, 8, 8, 8)
         build_settings_section(self, settings_layout)
         settings_layout.addStretch()
-        self.tabs.addTab(settings_tab, "⚙️ Settings")
+        self.tabs.addTab(settings_scroll, "⚙️ Settings")
 
         # --- Footer (Always Visible) ---
         self._setup_footer(layout)
@@ -738,8 +795,10 @@ class VideoForgePanel(QWidget):
     def _update_transcript_option_visibility(self, engine: str) -> None:
         engine_key = str(engine).strip().lower()
         show = engine_key in {"resolve ai", "resolve_ai", "resolve"}
-        self.transcript_chars_label.setVisible(show)
-        self.transcript_chars_edit.setVisible(show)
+        if hasattr(self, "transcript_chars_label"):
+            self.transcript_chars_label.setVisible(show)
+        if hasattr(self, "transcript_chars_edit"):
+            self.transcript_chars_edit.setVisible(show)
         self._update_llm_buttons()
 
     def _update_llm_buttons(self) -> None:
@@ -1153,6 +1212,7 @@ class VideoForgePanel(QWidget):
                 self.analyze_status.setText("Status: Analyzed")
                 self.analyze_status.setStyleSheet(f"color: {COLORS['success']}; margin-top: 6px;")
                 self.edit_transcript_btn.setEnabled(True)
+                self._save_project_state()
                 self._set_progress_value(90)
                 self._set_status("Saving... (3/4)")
                 self._set_progress_value(100)
@@ -1235,6 +1295,7 @@ class VideoForgePanel(QWidget):
             self.analyze_status.setText("Status: Analyzed")
             self.analyze_status.setStyleSheet(f"color: {COLORS['success']}; margin-top: 6px;")
             self.edit_transcript_btn.setEnabled(True)
+            self._save_project_state()
             warning = result.get("warning")
             if warning:
                 self._set_status(f"Warning: {warning}")

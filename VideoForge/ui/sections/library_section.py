@@ -19,8 +19,9 @@ def build_library_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.library_path_edit = QLineEdit()
     panel.library_path_edit.setPlaceholderText("Library DB path...")
 
-    panel.browse_btn = QPushButton("Browse")
-    panel.browse_btn.setFixedWidth(36)
+    panel.open_log_btn = QPushButton("Open Log")
+    panel.browse_btn = QPushButton("...")
+    panel.browse_btn.setFixedWidth(30)
     panel.browse_btn.setToolTip("Browse for library DB file")
     panel.browse_btn.setCursor(Qt.PointingHandCursor)
     panel.browse_btn.clicked.connect(panel._on_browse_library)
