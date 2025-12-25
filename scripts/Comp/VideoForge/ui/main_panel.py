@@ -32,6 +32,7 @@ from VideoForge.ui.qt_compat import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QObject,
     QProgressBar,
     QPushButton,
@@ -67,7 +68,7 @@ COLORS = {
     "error": "#d32f2f",
 }
 
-VERSION = "v1.6.0"
+VERSION = "v1.6.1"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -553,6 +554,20 @@ class VideoForgePanel(QWidget):
             except (TypeError, ValueError):
                 continue
 
+    def _get_broll_output_root(self) -> Path:
+        default_root = self._resolve_repo_root() / "generated_broll"
+        raw = (
+            Config.get("broll_gen_output_dir")
+            or Config.get("uvm_output_dir")
+            or str(default_root)
+        )
+        return Path(str(raw))
+
+    def _get_broll_project_name(self) -> str:
+        if self.project_db:
+            return Path(self.project_db).stem
+        return "project"
+
     def _update_status_safe(self, message: str) -> None:
         logging.getLogger(__name__).info(message)
         self.status_signal.emit(message)
@@ -576,6 +591,7 @@ class VideoForgePanel(QWidget):
         self.progress.setVisible(busy)
         self.analyze_btn.setEnabled(not busy)
         self.scan_library_btn.setEnabled(not busy)
+        self.generate_broll_btn.setEnabled(not busy)
         self.match_btn.setEnabled(not busy)
         self.apply_btn.setEnabled(not busy)
 
@@ -755,6 +771,15 @@ class VideoForgePanel(QWidget):
         Config.set("llm_api_key", str(value))
         write_llm_env(api_key=str(value))
         self._update_llm_buttons()
+
+    def _on_pexels_key_changed(self, value: str) -> None:
+        Config.set("pexels_api_key", str(value).strip())
+
+    def _on_unsplash_key_changed(self, value: str) -> None:
+        Config.set("unsplash_api_key", str(value).strip())
+
+    def _on_comfyui_url_changed(self, value: str) -> None:
+        Config.set("comfyui_url", str(value).strip())
 
     def _on_llm_instructions_mode_changed(self, value: str) -> None:
         mode = str(value).strip().lower()
@@ -1157,6 +1182,21 @@ class VideoForgePanel(QWidget):
         self.settings["broll"]["jlcut_overlap_frames"] = frames
         Config.set("jlcut_overlap_frames", frames)
 
+    def _on_broll_gen_enabled_changed(self) -> None:
+        Config.set("broll_gen_enabled", self.broll_enabled_checkbox.isChecked())
+
+    def _on_broll_output_changed(self, value: str) -> None:
+        Config.set("broll_gen_output_dir", value.strip())
+
+    def _on_broll_gen_mode_changed(self, value: str) -> None:
+        Config.set("broll_gen_mode", value.strip())
+
+    def _on_broll_output_browse(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Select B-roll Output Folder")
+        if folder:
+            self.broll_output_edit.setText(folder)
+            Config.set("broll_gen_output_dir", folder)
+
     # --- Event Handlers ---
 
     def _on_analyze_clicked(self) -> None:
@@ -1432,6 +1472,185 @@ class VideoForgePanel(QWidget):
 
         self._set_status("Matching... (searching library)")
         self._run_worker(_match, on_done=_done)
+
+    def _run_broll_generation_with_analysis(
+        self, sentences: list[dict], library_path: str, use_llm: bool
+    ) -> None:
+        """Generate B-roll with optional LLM scene analysis (Direct mode)."""
+        output_root = self._get_broll_output_root()
+        mode = str(Config.get("broll_gen_mode") or Config.get("uvm_mode") or "stock").lower()
+        project_name = self._get_broll_project_name()
+
+        # Get API keys from Config or environment
+        pexels_key = str(Config.get("pexels_api_key") or "").strip() or os.getenv("PEXELS_API_KEY")
+        unsplash_key = str(Config.get("unsplash_api_key") or "").strip() or os.getenv("UNSPLASH_API_KEY")
+        comfyui_url = str(Config.get("comfyui_url") or "http://127.0.0.1:8188").strip()
+
+        # ComfyUI workflow path
+        repo_root = self._resolve_repo_root()
+        workflow_path = repo_root / "VideoForge" / "config" / "z_image_turbo.json"
+        if not workflow_path.exists():
+            workflow_path = None
+
+        def _generate():
+            from VideoForge.broll.direct_generator import DirectBrollGenerator
+
+            # Step 1: LLM Scene Analysis (optional)
+            scene_analyses = None
+            if use_llm:
+                try:
+                    from VideoForge.ai.scene_analyzer import SceneAnalyzer
+
+                    analyzer = SceneAnalyzer()
+                    scene_analyses = analyzer.analyze_sentences(sentences)
+                    logging.getLogger("VideoForge.ui").info(
+                        "LLM scene analysis: %d scenes", len(scene_analyses)
+                    )
+                except Exception as exc:
+                    logging.getLogger("VideoForge.ui").warning(
+                        "LLM scene analysis failed: %s", exc
+                    )
+                    # Continue without analysis
+
+            # Step 2: Direct B-roll Generation
+            output_root.mkdir(parents=True, exist_ok=True)
+            generator = DirectBrollGenerator(
+                output_root,
+                pexels_key=pexels_key,
+                unsplash_key=unsplash_key,
+                comfyui_url=comfyui_url,
+                comfyui_workflow=workflow_path,
+            )
+
+            video_paths = generator.generate_broll_batch(
+                sentences,
+                project_name=project_name,
+                mode=mode,
+                scene_analyses=scene_analyses,
+            )
+
+            # Step 3: Index into LibraryDB
+            schema_path = repo_root / "VideoForge" / "config" / "schema.sql"
+            library_db = LibraryDB(library_path, schema_path=str(schema_path))
+
+            from VideoForge.broll.indexer import encode_video_clip
+
+            clip_ids = []
+            for video_path in video_paths:
+                meta = generator.extract_metadata(video_path)
+                embedding = encode_video_clip(str(video_path))
+                db_meta = {
+                    "path": str(video_path),
+                    "duration": float(meta.get("duration", 5.0)),
+                    "fps": 30.0,  # Default FPS
+                    "width": 1920,
+                    "height": 1080,
+                    "folder_tags": self._build_broll_tags(meta),
+                    "vision_tags": ", ".join(meta.get("keywords", [])) if meta else "",
+                    "description": meta.get("description", "") if meta else "",
+                    "created_at": meta.get("created_at", "") if meta else "",
+                }
+                clip_id = library_db.upsert_clip(db_meta, embedding)
+                clip_ids.append(clip_id)
+
+            # Step 4: Re-match
+            rematch = self.bridge.match_broll(self.project_db, library_path)
+            return {"generated": len(clip_ids), "match": rematch}
+
+        def _done(result):
+            generated = result.get("generated", 0) if isinstance(result, dict) else 0
+            match = result.get("match", {}) if isinstance(result, dict) else {}
+            count = match.get("count", 0)
+            self._set_status(f"Generated {generated} B-roll clips. Matches: {count}.")
+
+        status_msg = "Generating B-roll"
+        if use_llm:
+            status_msg += " (with LLM scene analysis)"
+        self._set_status(status_msg + "...")
+        self._run_worker(_generate, on_done=_done)
+
+    def _build_broll_tags(self, meta: dict) -> str:
+        """Build folder tags from generator metadata."""
+        source = str(meta.get("source", "") or "")
+        scene_num = str(meta.get("scene_num", "") or "")
+        keywords = meta.get("keywords", []) or []
+        tags = []
+        if source:
+            tags.append(source)
+        if scene_num:
+            tags.append(f"script {scene_num}")
+        tags.extend([str(k) for k in keywords[:5]])
+        return " ".join(t for t in tags if t)
+
+    def _on_generate_broll_clicked(self) -> None:
+        """Generate B-roll button handler (post-edit workflow)."""
+        logging.getLogger("VideoForge.ui").info("Generate B-roll clicked")
+
+        if not self.project_db:
+            self._set_status("Analyze a clip first.")
+            return
+
+        # Check API keys
+        pexels_key = str(Config.get("pexels_api_key") or "").strip() or os.getenv("PEXELS_API_KEY")
+        unsplash_key = str(Config.get("unsplash_api_key") or "").strip() or os.getenv("UNSPLASH_API_KEY")
+
+        if not pexels_key and not unsplash_key:
+            reply = QMessageBox.question(
+                self,
+                "API Keys Not Set",
+                "Pexels or Unsplash API keys are required for B-roll generation.\n\n"
+                "Configure API keys in Settings now?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                # Switch to Settings tab
+                self.tab_widget.setCurrentIndex(1)
+            return
+
+        # Get sentences (after editor/reorder)
+        try:
+            store = SegmentStore(self.project_db)
+            sentences = store.get_sentences()
+            if not sentences:
+                self._set_status("No sentences found. Run Analyze first.")
+                return
+        except Exception as exc:
+            self._set_status(f"Failed to load sentences: {exc}")
+            return
+
+        # LLM Scene Analysis (optional)
+        from VideoForge.ai.llm_hooks import is_llm_enabled
+
+        use_llm_analysis = is_llm_enabled()
+        if use_llm_analysis:
+            llm_msg = "LLM scene analysis enabled (better B-roll matching)"
+        else:
+            llm_msg = "LLM scene analysis disabled (basic mode)"
+
+        # Confirm generation
+        estimate = len(sentences) * 15  # seconds
+        reply = QMessageBox.question(
+            self,
+            "Generate B-roll?",
+            f"Generate B-roll for {len(sentences)} sentences?\n\n"
+            f"Mode: {Config.get('broll_gen_mode', Config.get('uvm_mode', 'stock'))}\n"
+            f"{llm_msg}\n"
+            f"Estimated time: ~{estimate} seconds\n\n"
+            f"This will create scene clips and auto-index them into your library.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # Get library path
+        library_path = self.library_path_edit.text().strip()
+        if not library_path:
+            self._set_status("Set library path first.")
+            return
+
+        # Run B-roll generation with LLM analysis
+        self._run_broll_generation_with_analysis(sentences, library_path, use_llm_analysis)
 
     def _on_apply_clicked(self) -> None:
         logging.getLogger("VideoForge.ui").info("Apply clicked")
