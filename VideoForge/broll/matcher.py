@@ -7,6 +7,7 @@ import numpy as np
 
 from VideoForge.adapters.embedding_adapter import encode_text_clip
 from VideoForge.broll.db import LibraryDB
+from VideoForge.broll.keyword_tools import translate_keywords
 
 
 DEFAULT_STOPWORDS = {
@@ -53,6 +54,16 @@ class QueryGenerator:
         scored = [(self._score_token(tok), tok) for tok in cleaned]
         scored.sort(key=lambda x: (x[0], len(x[1])), reverse=True)
         primary_tokens = [tok for _score, tok in scored[: self.top_n]]
+        translated_tokens = translate_keywords(primary_tokens)
+        if translated_tokens:
+            seen = set()
+            merged: List[str] = []
+            for tok in translated_tokens + primary_tokens:
+                if tok in seen:
+                    continue
+                seen.add(tok)
+                merged.append(tok)
+            primary_tokens = merged
         primary = " ".join(primary_tokens).strip()
 
         boost_tokens = [tok for tok in cleaned if self._is_boost(tok)]

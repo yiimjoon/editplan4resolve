@@ -82,8 +82,14 @@ def get_llm_provider() -> str | None:
     except Exception:
         cfg_provider = None
     if cfg_provider is not None and str(cfg_provider).strip():
+        if str(cfg_provider).strip().lower() == "disabled":
+            return None
         return cfg_provider
-    return env_provider
+    if env_provider and str(env_provider).strip():
+        return env_provider
+    if get_llm_api_key():
+        return "gemini"
+    return None
 
 
 def is_llm_enabled() -> bool:

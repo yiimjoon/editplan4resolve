@@ -189,11 +189,19 @@ class TranscriptEditorPanel(QWidget):
         header.addSpacing(12)
         self.instructions_mode_combo = QComboBox()
         self.instructions_mode_combo.addItems(["shortform", "longform"])
-        current_mode = str(Config.get("llm_instructions_mode") or get_llm_instructions_mode())
+
+        # Get mode with proper fallback priority
+        saved_mode = Config.get("llm_instructions_mode")
+        if saved_mode:
+            current_mode = str(saved_mode).strip().lower()
+        else:
+            current_mode = get_llm_instructions_mode()
+
         if current_mode in {"shortform", "longform"}:
             self.instructions_mode_combo.setCurrentText(current_mode)
         else:
             self.instructions_mode_combo.setCurrentText("shortform")
+
         self.instructions_mode_combo.currentTextChanged.connect(self._on_instructions_mode_changed)
         header.addWidget(self.instructions_mode_combo)
 

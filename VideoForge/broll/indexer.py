@@ -6,6 +6,7 @@ from typing import Dict, Iterable, List
 
 from VideoForge.adapters.embedding_adapter import encode_image_clip, encode_video_clip
 from VideoForge.broll.db import LibraryDB
+from VideoForge.broll.metadata import coerce_metadata_dict
 
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".m4v"}
@@ -206,9 +207,9 @@ def _read_image_metadata(path: Path) -> Dict:
                 parsed = _parse_metadata_json(raw)
                 if parsed:
                     comfy = _coerce_comfyui_metadata(parsed)
-                    return comfy or parsed
+                    return coerce_metadata_dict(comfy or parsed)
                 if key in ("prompt", "parameters") and isinstance(raw, str):
-                    return {"prompt": _normalize_prompt_text(raw)}
+                    return coerce_metadata_dict({"prompt": _normalize_prompt_text(raw)})
             return {}
     except Exception:
         return {}
@@ -219,7 +220,7 @@ def _read_video_metadata(path: Path) -> Dict:
     if sidecar:
         return sidecar
     tags = _ffprobe_tags(str(path))
-    return _parse_metadata_json(tags.get("comment"))
+    return coerce_metadata_dict(_parse_metadata_json(tags.get("comment")))
 
 
 def _read_sidecar_metadata(path: Path) -> Dict:
@@ -229,18 +230,20 @@ def _read_sidecar_metadata(path: Path) -> Dict:
     ]
     for candidate in candidates:
         if candidate.exists():
-            return _parse_metadata_json(candidate.read_text(encoding="utf-8", errors="ignore"))
+            raw = _parse_metadata_json(candidate.read_text(encoding="utf-8", errors="ignore"))
+            return coerce_metadata_dict(raw)
     return {}
 
 
 def _convert_maker_metadata(meta: Dict) -> Dict[str, str]:
     if not meta:
         return {}
+    raw = meta.get("raw_metadata") if isinstance(meta.get("raw_metadata"), dict) else {}
     tags = []
-    source = meta.get("source")
-    model = meta.get("model")
-    scene_num = meta.get("scene_num")
-    script_index = meta.get("script_index")
+    source = meta.get("source") or raw.get("source")
+    model = raw.get("model") or meta.get("model")
+    scene_num = raw.get("scene_num") or meta.get("scene_num")
+    script_index = raw.get("script_index") or meta.get("script_index")
     if source:
         tags.append(str(source))
     if model:
@@ -250,8 +253,21 @@ def _convert_maker_metadata(meta: Dict) -> Dict[str, str]:
     if script_index:
         tags.append(f"Script {script_index}")
     folder_tags = ", ".join(tags)
-    vision_tags = meta.get("keywords") or meta.get("prompt") or ""
-    description = meta.get("description") or ""
+    keywords = meta.get("keywords") or []
+    visual_elements = meta.get("visual_elements") or []
+    vision_tokens = []
+    if isinstance(keywords, list):
+        vision_tokens.extend([str(k) for k in keywords])
+    elif isinstance(keywords, str):
+        vision_tokens.append(keywords)
+    if isinstance(visual_elements, list):
+        vision_tokens.extend([str(v) for v in visual_elements])
+    elif isinstance(visual_elements, str):
+        vision_tokens.append(visual_elements)
+    if not vision_tokens:
+        vision_tokens.append(str(meta.get("prompt") or meta.get("query") or ""))
+    vision_tags = ", ".join([t for t in vision_tokens if t])
+    description = meta.get("description") or meta.get("generated_from_text") or ""
     created_at = meta.get("created_at") or ""
     return {
         "folder_tags": folder_tags,

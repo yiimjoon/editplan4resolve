@@ -9,6 +9,7 @@ from typing import Optional
 import yaml
 
 from VideoForge.broll.db import LibraryDB
+from VideoForge.broll.metadata import coerce_metadata_dict
 from VideoForge.broll.indexer import scan_library
 from VideoForge.broll.sidecar_tools import generate_comfyui_sidecars, generate_scene_sidecars
 from VideoForge.config.config_manager import Config
@@ -499,8 +500,9 @@ class VideoForgePanel(QWidget):
     @staticmethod
     def _resolve_repo_root() -> Path:
         script_root = Path(__file__).resolve().parents[2]
-        if (script_root / "VideoForge").exists():
-            return script_root
+        candidate = script_root / "VideoForge"
+        if candidate.exists():
+            return candidate
         env_root = os.environ.get("VIDEOFORGE_ROOT")
         if env_root:
             env_path = Path(env_root)
@@ -742,7 +744,7 @@ class VideoForgePanel(QWidget):
     def _on_llm_provider_changed(self, value: str) -> None:
         provider = str(value).strip().lower()
         if provider == "disabled":
-            Config.set("llm_provider", "")
+            Config.set("llm_provider", "disabled")
             write_llm_env(provider="")
         else:
             Config.set("llm_provider", provider)
@@ -996,6 +998,7 @@ class VideoForgePanel(QWidget):
             )
             sentences = []
             draft_order = None
+            store = None
             if self.project_db:
                 store = SegmentStore(self.project_db)
                 sentences = store.get_sentences()
@@ -1004,6 +1007,26 @@ class VideoForgePanel(QWidget):
                     logging.getLogger("VideoForge.ui").info(
                         "Silence render using draft order (%d entries).",
                         len(draft_order),
+                    )
+            def _save_render_artifacts(
+                mode: str,
+                segments: list[dict],
+                overlap: int,
+                source: tuple[float, float] | None,
+            ) -> None:
+                if not store:
+                    return
+                try:
+                    store.save_artifact("render_mode", mode)
+                    store.save_artifact("render_segments", segments)
+                    store.save_artifact("render_overlap_frames", int(overlap))
+                    store.save_artifact(
+                        "render_source_range",
+                        [float(source[0]), float(source[1])] if source else None,
+                    )
+                except Exception as exc:
+                    logging.getLogger("VideoForge.ui").warning(
+                        "Failed to save render artifacts: %s", exc
                     )
             base_path = Path(video_path)
             output_path = self._ensure_unique_path(
@@ -1022,6 +1045,12 @@ class VideoForgePanel(QWidget):
                     tail_min_duration=self.settings["silence"].get("tail_min_duration", 0.8),
                     tail_ratio=self.settings["silence"].get("tail_ratio", 0.2),
                     source_range=source_range,
+                )
+                _save_render_artifacts(
+                    "J/L-cut",
+                    ordered_segments,
+                    overlap_frames,
+                    source_range,
                 )
                 ok = self.bridge.resolve_api.insert_overlapped_segments(
                     clip,
@@ -1078,6 +1107,12 @@ class VideoForgePanel(QWidget):
                         "Draft render temp retained: %s", temp_path
                     )
             else:
+                _save_render_artifacts(
+                    "Silence Removal",
+                    keep_segments,
+                    0,
+                    source_range,
+                )
                 render_silence_removed(
                     video_path=video_path,
                     segments=keep_segments,
@@ -1477,9 +1512,11 @@ class VideoForgePanel(QWidget):
         self, sentences: list[dict], library_path: str, use_llm: bool
     ) -> None:
         """Generate B-roll with optional LLM scene analysis (Direct mode)."""
+        sentences = [s for s in sentences if str(s.get("text", "")).strip()]
         output_root = self._get_broll_output_root()
         mode = str(Config.get("broll_gen_mode") or Config.get("uvm_mode") or "stock").lower()
         project_name = self._get_broll_project_name()
+        max_scenes = self._get_broll_gen_max_scenes()
 
         # Get API keys from Config or environment
         pexels_key = str(Config.get("pexels_api_key") or "").strip() or os.getenv("PEXELS_API_KEY")
@@ -1494,23 +1531,45 @@ class VideoForgePanel(QWidget):
 
         def _generate():
             from VideoForge.broll.direct_generator import DirectBrollGenerator
+            from VideoForge.broll.source_config import BrollSourceConfig
 
-            # Step 1: LLM Scene Analysis (optional)
+            # Step 1: Scene Analysis (LLM or heuristic fallback)
             scene_analyses = None
-            if use_llm:
-                try:
-                    from VideoForge.ai.scene_analyzer import SceneAnalyzer
+            selected_sentences = sentences
+            try:
+                from VideoForge.ai.scene_analyzer import SceneAnalyzer
 
-                    analyzer = SceneAnalyzer()
-                    scene_analyses = analyzer.analyze_sentences(sentences)
+                analyzer = SceneAnalyzer()
+                if max_scenes:
+                    scene_analyses = analyzer.select_scenes(sentences, max_scenes)
+                    selected_ids = {
+                        s.get("sentence_id")
+                        for s in (scene_analyses or [])
+                        if s.get("sentence_id") is not None
+                    }
+                    selected_sentences = [
+                        s
+                        for s in sentences
+                        if s.get("id") in selected_ids and str(s.get("text", "")).strip()
+                    ]
+                    if not selected_sentences:
+                        selected_sentences = sentences
+                if not scene_analyses:
+                    scene_analyses = analyzer.analyze_sentences(selected_sentences, max_scenes)
+                if max_scenes:
                     logging.getLogger("VideoForge.ui").info(
-                        "LLM scene analysis: %d scenes", len(scene_analyses)
+                        "Selected %d/%d sentences for B-roll",
+                        len(selected_sentences),
+                        len(sentences),
                     )
-                except Exception as exc:
-                    logging.getLogger("VideoForge.ui").warning(
-                        "LLM scene analysis failed: %s", exc
-                    )
-                    # Continue without analysis
+                logging.getLogger("VideoForge.ui").info(
+                    "Scene analysis: %d scenes", len(scene_analyses)
+                )
+            except Exception as exc:
+                logging.getLogger("VideoForge.ui").warning(
+                    "Scene analysis failed: %s", exc
+                )
+                # Continue without analysis
 
             # Step 2: Direct B-roll Generation
             output_root.mkdir(parents=True, exist_ok=True)
@@ -1522,33 +1581,74 @@ class VideoForgePanel(QWidget):
                 comfyui_workflow=workflow_path,
             )
 
-            video_paths = generator.generate_broll_batch(
-                sentences,
-                project_name=project_name,
-                mode=mode,
-                scene_analyses=scene_analyses,
-            )
-
-            # Step 3: Index into LibraryDB
+            selected_sentences = [
+                s for s in selected_sentences if str(s.get("text", "")).strip()
+            ]
+            # Step 3: Library-first match (optional)
             schema_path = repo_root / "VideoForge" / "config" / "schema.sql"
+            if not schema_path.exists():
+                schema_path = repo_root / "config" / "schema.sql"
             library_db = LibraryDB(library_path, schema_path=str(schema_path))
+            config = BrollSourceConfig.from_config()
+            remaining_sentences = list(selected_sentences)
+            if str(config.source_mode or "").startswith("library"):
+                from VideoForge.broll.orchestrator import BrollOrchestrator
+
+                orchestrator = BrollOrchestrator(library_db, self.settings)
+                library_matches = orchestrator.find_library_matches(selected_sentences)
+                if library_matches:
+                    logging.getLogger("VideoForge.ui").info(
+                        "Library matches found: %d", len(library_matches)
+                    )
+                remaining_sentences = [
+                    s
+                    for s in selected_sentences
+                    if s.get("id") not in library_matches
+                ]
+
+            video_paths = []
+            if remaining_sentences and config.source_mode != "library_only":
+                video_paths = generator.generate_broll_batch(
+                    remaining_sentences,
+                    project_name=project_name,
+                    mode=mode,
+                    scene_analyses=scene_analyses,
+                    config=config,
+                )
+            elif config.source_mode == "library_only" and remaining_sentences:
+                logging.getLogger("VideoForge.ui").info(
+                    "Source mode is library_only; skipping %d sentences without matches.",
+                    len(remaining_sentences),
+                )
 
             from VideoForge.broll.indexer import encode_video_clip
 
             clip_ids = []
             for video_path in video_paths:
-                meta = generator.extract_metadata(video_path)
+                meta = coerce_metadata_dict(generator.extract_metadata(video_path))
                 embedding = encode_video_clip(str(video_path))
+                keywords = meta.get("keywords") or []
+                visual_elements = meta.get("visual_elements") or []
+                if isinstance(keywords, str):
+                    keywords = [k for k in keywords.replace(",", " ").split() if k]
+                if isinstance(visual_elements, str):
+                    visual_elements = [v for v in visual_elements.replace(",", " ").split() if v]
+                vision_tokens = list(keywords) + [v for v in visual_elements if v not in keywords]
+                description = meta.get("description") or meta.get("generated_from_text") or ""
+                created_at = meta.get("created_at", "")
+                duration = meta.get("duration")
+                if duration is None:
+                    duration = 5.0
                 db_meta = {
                     "path": str(video_path),
-                    "duration": float(meta.get("duration", 5.0)),
+                    "duration": float(duration),
                     "fps": 30.0,  # Default FPS
                     "width": 1920,
                     "height": 1080,
                     "folder_tags": self._build_broll_tags(meta),
-                    "vision_tags": ", ".join(meta.get("keywords", [])) if meta else "",
-                    "description": meta.get("description", "") if meta else "",
-                    "created_at": meta.get("created_at", "") if meta else "",
+                    "vision_tags": ", ".join(vision_tokens),
+                    "description": description,
+                    "created_at": created_at,
                 }
                 clip_id = library_db.upsert_clip(db_meta, embedding)
                 clip_ids.append(clip_id)
@@ -1571,15 +1671,19 @@ class VideoForgePanel(QWidget):
 
     def _build_broll_tags(self, meta: dict) -> str:
         """Build folder tags from generator metadata."""
-        source = str(meta.get("source", "") or "")
-        scene_num = str(meta.get("scene_num", "") or "")
+        raw = meta.get("raw_metadata") if isinstance(meta.get("raw_metadata"), dict) else {}
+        source = str(meta.get("source", "") or raw.get("source", "") or "")
+        scene_num = str(meta.get("scene_num", "") or raw.get("scene_num", "") or "")
+        script_index = str(meta.get("script_index", "") or raw.get("script_index", "") or "")
         keywords = meta.get("keywords", []) or []
         tags = []
         if source:
             tags.append(source)
-        if scene_num:
-            tags.append(f"script {scene_num}")
-        tags.extend([str(k) for k in keywords[:5]])
+        if script_index or scene_num:
+            tags.append(f"script {script_index or scene_num}")
+        if isinstance(keywords, str):
+            keywords = [k for k in keywords.replace(",", " ").split() if k]
+        tags.extend([str(k) for k in list(keywords)[:5]])
         return " ".join(t for t in tags if t)
 
     def _on_generate_broll_clicked(self) -> None:
@@ -1614,6 +1718,10 @@ class VideoForgePanel(QWidget):
             if not sentences:
                 self._set_status("No sentences found. Run Analyze first.")
                 return
+            sentences = [s for s in sentences if str(s.get("text", "")).strip()]
+            if not sentences:
+                self._set_status("No non-empty sentences found.")
+                return
         except Exception as exc:
             self._set_status(f"Failed to load sentences: {exc}")
             return
@@ -1628,7 +1736,11 @@ class VideoForgePanel(QWidget):
             llm_msg = "LLM scene analysis disabled (basic mode)"
 
         # Confirm generation
-        estimate = len(sentences) * 15  # seconds
+        estimate_count = len(sentences)
+        max_scenes = self._get_broll_gen_max_scenes()
+        if max_scenes:
+            estimate_count = min(estimate_count, max_scenes)
+        estimate = estimate_count * 15  # seconds
         reply = QMessageBox.question(
             self,
             "Generate B-roll?",
@@ -1651,6 +1763,68 @@ class VideoForgePanel(QWidget):
 
         # Run B-roll generation with LLM analysis
         self._run_broll_generation_with_analysis(sentences, library_path, use_llm_analysis)
+
+    def _get_broll_gen_max_scenes(self) -> int | None:
+        raw = Config.get("broll_max_scenes")
+        if raw is None or str(raw).strip() == "":
+            raw = Config.get("broll_gen_max_scenes")
+        if raw is None or str(raw).strip() == "":
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        if value <= 0:
+            return None
+        return value
+
+    def _on_broll_gen_max_changed(self, value: str) -> None:
+        value = value.strip()
+        if value == "":
+            Config.set("broll_gen_max_scenes", None)
+            Config.set("broll_max_scenes", None)
+            return
+        try:
+            parsed = int(value)
+        except ValueError:
+            return
+        if parsed <= 0:
+            return
+        Config.set("broll_gen_max_scenes", parsed)
+        Config.set("broll_max_scenes", parsed)
+
+    def _on_broll_source_changed(self, value: str) -> None:
+        """B-roll source mode 변경."""
+        reverse_map = {
+            "Library Only": "library_only",
+            "Library + Stock": "library_stock",
+            "Library + AI": "library_ai",
+            "Library + Stock + AI (Full)": "library_stock_ai",
+            "Stock Only": "stock_only",
+            "AI Only": "ai_only",
+        }
+        mode = reverse_map.get(value, "stock_only")
+        Config.set("broll_source_mode", mode)
+
+    def _on_broll_media_type_changed(self, value: str) -> None:
+        """미디어 타입 선호도 변경."""
+        reverse_map = {
+            "Auto (Source Default)": "auto",
+            "Prefer Video": "prefer_video",
+            "Images Only": "image_only",
+        }
+        mode = reverse_map.get(value, "auto")
+        Config.set("broll_prefer_media_type", mode)
+
+    def _on_broll_max_scenes_changed(self, value: str) -> None:
+        """최대 장면 개수 변경."""
+        try:
+            num = int(value)
+            if 1 <= num <= 50:
+                Config.set("broll_max_scenes", num)
+                Config.set("broll_gen_max_scenes", num)
+        except ValueError:
+            return
 
     def _on_apply_clicked(self) -> None:
         logging.getLogger("VideoForge.ui").info("Apply clicked")

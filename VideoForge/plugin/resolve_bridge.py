@@ -49,7 +49,9 @@ class ResolveBridge:
             root_logger.removeHandler(handler)
 
         logging.raiseExceptions = False
-        file_handler = logging.FileHandler(log_path, encoding="utf-8", delay=True)
+        file_handler = logging.FileHandler(
+            log_path, encoding="utf-8", delay=True, mode="w"
+        )
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(
             logging.Formatter(
@@ -103,6 +105,10 @@ class ResolveBridge:
         store.clear_analysis_data()
         store.save_artifact("project_id", project_id)
         store.save_artifact("whisper_model", whisper_model)
+        store.save_artifact("render_mode", None)
+        store.save_artifact("render_segments", None)
+        store.save_artifact("render_overlap_frames", None)
+        store.save_artifact("render_source_range", None)
 
         try:
             self.logger.info("=== [BRIDGE] analyze_from_path called ===")
@@ -257,6 +263,10 @@ class ResolveBridge:
             store.clear_analysis_data()
             store.save_artifact("project_id", project_id)
             store.save_artifact("whisper_model", "resolve_ai")
+            store.save_artifact("render_mode", None)
+            store.save_artifact("render_segments", None)
+            store.save_artifact("render_overlap_frames", None)
+            store.save_artifact("render_source_range", None)
             self.logger.info("[BRIDGE] Resolve AI saving to database...")
             store.save_project_data(segments=segments, sentences=sentences)
             self.logger.info("[BRIDGE] Resolve AI database save complete")
@@ -304,17 +314,48 @@ class ResolveBridge:
         try:
             timeline = self.resolve_api.get_current_timeline()
             fps = self.resolve_api.get_timeline_fps()
+            base_offset_frames, base_video_index, skip_main = self._resolve_apply_anchor(
+                timeline, main_video_path
+            )
 
             for track in timeline_data["tracks"]:
                 track_type = "video"
+                if skip_main and track.get("type") == "video_main":
+                    self.logger.info("Apply: skipping main track (existing clip detected)")
+                    continue
                 track_index = int(track["index"])
+                if base_video_index:
+                    track_index = int(base_video_index) + (track_index - 1)
                 self.resolve_api.ensure_track(track_type, track_index)
                 for clip_data in track["clips"]:
                     media_item = self.resolve_api.import_media_if_needed(clip_data["file"])
                     if media_item is None:
                         continue
                     timeline_pos = self._time_to_frames(clip_data["timeline_start"], fps)
-                    self.resolve_api.insert_clip_at_position(track_type, track_index, media_item, timeline_pos)
+                    if base_offset_frames:
+                        timeline_pos += int(base_offset_frames)
+                    inserted = None
+                    if track["type"] == "video_broll":
+                        target_duration = float(clip_data.get("duration") or 0.0)
+                        if target_duration > 0 and fps:
+                            media_frames = self.resolve_api._get_media_item_duration_frames(
+                                media_item, fps
+                            )
+                            if media_frames:
+                                target_frames = max(1, int(target_duration * fps))
+                                source_end = min(media_frames - 1, target_frames - 1)
+                                inserted = self.resolve_api.insert_clip_at_position_with_range(
+                                    track_type,
+                                    track_index,
+                                    media_item,
+                                    timeline_pos,
+                                    0,
+                                    source_end,
+                                )
+                    if inserted is None:
+                        self.resolve_api.insert_clip_at_position(
+                            track_type, track_index, media_item, timeline_pos
+                        )
 
                     if track["type"] == "video_broll" and not clip_data.get("audio_enabled", False):
                         items = timeline.GetItemListInTrack(track_type, track_index)
@@ -330,6 +371,52 @@ class ResolveBridge:
                 "Apply to timeline failed",
                 details={"video_path": main_video_path, "error": str(exc)},
             ) from exc
+
+    def _resolve_apply_anchor(
+        self, timeline: Any, main_video_path: str
+    ) -> tuple[int, int, bool]:
+        base_offset_frames = 0
+        base_video_index = 1
+        skip_main = False
+        target_norm = os.path.normcase(str(main_video_path))
+
+        primary = self.resolve_api.get_primary_clip()
+        primary_path = self._get_clip_path(primary) if primary else None
+        if primary_path and os.path.normcase(str(primary_path)) == target_norm:
+            start_frame, _end_frame = self.resolve_api._get_item_range(primary)
+            if start_frame is not None:
+                base_offset_frames = int(start_frame)
+            base_video_index = int(self.resolve_api._safe_call(primary, "GetTrackIndex") or 1)
+            skip_main = True
+            self.logger.info(
+                "Apply anchor: selected clip at frame=%s track=%s",
+                base_offset_frames,
+                base_video_index,
+            )
+            return base_offset_frames, base_video_index, skip_main
+
+        track_count = int(timeline.GetTrackCount("video") or 0)
+        for track_index in range(1, track_count + 1):
+            items = timeline.GetItemListInTrack("video", track_index) or []
+            for item in items:
+                path = self._get_clip_path(item)
+                if not path:
+                    continue
+                if os.path.normcase(str(path)) != target_norm:
+                    continue
+                start_frame, _end_frame = self.resolve_api._get_item_range(item)
+                if start_frame is not None:
+                    base_offset_frames = int(start_frame)
+                base_video_index = int(self.resolve_api._safe_call(item, "GetTrackIndex") or track_index)
+                skip_main = True
+                self.logger.info(
+                    "Apply anchor: matched clip at frame=%s track=%s",
+                    base_offset_frames,
+                    base_video_index,
+                )
+                return base_offset_frames, base_video_index, skip_main
+
+        return base_offset_frames, base_video_index, skip_main
 
     def save_library_path(self, library_path: str) -> None:
         """Persist library path for the current Resolve project."""

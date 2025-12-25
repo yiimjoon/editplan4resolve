@@ -79,10 +79,23 @@ class TimelineBuilder:
         resolution = video_info.get("resolution", [0, 0])
 
         main_clips, segment_map = self._build_main_track(main_video_path, segments)
+        render_mode = (self.store.get_artifact("render_mode") or "").strip().lower()
+        render_segments = self.store.get_artifact("render_segments") or []
+        render_overlap = self.store.get_artifact("render_overlap_frames") or 0
+        override_map = None
+        if isinstance(render_segments, list) and render_segments:
+            overlap_sec = 0.0
+            if render_mode in {"j/l-cut", "jl-cut", "jlcut", "j/lcut"}:
+                try:
+                    overlap_sec = float(render_overlap) / float(fps or 1.0)
+                except Exception:
+                    overlap_sec = 0.0
+            override_map = self._build_segment_map(render_segments, overlap_sec)
+        broll_segment_map = override_map or segment_map
         broll_clips = build_broll_clips(
             sentences=sentences,
             matches=matches,
-            segment_map=segment_map,
+            segment_map=broll_segment_map,
             settings=self.settings,
         )
 
@@ -113,9 +126,9 @@ class TimelineBuilder:
                     "clips": main_clips,
                 },
                 {
-                    "id": "V2",
+                    "id": "V4",
                     "type": "video_broll",
-                    "index": 2,
+                    "index": 4,
                     "clips": broll_clips,
                 },
             ],
@@ -154,7 +167,7 @@ class TimelineBuilder:
             )
             segment_map.append(
                 SegmentMap(
-                    segment_id=int(seg["id"]),
+                    segment_id=int(seg.get("id") or idx),
                     t0=float(seg["t0"]),
                     t1=float(seg["t1"]),
                     timeline_start=timeline_cursor,
@@ -162,6 +175,31 @@ class TimelineBuilder:
             )
             timeline_cursor += duration
         return clips, segment_map
+
+    @staticmethod
+    def _build_segment_map(
+        segments: List[Dict], overlap_sec: float = 0.0
+    ) -> List[SegmentMap]:
+        segment_map: List[SegmentMap] = []
+        timeline_cursor = 0.0
+        for idx, seg in enumerate(segments, start=1):
+            t0 = float(seg.get("t0", 0.0))
+            t1 = float(seg.get("t1", 0.0))
+            duration = max(0.0, t1 - t0)
+            if duration <= 0.0:
+                continue
+            if overlap_sec > 0.0 and duration <= overlap_sec:
+                continue
+            segment_map.append(
+                SegmentMap(
+                    segment_id=int(seg.get("id") or idx),
+                    t0=t0,
+                    t1=t1,
+                    timeline_start=timeline_cursor,
+                )
+            )
+            timeline_cursor += max(0.0, duration - overlap_sec)
+        return segment_map
 
 
 def map_to_timeline(segment_map: List[SegmentMap], t0: float) -> float:

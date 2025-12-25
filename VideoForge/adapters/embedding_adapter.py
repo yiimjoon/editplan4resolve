@@ -14,6 +14,9 @@ _FALLBACK_WARNED = False
 _CLIP_MODEL = None
 _CLIP_PREPROCESS = None
 _CLIP_DEVICE = None
+_CLIP_TOKENIZER = None
+_CLIP_LOGS_QUIETED = False
+_ROOT_LOG_FILTERED = False
 
 
 def _seed_from_text(text: str) -> int:
@@ -37,13 +40,16 @@ def encode_text_clip(query: str) -> np.ndarray:
     """
     logger = logging.getLogger(__name__)
     try:
-        import open_clip  # type: ignore
+        import torch  # type: ignore
 
-        model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", pretrained="openai")
-        tokenizer = open_clip.get_tokenizer("ViT-B-32")
+        model, _preprocess, device = _load_clip_model()
+        tokenizer = _load_clip_tokenizer()
         tokens = tokenizer([query])
+        if hasattr(tokens, "to"):
+            tokens = tokens.to(device)
         with np.errstate(all="ignore"):
-            text_features = model.encode_text(tokens)
+            with torch.no_grad():
+                text_features = model.encode_text(tokens)
         text_vec = text_features.detach().cpu().numpy().astype(np.float32)
         text_vec = text_vec[0]
         text_vec /= max(np.linalg.norm(text_vec), 1e-8)
@@ -70,14 +76,15 @@ def _mark_fallback(logger: logging.Logger, message: str, exc: Exception) -> None
         logger.debug("%s: %s", message, exc)
 
 
-def _load_clip_model():
+def _load_clip_model(force_cpu: bool = False):
     global _CLIP_MODEL, _CLIP_PREPROCESS, _CLIP_DEVICE
-    if _CLIP_MODEL is not None:
+    if _CLIP_MODEL is not None and (not force_cpu or _CLIP_DEVICE == "cpu"):
         return _CLIP_MODEL, _CLIP_PREPROCESS, _CLIP_DEVICE
+    _quiet_external_loggers()
     import torch  # type: ignore
     import open_clip  # type: ignore
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cpu" if force_cpu else ("cuda" if torch.cuda.is_available() else "cpu")
     model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", pretrained="openai")
     model.eval()
     model.to(device)
@@ -85,6 +92,57 @@ def _load_clip_model():
     _CLIP_PREPROCESS = preprocess
     _CLIP_DEVICE = device
     return model, preprocess, device
+
+
+def _load_clip_tokenizer():
+    global _CLIP_TOKENIZER
+    if _CLIP_TOKENIZER is not None:
+        return _CLIP_TOKENIZER
+    import open_clip  # type: ignore
+
+    _CLIP_TOKENIZER = open_clip.get_tokenizer("ViT-B-32")
+    return _CLIP_TOKENIZER
+
+
+def _quiet_external_loggers() -> None:
+    global _CLIP_LOGS_QUIETED, _ROOT_LOG_FILTERED
+    if _CLIP_LOGS_QUIETED:
+        return
+    for name in (
+        "httpx",
+        "httpcore",
+        "huggingface_hub",
+        "open_clip",
+        "timm",
+        "urllib3",
+        "PIL",
+        "PIL.PngImagePlugin",
+    ):
+        logging.getLogger(name).setLevel(logging.WARNING)
+    if not _ROOT_LOG_FILTERED:
+        logging.getLogger().addFilter(_OpenClipRootFilter())
+        _ROOT_LOG_FILTERED = True
+    _CLIP_LOGS_QUIETED = True
+
+
+class _OpenClipRootFilter(logging.Filter):
+    _DROP_SNIPPETS = (
+        "Parsing model identifier",
+        "Loaded built-in ViT-B-32 model config",
+        "Instantiating model architecture: CLIP",
+        "Loading full pretrained weights from:",
+        "Final image preprocessing configuration set:",
+        "Model ViT-B-32 creation process complete.",
+        "Parsing tokenizer identifier",
+        "Attempting to load config from built-in:",
+        "Using default SimpleTokenizer.",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != "root":
+            return True
+        message = record.getMessage()
+        return not any(snippet in message for snippet in self._DROP_SNIPPETS)
 
 
 def _ffprobe_duration(video_path: str) -> float:
@@ -164,31 +222,18 @@ def encode_video_clip(
     if seed_hint is None:
         seed_hint = f"{path.name}:{path.stat().st_size if path.exists() else 0}"
     try:
-        model, preprocess, device = _load_clip_model()
-        duration = _ffprobe_duration(str(path))
-        if duration <= 0:
-            raise RuntimeError("ffprobe duration unavailable")
-        if sample_points is None:
-            from VideoForge.broll.indexer import smart_frame_sampling
-
-            sample_points = smart_frame_sampling(duration, max_frames=12, base_frames=6)
-        frames = _extract_frames(str(path), sample_points)
-        if not frames:
-            raise RuntimeError("Failed to extract frames")
-        import torch  # type: ignore
-
-        with torch.no_grad():
-            inputs = torch.stack([preprocess(frame) for frame in frames]).to(device)
-            image_features = model.encode_image(inputs)
-            image_vecs = image_features.detach().cpu().numpy().astype(np.float32)
-        mean_vec = np.mean(image_vecs, axis=0)
-        norm = np.linalg.norm(mean_vec)
-        if norm > 0:
-            mean_vec /= norm
-        return mean_vec
+        return _encode_video_with_clip(path, sample_points, force_cpu=False)
     except Exception as exc:
-        _mark_fallback(logger, "Video CLIP unavailable, using deterministic fallback", exc)
-        return _deterministic_vector(_seed_from_text(seed_hint))
+        logger.warning("Video CLIP primary failed, retrying on CPU: %s", exc)
+        try:
+            return _encode_video_with_clip(path, sample_points, force_cpu=True, batch_size=1)
+        except Exception as retry_exc:
+            _mark_fallback(
+                logger,
+                "Video CLIP unavailable, using deterministic fallback",
+                retry_exc,
+            )
+            return _deterministic_vector(_seed_from_text(seed_hint))
 
 
 def encode_image_clip(image_path: str, seed_hint: Optional[str] = None) -> np.ndarray:
@@ -214,5 +259,59 @@ def encode_image_clip(image_path: str, seed_hint: Optional[str] = None) -> np.nd
             image_vec /= norm
         return image_vec
     except Exception as exc:
-        _mark_fallback(logger, "Image CLIP unavailable, using deterministic fallback", exc)
-        return _deterministic_vector(_seed_from_text(seed_hint))
+        logger.warning("Image CLIP primary failed, retrying on CPU: %s", exc)
+        try:
+            model, preprocess, device = _load_clip_model(force_cpu=True)
+            from PIL import Image
+            import torch  # type: ignore
+
+            image = Image.open(path).convert("RGB")
+            with torch.no_grad():
+                inputs = preprocess(image).unsqueeze(0).to(device)
+                image_features = model.encode_image(inputs)
+                image_vec = image_features.detach().cpu().numpy().astype(np.float32)[0]
+            norm = np.linalg.norm(image_vec)
+            if norm > 0:
+                image_vec /= norm
+            return image_vec
+        except Exception as retry_exc:
+            _mark_fallback(
+                logger,
+                "Image CLIP unavailable, using deterministic fallback",
+                retry_exc,
+            )
+            return _deterministic_vector(_seed_from_text(seed_hint))
+
+
+def _encode_video_with_clip(
+    path: Path,
+    sample_points: Optional[Iterable[float]],
+    force_cpu: bool,
+    batch_size: int = 6,
+) -> np.ndarray:
+    model, preprocess, device = _load_clip_model(force_cpu=force_cpu)
+    duration = _ffprobe_duration(str(path))
+    if duration <= 0:
+        raise RuntimeError("ffprobe duration unavailable")
+    if sample_points is None:
+        from VideoForge.broll.indexer import smart_frame_sampling
+
+        sample_points = smart_frame_sampling(duration, max_frames=12, base_frames=6)
+    frames = _extract_frames(str(path), sample_points)
+    if not frames:
+        raise RuntimeError("Failed to extract frames")
+    import torch  # type: ignore
+
+    image_vecs: list[np.ndarray] = []
+    with torch.no_grad():
+        for i in range(0, len(frames), batch_size):
+            batch = frames[i : i + batch_size]
+            inputs = torch.stack([preprocess(frame) for frame in batch]).to(device)
+            image_features = model.encode_image(inputs)
+            image_vecs.append(image_features.detach().cpu().numpy().astype(np.float32))
+    all_vecs = np.concatenate(image_vecs, axis=0)
+    mean_vec = np.mean(all_vecs, axis=0)
+    norm = np.linalg.norm(mean_vec)
+    if norm > 0:
+        mean_vec /= norm
+    return mean_vec

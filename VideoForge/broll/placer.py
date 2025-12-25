@@ -1,10 +1,10 @@
 from typing import Dict, List
 
 
-def _map_sentence_to_timeline(segment_map: List, t0: float) -> float:
+def _map_time_to_timeline(segment_map: List, time_sec: float) -> float:
     for seg in segment_map:
-        if seg.t0 <= t0 <= seg.t1:
-            return seg.timeline_start + (t0 - seg.t0)
+        if seg.t0 <= time_sec <= seg.t1:
+            return seg.timeline_start + (time_sec - seg.t0)
     return 0.0
 
 
@@ -30,10 +30,14 @@ def build_broll_clips(
             continue
 
         sentence_duration = float(sentence["t1"]) - float(sentence["t0"])
-        duration = min(sentence_duration, max_duration)
+        timeline_start = _map_time_to_timeline(segment_map, float(sentence["t0"]))
+        timeline_end = _map_time_to_timeline(segment_map, float(sentence["t1"]))
+        timeline_duration = max(0.0, timeline_end - timeline_start)
+        if timeline_duration <= 0:
+            timeline_duration = sentence_duration
+        duration = min(timeline_duration, max_duration)
         media_start = 0.0
         media_end = media_start + duration
-        timeline_start = _map_sentence_to_timeline(segment_map, float(sentence["t0"]))
 
         clips.append(
             {
