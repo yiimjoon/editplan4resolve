@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -8,6 +9,7 @@ from VideoForge.adapters.embedding_adapter import encode_image_clip, encode_vide
 from VideoForge.broll.db import LibraryDB
 from VideoForge.broll.metadata import coerce_metadata_dict
 
+logger = logging.getLogger(__name__)
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".m4v"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
@@ -20,9 +22,44 @@ except ImportError:
     PIL_AVAILABLE = False
 
 
-def smart_frame_sampling(duration: float, max_frames: int = 12, base_frames: int = 6) -> List[float]:
+def smart_frame_sampling(
+    duration: float,
+    max_frames: int = 12,
+    base_frames: int = 6,
+    video_path: str | None = None,
+) -> List[float]:
     if duration <= 0:
         return [0.0]
+
+    if video_path:
+        try:
+            from VideoForge.adapters.scene_detector import SceneDetector
+            from VideoForge.config.config_manager import Config
+
+            use_scene_detection = Config.get("use_scene_detection")
+            if use_scene_detection is None:
+                use_scene_detection = True
+
+            if use_scene_detection:
+                raw_threshold = Config.get("scene_detection_threshold")
+                try:
+                    threshold = float(raw_threshold) if raw_threshold is not None else 30.0
+                except (TypeError, ValueError):
+                    threshold = 30.0
+                detector = SceneDetector(threshold=threshold)
+                scene_changes = detector.detect_scene_changes(
+                    Path(video_path),
+                    sample_rate=5,
+                )
+
+                if scene_changes and len(scene_changes) > 1:
+                    if len(scene_changes) <= max_frames:
+                        return scene_changes
+                    step = len(scene_changes) / max_frames
+                    return [scene_changes[int(i * step)] for i in range(max_frames)]
+        except Exception as exc:
+            logger.warning("Scene detection failed, using time-based: %s", exc)
+
     if duration < 3.0:
         return _unique_sorted([i * duration / 2 for i in range(3)], duration)
 
@@ -282,6 +319,34 @@ def scan_library(library_dir: str, db: LibraryDB) -> int:
     if not library_path.exists():
         raise FileNotFoundError(library_dir)
 
+    total_videos = 0
+    total_images = 0
+    for path in library_path.rglob("*"):
+        suffix = path.suffix.lower()
+        if suffix in VIDEO_EXTS:
+            total_videos += 1
+        elif suffix in IMAGE_EXTS:
+            total_images += 1
+
+    try:
+        from VideoForge.config.config_manager import Config
+
+        use_scene_detection = Config.get("use_scene_detection")
+        if use_scene_detection is None:
+            use_scene_detection = True
+        logger.info(
+            "Library scan: %d videos, %d images. Scene detection=%s",
+            total_videos,
+            total_images,
+            "on" if use_scene_detection else "off",
+        )
+    except Exception:
+        logger.info(
+            "Library scan: %d videos, %d images.",
+            total_videos,
+            total_images,
+        )
+
     count = 0
     for path in library_path.rglob("*"):
         suffix = path.suffix.lower()
@@ -315,6 +380,7 @@ def scan_library(library_dir: str, db: LibraryDB) -> int:
                 info["duration"],
                 max_frames=12,
                 base_frames=6,
+                video_path=str(path),
             )
             embedding = encode_video_clip(str(path), sample_points=sample_points)
         else:

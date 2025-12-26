@@ -39,9 +39,6 @@ class ComfyUIGenerator:
         self._server_process: Optional[subprocess.Popen] = None
         self._server_started_by_us = False
 
-        if workflow_path and workflow_path.exists():
-            self._load_workflow()
-
     def _autostart_enabled(self) -> bool:
         from VideoForge.config.config_manager import Config
 

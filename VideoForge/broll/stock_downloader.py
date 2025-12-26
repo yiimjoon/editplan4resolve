@@ -288,34 +288,12 @@ class StockMediaDownloader:
         Returns:
             Path to downloaded file, or None if failed
         """
-        results = []
-
-        # Try Pexels videos first if preferred
-        if prefer_video and self.pexels_key:
-            results = self.search_pexels_videos(query, per_page=3)
-            if results:
-                media = results[0]
-                ext = ".mp4"
-            else:
-                # Fallback to photos
-                prefer_video = False
-
-        # Try photos if video not preferred or not found
-        if not prefer_video:
-            # Try Pexels photos
-            if self.pexels_key:
-                results = self.search_pexels_photos(query, per_page=3)
-
-            # Fallback to Unsplash if Pexels fails
-            if not results and self.unsplash_key:
-                results = self.search_unsplash_photos(query, per_page=3)
-
-            if results:
-                media = results[0]
-                ext = ".jpg"
-            else:
-                logger.warning("No media found for query: %s", query)
-                return None
+        results = self.search_candidates(query, prefer_video=prefer_video, per_page=3)
+        if not results:
+            logger.warning("No media found for query: %s", query)
+            return None
+        media = results[0]
+        ext = ".mp4" if str(media.get("media_type") or "") == "video" else ".jpg"
 
         # Download
         save_path = output_dir / f"{filename_prefix}{ext}"
@@ -328,6 +306,29 @@ class StockMediaDownloader:
             )
 
         return None
+
+    def search_candidates(
+        self,
+        query: str,
+        prefer_video: bool = True,
+        per_page: int = 3,
+    ) -> List[Dict[str, object]]:
+        """Return candidate media results (without downloading)."""
+        results: List[Dict[str, object]] = []
+
+        if prefer_video and self.pexels_key:
+            results = self.search_pexels_videos(query, per_page=per_page)
+            if results:
+                return results
+            prefer_video = False
+
+        if not prefer_video:
+            if self.pexels_key:
+                results = self.search_pexels_photos(query, per_page=per_page)
+            if not results and self.unsplash_key:
+                results = self.search_unsplash_photos(query, per_page=per_page)
+
+        return results
 
     def _build_metadata(self, media: Dict[str, object], query: str) -> BrollMetadata:
         source = str(media.get("source") or "")

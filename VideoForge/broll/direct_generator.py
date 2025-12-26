@@ -228,9 +228,115 @@ class DirectBrollGenerator:
     ) -> Optional[StockMediaResult]:
         """Generate B-roll using stock APIs."""
         logger.info("Downloading stock media: %s", query)
-        return self.stock.search_and_download(
-            query, output_dir, filename_prefix, prefer_video=prefer_video
+        try:
+            from VideoForge.config.config_manager import Config
+
+            quality_check_enabled = Config.get("enable_quality_check")
+            if quality_check_enabled is None:
+                quality_check_enabled = True
+            else:
+                quality_check_enabled = bool(quality_check_enabled)
+            try:
+                min_quality_score = float(Config.get("min_quality_score") or 0.6)
+            except (TypeError, ValueError):
+                min_quality_score = 0.6
+        except Exception:
+            quality_check_enabled = False
+            min_quality_score = 0.6
+
+        logger.info(
+            "Quality check enabled=%s (min=%.2f)",
+            "on" if quality_check_enabled else "off",
+            min_quality_score,
         )
+
+        def _download_candidate(
+            candidate: Dict[str, object], name_suffix: str
+        ) -> Optional[StockMediaResult]:
+            media_type = str(candidate.get("media_type") or "")
+            ext = ".mp4" if media_type == "video" else ".jpg"
+            save_path = output_dir / f"{name_suffix}{ext}"
+            if not self.stock.download_media(str(candidate.get("url") or ""), save_path):
+                return None
+            metadata = self.stock._build_metadata(candidate, query)
+            return StockMediaResult(
+                path=save_path,
+                metadata=metadata,
+                media_type=media_type or ("video" if ext == ".mp4" else "image"),
+            )
+
+        candidates = self.stock.search_candidates(
+            query, prefer_video=prefer_video, per_page=3
+        )
+        if not candidates:
+            return None
+
+        candidate_media = str(candidates[0].get("media_type") or "")
+        if not quality_check_enabled or candidate_media != "video":
+            return _download_candidate(candidates[0], filename_prefix)
+
+        best: Optional[StockMediaResult] = None
+        best_score = -1.0
+        downloaded_paths: List[Path] = []
+
+        for idx, candidate in enumerate(candidates, start=1):
+            result = _download_candidate(candidate, f"{filename_prefix}_c{idx}")
+            if not result:
+                continue
+            downloaded_paths.append(result.path)
+            if result.media_type != "video":
+                continue
+            try:
+                from VideoForge.broll.quality_checker import VideoQualityChecker
+
+                checker = VideoQualityChecker()
+                quality = checker.check_video_quality(result.path)
+                score = float(quality.get("quality_score", 0.0))
+            except Exception as exc:
+                logger.warning("Quality check failed: %s", exc)
+                return result
+
+            logger.info(
+                "Quality check score=%.2f (min=%.2f) for %s",
+                score,
+                min_quality_score,
+                result.path.name,
+            )
+
+            if score >= min_quality_score and score > best_score:
+                best_score = score
+                best = result
+
+        if not best:
+            for path in downloaded_paths:
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            logger.error(
+                "Failed to find quality stock video after %d candidates",
+                len(downloaded_paths),
+            )
+            return None
+
+        final_path = output_dir / f"{filename_prefix}{best.path.suffix}"
+        if best.path != final_path:
+            try:
+                os.replace(best.path, final_path)
+                best.path = final_path
+            except Exception:
+                pass
+
+        for path in downloaded_paths:
+            if best.path == path:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        logger.info("Stock video quality: %.2f", best_score)
+        return best
 
     def _generate_ai(
         self,

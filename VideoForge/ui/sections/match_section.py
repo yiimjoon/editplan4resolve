@@ -142,13 +142,29 @@ def build_match_section(panel, parent_layout: QVBoxLayout) -> None:
     broll_output_row.addWidget(panel.broll_output_browse_btn)
     right_col.addLayout(broll_output_row)
 
-    panel.broll_mode_combo = QComboBox()
-    panel.broll_mode_combo.addItems(["stock", "ai", "hybrid"])
-    panel.broll_mode_combo.setCurrentText(
-        str(Config.get("broll_gen_mode") or Config.get("uvm_mode") or "stock")
+    panel.match_source_combo = QComboBox()
+    panel.match_source_combo.addItems(
+        [
+            "Library Only",
+            "Library + Stock",
+            "Library + AI",
+            "Library + Stock + AI (Full)",
+            "Stock Only",
+            "AI Only",
+        ]
     )
-    panel.broll_mode_combo.currentTextChanged.connect(panel._on_broll_gen_mode_changed)
-    add_setting_row(right_col, "Generation Mode", panel.broll_mode_combo)
+    saved_source = Config.get("broll_source_mode", "stock_only")
+    source_map = {
+        "library_only": "Library Only",
+        "library_stock": "Library + Stock",
+        "library_ai": "Library + AI",
+        "library_stock_ai": "Library + Stock + AI (Full)",
+        "stock_only": "Stock Only",
+        "ai_only": "AI Only",
+    }
+    panel.match_source_combo.setCurrentText(source_map.get(saved_source, "Stock Only"))
+    panel.match_source_combo.currentTextChanged.connect(panel._on_broll_source_changed)
+    add_setting_row(right_col, "B-roll Source", panel.match_source_combo)
 
     panel.broll_min_scenes_edit = QLineEdit()
     panel.broll_min_scenes_edit.setPlaceholderText("Min")
@@ -167,5 +183,10 @@ def build_match_section(panel, parent_layout: QVBoxLayout) -> None:
         panel.broll_max_scenes_edit.setText(str(max_scenes))
     panel.broll_max_scenes_edit.textChanged.connect(panel._on_broll_gen_max_changed)
     add_setting_row(right_col, "Max Scenes", panel.broll_max_scenes_edit)
+
+    panel.reset_broll_btn = QPushButton("Reset Project B-roll")
+    panel.reset_broll_btn.setCursor(Qt.PointingHandCursor)
+    panel.reset_broll_btn.clicked.connect(panel._on_reset_project_broll_clicked)
+    right_col.addWidget(panel.reset_broll_btn)
 
     parent_layout.addWidget(broll_card)

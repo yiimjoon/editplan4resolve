@@ -2,7 +2,7 @@ import hashlib
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List, Optional
 
 from VideoForge.adapters import embedding_adapter
 from VideoForge.broll.db import LibraryDB
@@ -280,13 +280,26 @@ class ResolveBridge:
                 details={"video_path": video_path, "engine": "resolve_ai", "error": str(exc)},
             ) from exc
 
-    def match_broll(self, project_db_path: str, library_db_path: str) -> Dict[str, str | int]:
+    def match_broll(
+        self,
+        project_db_path: str,
+        library_db_path: str,
+        sentence_ids: Optional[Iterable[int]] = None,
+    ) -> Dict[str, str | int]:
         """Match B-roll clips against stored sentences."""
         store = SegmentStore(project_db_path)
         store.clear_matches()
         sentences = store.get_sentences()
         if not sentences:
             raise ValueError("No sentences found. Run analysis first.")
+        if sentence_ids is not None:
+            id_set = {int(sid) for sid in sentence_ids if sid is not None}
+            total = len(sentences)
+            sentences = [s for s in sentences if int(s.get("id") or 0) in id_set]
+            self.logger.info("Match scope: %d/%d sentences", len(sentences), total)
+            if not sentences:
+                self.logger.info("Match scope empty; skipping match.")
+                return {"count": 0, "warning": ""}
 
         schema_path = self._resolve_schema_path()
         library_db = LibraryDB(library_db_path, schema_path=str(schema_path))

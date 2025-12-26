@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import shutil
 import threading
 from pathlib import Path
 from typing import Optional
@@ -849,6 +850,30 @@ class VideoForgePanel(QWidget):
         """Toggle ComfyUI autostart."""
         Config.set("comfyui_autostart", bool(state))
 
+    def _on_scene_detection_changed(self, state: int) -> None:
+        """Toggle OpenCV scene detection for sampling."""
+        Config.set("use_scene_detection", bool(state))
+
+    def _on_scene_threshold_changed(self, value: int) -> None:
+        """Adjust scene detection sensitivity."""
+        Config.set("scene_detection_threshold", int(value))
+        try:
+            self.scene_threshold_label.setText(f"Sensitivity: {int(value)}")
+        except Exception:
+            pass
+
+    def _on_quality_check_changed(self, state: int) -> None:
+        """Toggle stock/AI quality check."""
+        Config.set("enable_quality_check", bool(state))
+
+    def _on_min_quality_changed(self, value: int) -> None:
+        """Adjust minimum quality score threshold."""
+        Config.set("min_quality_score", float(value) / 100.0)
+        try:
+            self.min_quality_label.setText(f"Min Quality: {int(value)}%")
+        except Exception:
+            pass
+
     def _on_llm_instructions_mode_changed(self, value: str) -> None:
         mode = str(value).strip().lower()
         if mode not in {"shortform", "longform"}:
@@ -1330,7 +1355,17 @@ class VideoForgePanel(QWidget):
         Config.set("broll_gen_output_dir", value.strip())
 
     def _on_broll_gen_mode_changed(self, value: str) -> None:
-        Config.set("broll_gen_mode", value.strip())
+        legacy = str(value).strip().lower()
+        Config.set("broll_gen_mode", legacy)
+        legacy_map = {
+            "stock": "stock_only",
+            "ai": "ai_only",
+            "hybrid": "library_stock_ai",
+        }
+        source_mode = legacy_map.get(legacy)
+        if source_mode:
+            Config.set("broll_source_mode", source_mode)
+            self._sync_broll_source_combos(source_mode)
 
     def _on_broll_output_browse(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Select B-roll Output Folder")
@@ -1620,7 +1655,6 @@ class VideoForgePanel(QWidget):
         """Generate B-roll with optional LLM scene analysis (Direct mode)."""
         sentences = [s for s in sentences if str(s.get("text", "")).strip()]
         output_root = self._get_broll_output_root()
-        mode = str(Config.get("broll_gen_mode") or Config.get("uvm_mode") or "stock").lower()
         project_name = self._get_broll_project_name()
         max_scenes = self._get_broll_gen_max_scenes()
 
@@ -1640,6 +1674,13 @@ class VideoForgePanel(QWidget):
             from VideoForge.broll.source_config import BrollSourceConfig
 
             config = BrollSourceConfig.from_config()
+            source_mode = str(config.source_mode or "stock_only").strip()
+            if source_mode in {"library_stock", "stock_only"}:
+                mode = "stock"
+            elif source_mode in {"library_ai", "ai_only"}:
+                mode = "ai"
+            else:
+                mode = "hybrid"
             resolution_value = str(Config.get("comfyui_resolution") or "1920x1024")
             seed_value = Config.get("comfyui_seed")
             seed = None
@@ -1658,6 +1699,7 @@ class VideoForgePanel(QWidget):
             # Step 1: Scene Analysis (LLM or heuristic fallback)
             scene_analyses = None
             selected_sentences = sentences
+            selected_ids: set[int] = set()
             try:
                 from VideoForge.ai.scene_analyzer import SceneAnalyzer
 
@@ -1676,6 +1718,11 @@ class VideoForgePanel(QWidget):
                     ]
                     if not selected_sentences:
                         selected_sentences = sentences
+                        selected_ids = {
+                            s.get("id")
+                            for s in selected_sentences
+                            if s.get("id") is not None
+                        }
                 if not scene_analyses:
                     scene_analyses = analyzer.analyze_sentences(selected_sentences, max_scenes)
                 if max_scenes:
@@ -1752,6 +1799,10 @@ class VideoForgePanel(QWidget):
             selected_sentences = [
                 s for s in selected_sentences if str(s.get("text", "")).strip()
             ]
+            if not selected_ids:
+                selected_ids = {
+                    s.get("id") for s in selected_sentences if s.get("id") is not None
+                }
             # Step 3: Library-first match (optional)
             schema_path = repo_root / "VideoForge" / "config" / "schema.sql"
             if not schema_path.exists():
@@ -1821,7 +1872,12 @@ class VideoForgePanel(QWidget):
                 clip_ids.append(clip_id)
 
             # Step 4: Re-match
-            rematch = self.bridge.match_broll(self.project_db, library_path)
+            match_ids = sorted({int(sid) for sid in selected_ids if sid is not None}) if selected_ids else None
+            rematch = self.bridge.match_broll(
+                self.project_db,
+                library_path,
+                sentence_ids=match_ids,
+            )
             return {"generated": len(clip_ids), "match": rematch}
 
         def _done(result):
@@ -1908,11 +1964,13 @@ class VideoForgePanel(QWidget):
         if max_scenes:
             estimate_count = min(estimate_count, max_scenes)
         estimate = estimate_count * 15  # seconds
+        source_mode = str(Config.get("broll_source_mode") or "stock_only")
+        source_label = self._get_broll_source_label(source_mode)
         reply = QMessageBox.question(
             self,
             "Generate B-roll?",
             f"Generate B-roll for {len(sentences)} sentences?\n\n"
-            f"Mode: {Config.get('broll_gen_mode', Config.get('uvm_mode', 'stock'))}\n"
+            f"Source: {source_label}\n"
             f"{llm_msg}\n"
             f"Estimated time: ~{estimate} seconds\n\n"
             f"This will create scene clips and auto-index them into your library.",
@@ -1972,6 +2030,7 @@ class VideoForgePanel(QWidget):
         }
         mode = reverse_map.get(value, "stock_only")
         Config.set("broll_source_mode", mode)
+        self._sync_broll_source_combos(mode)
 
     def _on_broll_media_type_changed(self, value: str) -> None:
         """미디어 타입 선호도 변경."""
@@ -1982,6 +2041,95 @@ class VideoForgePanel(QWidget):
         }
         mode = reverse_map.get(value, "auto")
         Config.set("broll_prefer_media_type", mode)
+
+    def _sync_broll_source_combos(self, source_mode: str) -> None:
+        source_map = {
+            "library_only": "Library Only",
+            "library_stock": "Library + Stock",
+            "library_ai": "Library + AI",
+            "library_stock_ai": "Library + Stock + AI (Full)",
+            "stock_only": "Stock Only",
+            "ai_only": "AI Only",
+        }
+        label = source_map.get(source_mode, "Stock Only")
+        for attr in ("broll_source_combo", "match_source_combo"):
+            combo = getattr(self, attr, None)
+            if not combo:
+                continue
+            if combo.currentText() == label:
+                continue
+            combo.blockSignals(True)
+            combo.setCurrentText(label)
+            combo.blockSignals(False)
+
+    @staticmethod
+    def _get_broll_source_label(source_mode: str) -> str:
+        source_map = {
+            "library_only": "Library Only",
+            "library_stock": "Library + Stock",
+            "library_ai": "Library + AI",
+            "library_stock_ai": "Library + Stock + AI (Full)",
+            "stock_only": "Stock Only",
+            "ai_only": "AI Only",
+        }
+        return source_map.get(source_mode, "Stock Only")
+
+    def _on_reset_project_broll_clicked(self) -> None:
+        if not self.project_db:
+            self._set_status("Analyze a clip first.")
+            return
+        library_path = self.library_path_edit.text().strip()
+        if not library_path:
+            self._set_status("Set library path first.")
+            return
+
+        project_name = self._get_broll_project_name()
+        output_root = self._get_broll_output_root()
+        project_dir = output_root / project_name
+
+        reply = QMessageBox.question(
+            self,
+            "Reset Project B-roll?",
+            "This will remove generated B-roll clips for the current project,\n"
+            "clear project matches, and remove those clips from the library.\n\n"
+            "Library DB itself will not be deleted.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        def _reset():
+            removed_files = 0
+            if project_dir.exists():
+                removed_files = len([p for p in project_dir.rglob("*") if p.is_file()])
+                shutil.rmtree(project_dir, ignore_errors=True)
+
+            from VideoForge.core.segment_store import SegmentStore
+
+            store = SegmentStore(self.project_db)
+            store.clear_matches()
+
+            removed_db = 0
+            schema_path = self._resolve_repo_root() / "VideoForge" / "config" / "schema.sql"
+            if not schema_path.exists():
+                schema_path = self._resolve_repo_root() / "config" / "schema.sql"
+            library_db = LibraryDB(library_path, schema_path=str(schema_path))
+            prefixes = {str(project_dir), str(project_dir.resolve())}
+            for prefix in prefixes:
+                removed_db += library_db.delete_clips_by_path_prefix(prefix)
+
+            return {"files": removed_files, "db": removed_db}
+
+        def _done(result):
+            removed_files = result.get("files", 0) if isinstance(result, dict) else 0
+            removed_db = result.get("db", 0) if isinstance(result, dict) else 0
+            self._set_status(
+                f"Reset complete: removed {removed_files} files, {removed_db} library clips."
+            )
+
+        self._set_status("Resetting project B-roll...")
+        self._run_worker(_reset, on_done=_done)
 
 
     def _on_broll_min_scenes_changed(self, value: str) -> None:

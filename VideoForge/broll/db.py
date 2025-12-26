@@ -249,6 +249,19 @@ class LibraryDB:
             results[clip_id] = _normalize(emb)
         return results
 
+    def delete_clips_by_path_prefix(self, prefix: str) -> int:
+        prefix = str(prefix or "").strip()
+        if not prefix:
+            return 0
+        like_pattern = prefix.rstrip("\\/") + "%"
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id FROM clips WHERE path LIKE ?",
+                (like_pattern,),
+            ).fetchall()
+            conn.execute("DELETE FROM clips WHERE path LIKE ?", (like_pattern,))
+        return len(rows)
+
 
 def _to_fts_query(raw: str) -> str:
     """

@@ -319,7 +319,65 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     mid_col.addWidget(panel.comfyui_autostart_checkbox)
 
     # --- Column 3: Matching & Sidecars ---
-    right_col.addWidget(panel._create_section_title("E. Hybrid Search Weights"))
+    right_col.addWidget(panel._create_section_title("E. Video Analysis"))
+
+    panel.scene_detection_checkbox = QCheckBox("Use Scene Detection (OpenCV)")
+    scene_detection_value = Config.get("use_scene_detection")
+    panel.scene_detection_checkbox.setChecked(
+        True if scene_detection_value is None else bool(scene_detection_value)
+    )
+    panel.scene_detection_checkbox.stateChanged.connect(panel._on_scene_detection_changed)
+    right_col.addWidget(panel.scene_detection_checkbox)
+
+    raw_threshold = Config.get("scene_detection_threshold")
+    try:
+        threshold_value = int(float(raw_threshold)) if raw_threshold is not None else 30
+    except (TypeError, ValueError):
+        threshold_value = 30
+
+    panel.scene_threshold_label = QLabel(f"Sensitivity: {threshold_value}")
+    panel.scene_threshold_label.setStyleSheet(
+        f"color: {panel.colors['text_dim']}; font-size: 11px;"
+    )
+    right_col.addWidget(panel.scene_threshold_label)
+
+    panel.scene_threshold_slider = QSlider(Qt.Horizontal)
+    panel.scene_threshold_slider.setMinimum(10)
+    panel.scene_threshold_slider.setMaximum(50)
+    panel.scene_threshold_slider.setValue(int(threshold_value))
+    panel.scene_threshold_slider.valueChanged.connect(panel._on_scene_threshold_changed)
+    right_col.addWidget(panel.scene_threshold_slider)
+
+    panel.quality_check_checkbox = QCheckBox("Enable Quality Check (Stock/AI)")
+    quality_check_value = Config.get("enable_quality_check")
+    panel.quality_check_checkbox.setChecked(
+        True if quality_check_value is None else bool(quality_check_value)
+    )
+    panel.quality_check_checkbox.stateChanged.connect(panel._on_quality_check_changed)
+    right_col.addWidget(panel.quality_check_checkbox)
+
+    raw_min_quality = Config.get("min_quality_score")
+    try:
+        min_quality_value = int(float(raw_min_quality) * 100) if raw_min_quality is not None else 60
+    except (TypeError, ValueError):
+        min_quality_value = 60
+    min_quality_value = max(30, min(90, min_quality_value))
+
+    panel.min_quality_label = QLabel(f"Min Quality: {min_quality_value}%")
+    panel.min_quality_label.setStyleSheet(
+        f"color: {panel.colors['text_dim']}; font-size: 11px;"
+    )
+    right_col.addWidget(panel.min_quality_label)
+
+    panel.min_quality_slider = QSlider(Qt.Horizontal)
+    panel.min_quality_slider.setMinimum(30)
+    panel.min_quality_slider.setMaximum(90)
+    panel.min_quality_slider.setValue(int(min_quality_value))
+    panel.min_quality_slider.valueChanged.connect(panel._on_min_quality_changed)
+    right_col.addWidget(panel.min_quality_slider)
+
+    right_col.addSpacing(12)
+    right_col.addWidget(panel._create_section_title("F. Hybrid Search Weights"))
 
     def add_weight_slider(layout, label_attr, slider_attr, label_text, min_val, max_val, current_val, callback):
         lbl = QLabel(label_text)
@@ -345,11 +403,11 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
                       panel.settings["broll"]["visual_similarity_threshold"] * 100, panel._on_visual_threshold_changed)
 
     right_col.addSpacing(12)
-    right_col.addWidget(panel._create_section_title("F. Maintenance"))
+    right_col.addWidget(panel._create_section_title("G. Maintenance"))
 
     # --- Maintenance & Misc ---
     right_col.addSpacing(12)
-    right_col.addWidget(panel._create_section_title("G. Miscellaneous"))
+    right_col.addWidget(panel._create_section_title("H. Miscellaneous"))
     
     srt_row = QHBoxLayout()
     panel.srt_path_edit = QLineEdit()
