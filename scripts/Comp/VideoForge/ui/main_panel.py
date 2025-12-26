@@ -71,7 +71,7 @@ COLORS = {
     "error": "#d32f2f",
 }
 
-VERSION = "v1.6.1"
+VERSION = "v1.7.0"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
