@@ -7,6 +7,7 @@ from VideoForge.ai.llm_hooks import get_llm_api_key, get_llm_model, get_llm_prov
 from VideoForge.ui.qt_compat import (
     QComboBox,
     QHBoxLayout,
+    QCheckBox,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -182,6 +183,19 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.jlcut_overlap_edit.textChanged.connect(panel._on_jlcut_overlap_changed)
     add_setting_row(mid_col, "J/L overlap (frames)", panel.jlcut_overlap_edit)
 
+    panel.jlcut_overlap_jitter_edit = QLineEdit()
+    panel.jlcut_overlap_jitter_edit.setFixedWidth(60)
+    panel.jlcut_overlap_jitter_edit.setText(
+        str(
+            panel.settings["broll"].get(
+                "jlcut_overlap_jitter",
+                Config.get("jlcut_overlap_jitter", 0),
+            )
+        )
+    )
+    panel.jlcut_overlap_jitter_edit.textChanged.connect(panel._on_jlcut_overlap_jitter_changed)
+    add_setting_row(mid_col, "J/L jitter (+/-)", panel.jlcut_overlap_jitter_edit)
+
     mid_col.addSpacing(12)
     mid_col.addWidget(panel._create_section_title("D. B-roll Generation"))
 
@@ -225,11 +239,84 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.broll_media_type_combo.currentTextChanged.connect(panel._on_broll_media_type_changed)
     add_setting_row(mid_col, "Media Type", panel.broll_media_type_combo, label_width=120)
 
-    panel.broll_max_scenes_edit = QLineEdit()
-    panel.broll_max_scenes_edit.setFixedWidth(60)
-    panel.broll_max_scenes_edit.setText(str(Config.get("broll_max_scenes", 15)))
-    panel.broll_max_scenes_edit.textChanged.connect(panel._on_broll_max_scenes_changed)
-    add_setting_row(mid_col, "Max Scenes (LLM)", panel.broll_max_scenes_edit, label_width=120)
+    panel.broll_scene_seed_edit = QLineEdit()
+    panel.broll_scene_seed_edit.setFixedWidth(80)
+    panel.broll_scene_seed_edit.setPlaceholderText("Random")
+    saved_scene_seed = Config.get("broll_scene_seed")
+    panel.broll_scene_seed_edit.setText("" if saved_scene_seed in {None, ""} else str(saved_scene_seed))
+    panel.broll_scene_seed_edit.textChanged.connect(panel._on_broll_scene_seed_changed)
+    add_setting_row(mid_col, "Scene Seed (opt)", panel.broll_scene_seed_edit, label_width=120)
+
+    panel.comfyui_resolution_combo = QComboBox()
+    panel.comfyui_resolution_combo.addItems(
+        [
+            "1920x1024 (default)",
+            "1920x1080 (16:9)",
+            "1024x1024 (1:1)",
+            "1024x1824 (9:16)",
+        ]
+    )
+    saved_res = str(Config.get("comfyui_resolution") or "1920x1024")
+    res_map = {
+        "1920x1024": "1920x1024 (default)",
+        "1920x1080": "1920x1080 (16:9)",
+        "1024x1024": "1024x1024 (1:1)",
+        "1024x1824": "1024x1824 (9:16)",
+    }
+    panel.comfyui_resolution_combo.setCurrentText(
+        res_map.get(saved_res, "1920x1024 (default)")
+    )
+    panel.comfyui_resolution_combo.currentTextChanged.connect(
+        panel._on_comfyui_resolution_changed
+    )
+    add_setting_row(mid_col, "ComfyUI Resolution", panel.comfyui_resolution_combo, label_width=120)
+
+    panel.comfyui_seed_edit = QLineEdit()
+    panel.comfyui_seed_edit.setPlaceholderText("Random each run")
+    panel.comfyui_seed_edit.setFixedWidth(140)
+    panel.comfyui_seed_edit.setText(str(Config.get("comfyui_seed") or ""))
+    panel.comfyui_seed_edit.textChanged.connect(panel._on_comfyui_seed_changed)
+    add_setting_row(mid_col, "ComfyUI Seed (optional)", panel.comfyui_seed_edit, label_width=120)
+
+    panel.comfyui_output_edit = QLineEdit()
+    panel.comfyui_output_edit.setPlaceholderText("C:/ComfyUI/ComfyUI/output")
+    panel.comfyui_output_edit.setText(str(Config.get("comfyui_output_dir") or ""))
+    panel.comfyui_output_edit.textChanged.connect(panel._on_comfyui_output_changed)
+    panel.comfyui_output_browse_btn = QPushButton("Browse")
+    panel.comfyui_output_browse_btn.setFixedWidth(60)
+    panel.comfyui_output_browse_btn.clicked.connect(panel._on_comfyui_output_browse)
+    comfyui_output_row = QHBoxLayout()
+    comfyui_output_row.addWidget(panel.comfyui_output_edit)
+    comfyui_output_row.addWidget(panel.comfyui_output_browse_btn)
+    output_label = QLabel("ComfyUI Output Folder (optional)")
+    output_label.setStyleSheet("font-size: 10px; color: rgba(26, 26, 26, 0.6);")
+    mid_col.addWidget(output_label)
+    mid_col.addLayout(comfyui_output_row)
+
+    panel.comfyui_run_script_edit = QLineEdit()
+    panel.comfyui_run_script_edit.setPlaceholderText("C:/ComfyUI/ComfyUI/run_comfyui.bat")
+    panel.comfyui_run_script_edit.setText(str(Config.get("comfyui_run_script") or ""))
+    panel.comfyui_run_script_edit.textChanged.connect(panel._on_comfyui_run_script_changed)
+    panel.comfyui_run_script_browse_btn = QPushButton("Browse")
+    panel.comfyui_run_script_browse_btn.setFixedWidth(60)
+    panel.comfyui_run_script_browse_btn.clicked.connect(panel._on_comfyui_run_script_browse)
+    comfyui_run_row = QHBoxLayout()
+    comfyui_run_row.addWidget(panel.comfyui_run_script_edit)
+    comfyui_run_row.addWidget(panel.comfyui_run_script_browse_btn)
+    run_label = QLabel("ComfyUI Run Script (optional)")
+    run_label.setStyleSheet("font-size: 10px; color: rgba(26, 26, 26, 0.6);")
+    mid_col.addWidget(run_label)
+    mid_col.addLayout(comfyui_run_row)
+
+    panel.comfyui_autostart_checkbox = QCheckBox("Auto-start ComfyUI server")
+    autostart_value = Config.get("comfyui_autostart")
+    panel.comfyui_autostart_checkbox.setChecked(
+        True if autostart_value is None else bool(autostart_value)
+    )
+    panel.comfyui_autostart_checkbox.stateChanged.connect(
+        panel._on_comfyui_autostart_changed
+    )
+    mid_col.addWidget(panel.comfyui_autostart_checkbox)
 
     # --- Column 3: Matching & Sidecars ---
     right_col.addWidget(panel._create_section_title("E. Hybrid Search Weights"))

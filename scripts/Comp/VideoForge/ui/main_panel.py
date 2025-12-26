@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import threading
 from pathlib import Path
 from typing import Optional
@@ -230,6 +231,7 @@ DEFAULT_SETTINGS = {
         "jcut_offset": 0.0,
         "lcut_offset": 0.0,
         "jlcut_overlap_frames": 15,
+        "jlcut_overlap_jitter": 0,
     },
     "whisper": {"task": "transcribe", "language": "auto"},
     "query": {"top_n_tokens": 6},
@@ -544,12 +546,14 @@ class VideoForgePanel(QWidget):
         mode = Config.get("jlcut_mode")
         if isinstance(mode, str) and mode.strip():
             broll["jlcut_mode"] = mode.strip().lower()
-        for key in ("jcut_offset", "lcut_offset", "jlcut_overlap_frames"):
+        for key in ("jcut_offset", "lcut_offset", "jlcut_overlap_frames", "jlcut_overlap_jitter"):
             override = Config.get(key)
             if override is None:
                 continue
             try:
                 if key == "jlcut_overlap_frames":
+                    broll[key] = int(float(override))
+                elif key == "jlcut_overlap_jitter":
                     broll[key] = int(float(override))
                 else:
                     broll[key] = float(override)
@@ -783,6 +787,68 @@ class VideoForgePanel(QWidget):
     def _on_comfyui_url_changed(self, value: str) -> None:
         Config.set("comfyui_url", str(value).strip())
 
+    def _on_comfyui_output_changed(self, value: str) -> None:
+        """ComfyUI output directory path (optional)."""
+        Config.set("comfyui_output_dir", str(value).strip())
+
+    def _on_comfyui_output_browse(self) -> None:
+        """Select ComfyUI output directory (optional)."""
+        start_dir = str(Config.get("comfyui_output_dir") or "C:/ComfyUI/ComfyUI/output")
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select ComfyUI Output Directory",
+            start_dir,
+        )
+        if folder:
+            try:
+                self.comfyui_output_edit.setText(folder)
+            except Exception:
+                pass
+            Config.set("comfyui_output_dir", folder)
+
+    def _on_comfyui_resolution_changed(self, value: str) -> None:
+        """ComfyUI resolution selection."""
+        reverse_map = {
+            "1920x1024 (default)": "1920x1024",
+            "1920x1080 (16:9)": "1920x1080",
+            "1024x1024 (1:1)": "1024x1024",
+            "1024x1824 (9:16)": "1024x1824",
+        }
+        Config.set("comfyui_resolution", reverse_map.get(value, "1920x1024"))
+
+    def _on_comfyui_seed_changed(self, value: str) -> None:
+        """Optional ComfyUI seed (blank = random each run)."""
+        text = str(value).strip()
+        if not text:
+            Config.set("comfyui_seed", "")
+            return
+        if text.isdigit():
+            Config.set("comfyui_seed", text)
+
+    def _on_comfyui_run_script_changed(self, value: str) -> None:
+        """ComfyUI run script path (optional)."""
+        Config.set("comfyui_run_script", str(value).strip())
+
+    def _on_comfyui_run_script_browse(self) -> None:
+        """Select ComfyUI run script (optional)."""
+        start_dir = str(Config.get("comfyui_run_script") or "C:/ComfyUI/ComfyUI/run_comfyui.bat")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select ComfyUI Run Script",
+            start_dir,
+            "Batch Files (*.bat);;All Files (*)",
+        )
+        if path:
+            try:
+                self.comfyui_run_script_edit.setText(path)
+            except Exception:
+                pass
+            Config.set("comfyui_run_script", path)
+
+    def _on_comfyui_autostart_changed(self, state: int) -> None:
+        """Toggle ComfyUI autostart."""
+        Config.set("comfyui_autostart", bool(state))
+
     def _on_llm_instructions_mode_changed(self, value: str) -> None:
         mode = str(value).strip().lower()
         if mode not in {"shortform", "longform"}:
@@ -975,6 +1041,7 @@ class VideoForgePanel(QWidget):
             if render_mode not in {"Silence Removal", "J/L-cut"}:
                 render_mode = "Silence Removal"
             overlap_frames = int(Config.get("jlcut_overlap_frames", 15) or 15)
+            overlap_jitter = int(Config.get("jlcut_overlap_jitter", 0) or 0)
             logging.getLogger("VideoForge.ui").info(
                 "Silence render J/L-cut settings: mode=%s j=%.3fs l=%.3fs",
                 jlcut_mode,
@@ -989,6 +1056,11 @@ class VideoForgePanel(QWidget):
                 "J/L-cut overlap frames: %d",
                 overlap_frames,
             )
+            if overlap_jitter:
+                logging.getLogger("VideoForge.ui").info(
+                    "J/L-cut overlap jitter: +/- %d frames",
+                    overlap_jitter,
+                )
             keep_segments = process_silence(
                 video_path=video_path,
                 threshold_db=self.settings["silence"]["threshold_db"],
@@ -1008,11 +1080,30 @@ class VideoForgePanel(QWidget):
                         "Silence render using draft order (%d entries).",
                         len(draft_order),
                     )
+            overlap_seed = None
+            if store and overlap_jitter > 0:
+                try:
+                    existing_seed = store.get_artifact("render_overlap_seed")
+                    existing_jitter = store.get_artifact("render_overlap_jitter")
+                    if (
+                        existing_seed is not None
+                        and int(existing_jitter or 0) == overlap_jitter
+                    ):
+                        overlap_seed = int(existing_seed)
+                    else:
+                        overlap_seed = secrets.randbits(32)
+                except Exception as exc:
+                    logging.getLogger("VideoForge.ui").warning(
+                        "Failed to resolve overlap seed: %s", exc
+                    )
+
             def _save_render_artifacts(
                 mode: str,
                 segments: list[dict],
                 overlap: int,
                 source: tuple[float, float] | None,
+                jitter: int = 0,
+                seed: int | None = None,
             ) -> None:
                 if not store:
                     return
@@ -1020,6 +1111,8 @@ class VideoForgePanel(QWidget):
                     store.save_artifact("render_mode", mode)
                     store.save_artifact("render_segments", segments)
                     store.save_artifact("render_overlap_frames", int(overlap))
+                    store.save_artifact("render_overlap_jitter", int(jitter))
+                    store.save_artifact("render_overlap_seed", seed)
                     store.save_artifact(
                         "render_source_range",
                         [float(source[0]), float(source[1])] if source else None,
@@ -1051,11 +1144,15 @@ class VideoForgePanel(QWidget):
                     ordered_segments,
                     overlap_frames,
                     source_range,
+                    overlap_jitter,
+                    overlap_seed,
                 )
                 ok = self.bridge.resolve_api.insert_overlapped_segments(
                     clip,
                     ordered_segments,
                     overlap_frames=overlap_frames,
+                    overlap_jitter=overlap_jitter,
+                    jitter_seed=overlap_seed,
                     include_audio=True,
                 )
                 return ok
@@ -1216,6 +1313,15 @@ class VideoForgePanel(QWidget):
         frames = max(0, frames)
         self.settings["broll"]["jlcut_overlap_frames"] = frames
         Config.set("jlcut_overlap_frames", frames)
+
+    def _on_jlcut_overlap_jitter_changed(self, value: str) -> None:
+        try:
+            frames = int(float(value))
+        except Exception:
+            return
+        frames = max(0, frames)
+        self.settings["broll"]["jlcut_overlap_jitter"] = frames
+        Config.set("jlcut_overlap_jitter", frames)
 
     def _on_broll_gen_enabled_changed(self) -> None:
         Config.set("broll_gen_enabled", self.broll_enabled_checkbox.isChecked())
@@ -1533,6 +1639,22 @@ class VideoForgePanel(QWidget):
             from VideoForge.broll.direct_generator import DirectBrollGenerator
             from VideoForge.broll.source_config import BrollSourceConfig
 
+            config = BrollSourceConfig.from_config()
+            resolution_value = str(Config.get("comfyui_resolution") or "1920x1024")
+            seed_value = Config.get("comfyui_seed")
+            seed = None
+            if seed_value is not None and str(seed_value).strip():
+                try:
+                    seed = int(str(seed_value).strip())
+                except ValueError:
+                    seed = None
+            try:
+                width_str, height_str = resolution_value.lower().split("x", 1)
+                comfyui_width = int(width_str.strip())
+                comfyui_height = int(height_str.strip())
+            except ValueError:
+                comfyui_width, comfyui_height = 1920, 1024
+
             # Step 1: Scene Analysis (LLM or heuristic fallback)
             scene_analyses = None
             selected_sentences = sentences
@@ -1571,6 +1693,52 @@ class VideoForgePanel(QWidget):
                 )
                 # Continue without analysis
 
+            if scene_analyses:
+                for scene in scene_analyses:
+                    scene["comfyui_width"] = comfyui_width
+                    scene["comfyui_height"] = comfyui_height
+                    if seed is not None:
+                        scene["comfyui_seed"] = seed
+
+            # Step 1.5: LLM prompt generation for ComfyUI (AI modes only)
+            ai_modes = {"ai_only", "library_ai", "library_stock_ai"}
+            if use_llm and scene_analyses and str(config.source_mode or "") in ai_modes:
+                try:
+                    from VideoForge.ai.prompt_generator import PromptGenerator
+
+                    ui_logger = logging.getLogger("VideoForge.ui")
+                    ui_logger.info(
+                        "Generating ComfyUI prompts for %d scenes...",
+                        len(scene_analyses),
+                    )
+                    prompt_gen = PromptGenerator()
+                    prompts = prompt_gen.generate_prompts(scene_analyses)
+                    prompt_map = {
+                        p.get("sentence_id"): p
+                        for p in (prompts or [])
+                        if isinstance(p, dict) and p.get("sentence_id") is not None
+                    }
+                    merged = 0
+                    for scene in scene_analyses:
+                        sid = scene.get("sentence_id")
+                        p = prompt_map.get(sid)
+                        if not p:
+                            continue
+                        scene["comfyui_positive"] = p.get("positive")
+                        scene["comfyui_negative"] = p.get("negative")
+                        if p.get("seed") is not None:
+                            scene["comfyui_seed"] = p.get("seed")
+                        merged += 1
+                    ui_logger.info(
+                        "Generated %d ComfyUI prompts (merged=%d)",
+                        len(prompts or []),
+                        merged,
+                    )
+                except Exception as exc:
+                    logging.getLogger("VideoForge.ui").warning(
+                        "Prompt generation failed: %s", exc
+                    )
+
             # Step 2: Direct B-roll Generation
             output_root.mkdir(parents=True, exist_ok=True)
             generator = DirectBrollGenerator(
@@ -1589,7 +1757,6 @@ class VideoForgePanel(QWidget):
             if not schema_path.exists():
                 schema_path = repo_root / "config" / "schema.sql"
             library_db = LibraryDB(library_path, schema_path=str(schema_path))
-            config = BrollSourceConfig.from_config()
             remaining_sentences = list(selected_sentences)
             if str(config.source_mode or "").startswith("library"):
                 from VideoForge.broll.orchestrator import BrollOrchestrator
@@ -1816,6 +1983,22 @@ class VideoForgePanel(QWidget):
         mode = reverse_map.get(value, "auto")
         Config.set("broll_prefer_media_type", mode)
 
+
+    def _on_broll_min_scenes_changed(self, value: str) -> None:
+        """Minimum scenes for LLM selection."""
+        value = value.strip()
+        if not value:
+            Config.set("broll_min_scenes", None)
+            return
+        try:
+            parsed = int(value)
+        except ValueError:
+            return
+        if parsed <= 0:
+            Config.set("broll_min_scenes", None)
+            return
+        Config.set("broll_min_scenes", parsed)
+
     def _on_broll_max_scenes_changed(self, value: str) -> None:
         """최대 장면 개수 변경."""
         try:
@@ -1825,6 +2008,18 @@ class VideoForgePanel(QWidget):
                 Config.set("broll_gen_max_scenes", num)
         except ValueError:
             return
+
+    def _on_broll_scene_seed_changed(self, value: str) -> None:
+        """Scene selection seed value."""
+        value = value.strip()
+        if not value:
+            Config.set("broll_scene_seed", None)
+            return
+        try:
+            parsed = int(value)
+        except ValueError:
+            return
+        Config.set("broll_scene_seed", parsed)
 
     def _on_apply_clicked(self) -> None:
         logging.getLogger("VideoForge.ui").info("Apply clicked")

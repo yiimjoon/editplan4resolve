@@ -82,6 +82,8 @@ class TimelineBuilder:
         render_mode = (self.store.get_artifact("render_mode") or "").strip().lower()
         render_segments = self.store.get_artifact("render_segments") or []
         render_overlap = self.store.get_artifact("render_overlap_frames") or 0
+        render_overlap_jitter = self.store.get_artifact("render_overlap_jitter") or 0
+        render_overlap_seed = self.store.get_artifact("render_overlap_seed")
         override_map = None
         if isinstance(render_segments, list) and render_segments:
             overlap_sec = 0.0
@@ -90,7 +92,13 @@ class TimelineBuilder:
                     overlap_sec = float(render_overlap) / float(fps or 1.0)
                 except Exception:
                     overlap_sec = 0.0
-            override_map = self._build_segment_map(render_segments, overlap_sec)
+            override_map = self._build_segment_map(
+                render_segments,
+                overlap_sec,
+                int(render_overlap_jitter or 0),
+                render_overlap_seed,
+                float(fps or 0.0),
+            )
         broll_segment_map = override_map or segment_map
         broll_clips = build_broll_clips(
             sentences=sentences,
@@ -178,17 +186,30 @@ class TimelineBuilder:
 
     @staticmethod
     def _build_segment_map(
-        segments: List[Dict], overlap_sec: float = 0.0
+        segments: List[Dict],
+        overlap_sec: float = 0.0,
+        overlap_jitter_frames: int = 0,
+        overlap_seed: int | None = None,
+        fps: float = 0.0,
     ) -> List[SegmentMap]:
         segment_map: List[SegmentMap] = []
         timeline_cursor = 0.0
+        rng = None
+        if overlap_jitter_frames > 0:
+            import random
+
+            rng = random.Random(overlap_seed)
         for idx, seg in enumerate(segments, start=1):
             t0 = float(seg.get("t0", 0.0))
             t1 = float(seg.get("t1", 0.0))
             duration = max(0.0, t1 - t0)
             if duration <= 0.0:
                 continue
-            if overlap_sec > 0.0 and duration <= overlap_sec:
+            overlap_for_segment = overlap_sec
+            if overlap_jitter_frames > 0 and fps > 0.0:
+                jitter = rng.randint(-overlap_jitter_frames, overlap_jitter_frames) if rng else 0
+                overlap_for_segment = max(0.0, overlap_sec + (jitter / fps))
+            if overlap_for_segment > 0.0 and duration <= overlap_for_segment:
                 continue
             segment_map.append(
                 SegmentMap(
@@ -198,7 +219,7 @@ class TimelineBuilder:
                     timeline_start=timeline_cursor,
                 )
             )
-            timeline_cursor += max(0.0, duration - overlap_sec)
+            timeline_cursor += max(0.0, duration - overlap_for_segment)
         return segment_map
 
 

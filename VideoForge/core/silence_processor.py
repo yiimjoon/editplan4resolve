@@ -1,3 +1,4 @@
+from bisect import bisect_left
 from typing import Dict, List
 
 import logging
@@ -158,6 +159,10 @@ def _build_ordered_segments(
             logger.info("Silence render: dropped %d short sentences (< %.2fs)", dropped_short, min_duration)
         return ordered
     ordered = []
+    segments_sorted = sorted(silence_segments, key=lambda seg: float(seg.get("t0", 0.0)))
+    starts = [float(seg.get("t0", 0.0)) for seg in segments_sorted]
+    ends = [float(seg.get("t1", 0.0)) for seg in segments_sorted]
+    seg_count = len(segments_sorted)
     for sentence in sentences:
         s0 = float(sentence.get("t0", 0.0))
         s1 = float(sentence.get("t1", 0.0))
@@ -165,15 +170,19 @@ def _build_ordered_segments(
             continue
         sentence_dur = s1 - s0
         overlaps: List[Dict[str, float]] = []
-        for seg in silence_segments:
-            t0 = max(s0, float(seg["t0"]))
-            t1 = min(s1, float(seg["t1"]))
+        idx = bisect_left(ends, s0)
+        while idx < seg_count and starts[idx] < s1:
+            t0 = max(s0, starts[idx])
+            t1 = min(s1, ends[idx])
             if t1 <= t0:
+                idx += 1
                 continue
             if (t1 - t0) < min_duration:
                 dropped_short += 1
+                idx += 1
                 continue
             overlaps.append({"t0": t0, "t1": t1})
+            idx += 1
         if overlaps:
             last = overlaps[-1]
             last_dur = last["t1"] - last["t0"]

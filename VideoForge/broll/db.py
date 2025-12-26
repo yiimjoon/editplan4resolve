@@ -211,6 +211,44 @@ class LibraryDB:
             return None
         return _normalize(emb)
 
+    def get_clips_by_ids(self, clip_ids: Iterable[str]) -> Dict[str, Dict]:
+        ids = [str(cid) for cid in clip_ids if cid]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        query = f"SELECT * FROM clips WHERE id IN ({placeholders})"
+        with self._connect() as conn:
+            rows = conn.execute(query, ids).fetchall()
+        results: Dict[str, Dict] = {}
+        for row in rows:
+            data = dict(row)
+            if "embedding" in data:
+                data.pop("embedding")
+            results[str(data.get("id"))] = data
+        return results
+
+    def get_embeddings_by_ids(self, clip_ids: Iterable[str]) -> Dict[str, Optional[np.ndarray]]:
+        ids = [str(cid) for cid in clip_ids if cid]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        query = f"SELECT id, embedding FROM clips WHERE id IN ({placeholders})"
+        with self._connect() as conn:
+            rows = conn.execute(query, ids).fetchall()
+        results: Dict[str, Optional[np.ndarray]] = {}
+        for row in rows:
+            clip_id = str(row["id"])
+            blob = row["embedding"]
+            if blob is None:
+                results[clip_id] = None
+                continue
+            emb = np.frombuffer(blob, dtype=np.float32)
+            if emb.size == 0:
+                results[clip_id] = None
+                continue
+            results[clip_id] = _normalize(emb)
+        return results
+
 
 def _to_fts_query(raw: str) -> str:
     """

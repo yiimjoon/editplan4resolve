@@ -1,6 +1,7 @@
 import os
 import subprocess
 import logging
+import random
 import threading
 from pathlib import Path
 from typing import Any, List, Optional, Iterable, Dict
@@ -1191,6 +1192,8 @@ class ResolveAPI:
         timeline_clip: Any,
         segments: List[Dict[str, float]],
         overlap_frames: int = 15,
+        overlap_jitter: int = 0,
+        jitter_seed: int | None = None,
         include_audio: bool = True,
     ) -> bool:
         """Insert segments on alternating tracks with frame overlap."""
@@ -1216,6 +1219,8 @@ class ResolveAPI:
 
         fps = self.get_timeline_fps()
         overlap_frames = max(0, int(overlap_frames))
+        overlap_jitter = max(0, int(overlap_jitter))
+        rng = random.Random(jitter_seed) if overlap_jitter else None
 
         base_video_index = self._safe_call(timeline_clip, "GetTrackIndex") or 1
         video_track_a = int(base_video_index) + 1
@@ -1236,6 +1241,12 @@ class ResolveAPI:
             audio_track_b,
             overlap_frames,
         )
+        if overlap_jitter:
+            logger.info(
+                "Overlap insert jitter: +/- %s frames (seed=%s)",
+                overlap_jitter,
+                jitter_seed,
+            )
 
         cursor = int(timeline_start)
         inserted = 0
@@ -1253,7 +1264,11 @@ class ResolveAPI:
             if duration <= 0:
                 dropped += 1
                 continue
-            if overlap_frames and duration <= overlap_frames:
+            overlap_for_segment = overlap_frames
+            if overlap_jitter:
+                jitter = rng.randint(-overlap_jitter, overlap_jitter) if rng else 0
+                overlap_for_segment = max(0, overlap_frames + jitter)
+            if overlap_for_segment and duration <= overlap_for_segment:
                 dropped += 1
                 continue
 
@@ -1283,7 +1298,7 @@ class ResolveAPI:
             if ok:
                 inserted += 1
 
-            cursor += max(1, duration - overlap_frames)
+            cursor += max(1, duration - overlap_for_segment)
 
         logger.info(
             "Overlap insert complete: inserted=%d dropped=%d", inserted, dropped

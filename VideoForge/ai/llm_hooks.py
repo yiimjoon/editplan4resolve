@@ -102,6 +102,19 @@ def is_llm_enabled() -> bool:
     return False
 
 
+def call_llm(prompt: str) -> str:
+    """Call the configured LLM provider with the given prompt."""
+    provider = get_llm_provider()
+    if not provider:
+        raise NotImplementedError(
+            "LLM provider not configured. Set Config llm_provider or VIDEOFORGE_LLM_PROVIDER."
+        )
+    provider = str(provider).strip().lower()
+    if provider == "gemini":
+        return _call_gemini(prompt)
+    raise NotImplementedError(f"Unsupported LLM provider: {provider}")
+
+
 def get_llm_model() -> str:
     model = os.environ.get("VIDEOFORGE_LLM_MODEL")
     if model:

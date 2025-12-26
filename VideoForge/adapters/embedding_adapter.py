@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import subprocess
+import tempfile
 from io import BytesIO
 from pathlib import Path
 from typing import Iterable, Optional
@@ -176,6 +177,59 @@ def _ffprobe_duration(video_path: str) -> float:
 def _extract_frames(video_path: str, timestamps: Iterable[float]) -> list:
     from PIL import Image
 
+    ts_list = [float(ts) for ts in timestamps if ts is not None]
+    if not ts_list:
+        return []
+
+    fps = _ffprobe_fps(video_path)
+    if fps <= 0:
+        return _extract_frames_single(video_path, ts_list)
+
+    frame_indices = sorted(
+        {max(0, int(round(ts * fps))) for ts in ts_list if ts >= 0.0}
+    )
+    if not frame_indices:
+        return _extract_frames_single(video_path, ts_list)
+
+    expr = "+".join(f"eq(n\\,{idx})" for idx in frame_indices)
+    frames: list = []
+    with tempfile.TemporaryDirectory(prefix="vf_frames_") as tmpdir:
+        output_pattern = str(Path(tmpdir) / "vf_frame_%03d.png")
+        cmd = [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            video_path,
+            "-vf",
+            f"select={expr}",
+            "-vsync",
+            "0",
+            "-frames:v",
+            str(len(frame_indices)),
+            output_pattern,
+        ]
+        try:
+            subprocess.run(cmd, capture_output=True, check=True, timeout=300)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"Command timed out after 300s: {cmd[0]}") from exc
+        except Exception:
+            return _extract_frames_single(video_path, ts_list)
+
+        for image_path in sorted(Path(tmpdir).glob("vf_frame_*.png")):
+            try:
+                frames.append(Image.open(image_path).convert("RGB"))
+            except Exception:
+                continue
+
+    if not frames:
+        return _extract_frames_single(video_path, ts_list)
+    return frames
+
+
+def _extract_frames_single(video_path: str, timestamps: Iterable[float]) -> list:
+    from PIL import Image
+
     frames = []
     for ts in timestamps:
         cmd = [
@@ -207,6 +261,47 @@ def _extract_frames(video_path: str, timestamps: Iterable[float]) -> list:
         except Exception:
             continue
     return frames
+
+
+def _ffprobe_fps(video_path: str) -> float:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=avg_frame_rate",
+        "-of",
+        "default=nw=1:nk=1",
+        video_path,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except Exception:
+        return 0.0
+    if proc.returncode != 0:
+        return 0.0
+    raw = proc.stdout.strip()
+    if not raw:
+        return 0.0
+    try:
+        if "/" in raw:
+            num, den = raw.split("/", 1)
+            den_val = float(den)
+            if den_val == 0:
+                return 0.0
+            return float(num) / den_val
+        return float(raw)
+    except Exception:
+        return 0.0
 
 
 def encode_video_clip(

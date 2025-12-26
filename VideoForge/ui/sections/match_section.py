@@ -150,6 +150,14 @@ def build_match_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.broll_mode_combo.currentTextChanged.connect(panel._on_broll_gen_mode_changed)
     add_setting_row(right_col, "Generation Mode", panel.broll_mode_combo)
 
+    panel.broll_min_scenes_edit = QLineEdit()
+    panel.broll_min_scenes_edit.setPlaceholderText("Min")
+    min_scenes = Config.get("broll_min_scenes")
+    if min_scenes:
+        panel.broll_min_scenes_edit.setText(str(min_scenes))
+    panel.broll_min_scenes_edit.textChanged.connect(panel._on_broll_min_scenes_changed)
+    add_setting_row(right_col, "Min Scenes (LLM)", panel.broll_min_scenes_edit)
+
     panel.broll_max_scenes_edit = QLineEdit()
     panel.broll_max_scenes_edit.setPlaceholderText("Auto")
     max_scenes = Config.get("broll_max_scenes")

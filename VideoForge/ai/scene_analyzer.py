@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
@@ -292,21 +294,16 @@ class SceneAnalyzer:
                 }
             ]
         """
-        if max_scenes is None or max_scenes <= 0:
-            from VideoForge.config.config_manager import Config
-
-            try:
-                max_scenes = int(Config.get("broll_max_scenes") or 15)
-            except (TypeError, ValueError):
-                max_scenes = 15
+        min_scenes, max_scenes = self._get_scene_limits(max_scenes)
 
         if is_llm_enabled():
             try:
-                scenes = self._analyze_with_llm(sentences, max_scenes)
+                scenes = self._analyze_with_llm(sentences, min_scenes, max_scenes)
                 if scenes:
                     logger.info("LLM selected %d scenes", len(scenes))
                     return scenes
-                logger.warning("LLM returned 0 scenes, falling back to heuristic")
+                logger.warning("LLM returned 0 scenes; returning empty selection")
+                return []
             except Exception as exc:
                 logger.error("LLM analysis failed: %s", exc)
         else:
@@ -329,31 +326,33 @@ class SceneAnalyzer:
         if not sentences or max_scenes <= 0:
             return []
 
+        min_scenes, max_scenes = self._get_scene_limits(max_scenes)
+
         if not is_llm_enabled():
             logger.warning("LLM not enabled. Selecting scenes via heuristic fallback.")
             return self._heuristic_select_scenes(sentences, max_scenes)
 
         try:
-            scenes = self._select_with_llm(sentences, max_scenes)
+            scenes = self._select_with_llm(sentences, min_scenes, max_scenes)
             if scenes:
                 return scenes
-            logger.warning("LLM returned 0 scenes, falling back to heuristic.")
-            return self._heuristic_select_scenes(sentences, max_scenes)
+            logger.warning("LLM returned 0 scenes; returning empty selection.")
+            return []
         except Exception as exc:
             logger.error("LLM scene selection failed: %s", exc)
             return self._heuristic_select_scenes(sentences, max_scenes)
 
     def _analyze_with_llm(
-        self, sentences: List[Dict[str, Any]], max_scenes: int
+        self, sentences: List[Dict[str, Any]], min_scenes: int, max_scenes: int
     ) -> List[Dict[str, Any]]:
         """Use Gemini to analyze scenes."""
-        prompt = self._build_prompt(sentences, max_scenes)
+        prompt = self._build_prompt(sentences, min_scenes, max_scenes)
         response = _call_gemini(prompt)
         scenes = self._parse_response(
             response, sentences, merge_with_sentences=False, prompt_name="analysis"
         )
         if not scenes:
-            retry_prompt = self._build_selection_prompt(sentences, max_scenes)
+            retry_prompt = self._build_selection_prompt(sentences, min_scenes, max_scenes)
             retry_response = _call_gemini(retry_prompt)
             scenes = self._parse_response(
                 retry_response,
@@ -365,14 +364,18 @@ class SceneAnalyzer:
             scenes = scenes[:max_scenes]
         return scenes
 
-    def _build_prompt(self, sentences: List[Dict[str, Any]], max_scenes: int) -> str:
+    def _build_prompt(
+        self, sentences: List[Dict[str, Any]], min_scenes: int, max_scenes: int
+    ) -> str:
         """Build Gemini prompt for scene analysis."""
         sentences_text = "\n".join(
             [f"{i+1}. {s.get('text', '')}" for i, s in enumerate(sentences)]
         )
 
+        target = max(min_scenes, int(round((min_scenes + max_scenes) / 2.0)))
         prompt = f"""You are a professional cinematographer selecting B-roll moments.
-Pick up to {max_scenes} sentences that benefit most from visual footage and provide scene descriptions.
+Pick between {min_scenes} and {max_scenes} sentences that benefit most from visual footage and provide scene descriptions.
+Aim for around {target} scenes when possible.
 
 For each sentence, provide:
 - scene_description: Detailed visual description (1-2 sentences, cinematic style)
@@ -387,7 +390,7 @@ Keyword rules:
 - Prefer concrete objects, actions, or places (visual nouns).
 - No filler words or particles.
 - If the transcript is Korean, translate keywords to English for stock search.
-- Return at least 1 scene if any sentence has visualizable content.
+- If there is any visualizable content, you must return at least {min_scenes} scenes.
 
 Transcript (sentence_id. text):
 {sentences_text}
@@ -410,20 +413,23 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
         return prompt
 
     def _build_selection_prompt(
-        self, sentences: List[Dict[str, Any]], max_scenes: int
+        self, sentences: List[Dict[str, Any]], min_scenes: int, max_scenes: int
     ) -> str:
         """Build Gemini prompt for selecting the most visual sentences."""
         sentences_text = "\n".join(
             [f"{s.get('id')}. {s.get('text', '')}" for s in sentences]
         )
 
+        target = max(min_scenes, int(round((min_scenes + max_scenes) / 2.0)))
         prompt = f"""You are a professional cinematographer and keyword extractor.
-Pick up to {max_scenes} sentences that benefit most from visual footage, then provide stock-search keywords.
+Pick between {min_scenes} and {max_scenes} sentences that benefit most from visual footage, then provide stock-search keywords.
+Aim for around {target} scenes when possible.
 
 Rules:
 - Prefer concrete objects, actions, places, or key concepts.
 - Skip greetings, fillers, and transitions.
 - Return fewer than {max_scenes} only if the transcript has almost no visual content.
+- If any visual content exists, you must return at least {min_scenes} scenes.
 - visual_tags must be short nouns (1-2 words each), no particles or full sentences.
 - If transcript is Korean, translate visual_tags to English for stock search.
 
@@ -448,10 +454,10 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
         return prompt
 
     def _select_with_llm(
-        self, sentences: List[Dict[str, Any]], max_scenes: int
+        self, sentences: List[Dict[str, Any]], min_scenes: int, max_scenes: int
     ) -> List[Dict[str, Any]]:
         """Use Gemini to select a subset of sentences for B-roll."""
-        prompt = self._build_selection_prompt(sentences, max_scenes)
+        prompt = self._build_selection_prompt(sentences, min_scenes, max_scenes)
         response = _call_gemini(prompt)
         scenes = self._parse_response(
             response, sentences, merge_with_sentences=False, prompt_name="selection"
@@ -459,7 +465,7 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
         if scenes:
             return scenes
         logger.warning("Selection prompt returned 0 scenes, retrying analysis prompt.")
-        return self._analyze_with_llm(sentences, max_scenes)
+        return self._analyze_with_llm(sentences, min_scenes, max_scenes)
 
     def _parse_response(
         self,
@@ -552,6 +558,13 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
     ) -> List[Dict[str, Any]]:
         """Heuristic selection when LLM is disabled or fails."""
         scored: List[Dict[str, Any]] = []
+        seed_value = self._get_scene_seed()
+        if seed_value is None:
+            seed_value = int(time.time() * 1000) & 0xFFFFFFFF
+            logger.info("Heuristic selection seed: auto (%s)", seed_value)
+        else:
+            logger.info("Heuristic selection seed: %s", seed_value)
+        rng = random.Random(seed_value)
         total_sentences = len(sentences)
         bucket_size = max(1, (total_sentences + max_scenes - 1) // max_scenes)
         for position, sentence in enumerate(sentences):
@@ -617,7 +630,9 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
             items = bucketed.get(bucket, [])
             if not items:
                 continue
-            best = max(items, key=lambda item: item["score"])
+            items.sort(key=lambda item: item["score"], reverse=True)
+            window = items[: min(3, len(items))]
+            best = rng.choice(window)
             key = best["sentence"].get("id") or best["position"]
             if key in selected_keys:
                 continue
@@ -625,14 +640,22 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
             selected.append(best)
 
         if len(selected) < max_scenes:
+            remaining = []
             for item in scored:
                 key = item["sentence"].get("id") or item["position"]
                 if key in selected_keys:
                     continue
+                remaining.append(item)
+            remaining.sort(key=lambda item: item["score"], reverse=True)
+            while remaining and len(selected) < max_scenes:
+                window = remaining[: min(5, len(remaining))]
+                pick = rng.choice(window)
+                remaining.remove(pick)
+                key = pick["sentence"].get("id") or pick["position"]
+                if key in selected_keys:
+                    continue
                 selected_keys.add(key)
-                selected.append(item)
-                if len(selected) >= max_scenes:
-                    break
+                selected.append(pick)
 
         selected.sort(key=lambda item: item["position"])
         results = []
@@ -659,6 +682,39 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
             "Heuristic selected %d scenes from %d candidates", len(results), len(scored)
         )
         return results
+
+    @staticmethod
+    def _get_scene_limits(max_scenes: int | None) -> tuple[int, int]:
+        from VideoForge.config.config_manager import Config
+
+        if max_scenes is None or max_scenes <= 0:
+            try:
+                max_scenes = int(Config.get("broll_max_scenes") or 15)
+            except (TypeError, ValueError):
+                max_scenes = 15
+        try:
+            min_scenes = int(Config.get("broll_min_scenes") or 1)
+        except (TypeError, ValueError):
+            min_scenes = 1
+        min_scenes = max(1, min_scenes)
+        if min_scenes > max_scenes:
+            min_scenes = max_scenes
+        return min_scenes, max_scenes
+
+    @staticmethod
+    def _get_scene_seed() -> int | None:
+        from VideoForge.config.config_manager import Config
+
+        raw = Config.get("broll_scene_seed")
+        if raw is None:
+            return None
+        raw = str(raw).strip()
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
 
     def _sanitize_scene_list(
         self, scenes: Iterable[Dict[str, Any]], sentences: List[Dict[str, Any]]

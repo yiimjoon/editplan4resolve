@@ -61,6 +61,8 @@ class ResolveBridge:
         )
         root_logger.setLevel(logging.DEBUG)
         root_logger.addHandler(file_handler)
+        for noisy in ("urllib3", "httpx", "httpcore"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
         root_logger.info("VideoForge logging initialized: %s", log_path)
 
     def analyze_selected_clip(
@@ -334,6 +336,28 @@ class ResolveBridge:
                     timeline_pos = self._time_to_frames(clip_data["timeline_start"], fps)
                     if base_offset_frames:
                         timeline_pos += int(base_offset_frames)
+                    clip_duration = float(clip_data.get("duration") or 0.0)
+                    target_frames = (
+                        max(1, int(round(clip_duration * fps)))
+                        if clip_duration > 0 and fps
+                        else None
+                    )
+                    target_track_index = track_index
+                    if track["type"] == "video_broll" and target_frames:
+                        end_frame = timeline_pos + target_frames - 1
+                        target_track_index = self._resolve_non_overlapping_track(
+                            timeline,
+                            track_type,
+                            track_index,
+                            timeline_pos,
+                            end_frame,
+                        )
+                        if target_track_index != track_index:
+                            self.logger.info(
+                                "Apply: overlap detected on V%s; stacking on V%s",
+                                track_index,
+                                target_track_index,
+                            )
                     inserted = None
                     if track["type"] == "video_broll":
                         target_duration = float(clip_data.get("duration") or 0.0)
@@ -346,7 +370,7 @@ class ResolveBridge:
                                 source_end = min(media_frames - 1, target_frames - 1)
                                 inserted = self.resolve_api.insert_clip_at_position_with_range(
                                     track_type,
-                                    track_index,
+                                    target_track_index,
                                     media_item,
                                     timeline_pos,
                                     0,
@@ -354,11 +378,11 @@ class ResolveBridge:
                                 )
                     if inserted is None:
                         self.resolve_api.insert_clip_at_position(
-                            track_type, track_index, media_item, timeline_pos
+                            track_type, target_track_index, media_item, timeline_pos
                         )
 
                     if track["type"] == "video_broll" and not clip_data.get("audio_enabled", False):
-                        items = timeline.GetItemListInTrack(track_type, track_index)
+                        items = timeline.GetItemListInTrack(track_type, target_track_index)
                         if items:
                             last_item = items[-1]
                             try:
@@ -417,6 +441,42 @@ class ResolveBridge:
                 return base_offset_frames, base_video_index, skip_main
 
         return base_offset_frames, base_video_index, skip_main
+
+    def _resolve_non_overlapping_track(
+        self,
+        timeline: Any,
+        track_type: str,
+        start_index: int,
+        start_frame: int,
+        end_frame: int,
+        max_layers: int = 6,
+    ) -> int:
+        target_index = int(start_index)
+        for _ in range(max_layers):
+            if not self._track_has_overlap(
+                timeline, track_type, target_index, start_frame, end_frame
+            ):
+                return target_index
+            target_index += 1
+            self.resolve_api.ensure_track(track_type, target_index)
+        return target_index
+
+    def _track_has_overlap(
+        self,
+        timeline: Any,
+        track_type: str,
+        track_index: int,
+        start_frame: int,
+        end_frame: int,
+    ) -> bool:
+        items = timeline.GetItemListInTrack(track_type, int(track_index)) or []
+        for item in items:
+            item_start, item_end = self.resolve_api._get_item_range(item)
+            if item_start is None or item_end is None:
+                continue
+            if item_start <= end_frame and item_end >= start_frame:
+                return True
+        return False
 
     def save_library_path(self, library_path: str) -> None:
         """Persist library path for the current Resolve project."""

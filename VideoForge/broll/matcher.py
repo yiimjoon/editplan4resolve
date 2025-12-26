@@ -147,15 +147,17 @@ class ScriptIndexSelector:
         results: List[Dict],
         recent_ids: List[str],
         script_index: str,
+        clip_map: Dict[str, Dict],
+        embedding_map: Dict[str, np.ndarray | None],
     ) -> Dict | None:
         candidates = []
         for result in results:
             if result["clip_id"] in recent_ids or result["score"] < self.threshold:
                 continue
-            clip = self.db.get_clip(result["clip_id"]) or {}
+            clip = clip_map.get(result["clip_id"]) or {}
             if not BrollMatcher._clip_has_script_index(clip, script_index):
                 continue
-            candidate_emb = self.db.get_embedding(result["clip_id"])
+            candidate_emb = embedding_map.get(result["clip_id"])
             if self.visual_filter.is_too_similar(candidate_emb):
                 continue
             self.visual_filter.remember(candidate_emb)
@@ -183,11 +185,16 @@ class BrollMatcher:
         cooldown_manager = CooldownManager(self.db, cooldown, cooldown_penalty)
         visual_filter = VisualSimilarityFilter(visual_threshold)
         script_selector = ScriptIndexSelector(self.db, visual_filter, threshold)
+        embedding_cache: Dict[str, np.ndarray] = {}
 
         for idx, sentence in enumerate(sorted(sentences, key=lambda s: s["t0"]), start=1):
             script_index = self._extract_script_index(sentence, idx)
             query = self.query_generator.generate(sentence["text"])
-            embedding = encode_text_clip(query["primary"]).astype(np.float32)
+            query_text = query["primary"]
+            embedding = embedding_cache.get(query_text)
+            if embedding is None:
+                embedding = encode_text_clip(query_text).astype(np.float32)
+                embedding_cache[query_text] = embedding
 
             recent_ids = cooldown_manager.get_recent_ids(float(sentence["t0"]), recent)
             cooldown_manager.apply_penalty(recent_ids)
@@ -196,12 +203,17 @@ class BrollMatcher:
             results = self.db.hybrid_search(
                 query["primary"], embedding, limit=5, weights=weights
             )
+            clip_ids = [r["clip_id"] for r in results if r.get("clip_id")]
+            clip_map = self.db.get_clips_by_ids(clip_ids)
+            embedding_map = self.db.get_embeddings_by_ids(clip_ids)
             selected = None
             if script_index:
-                selected = script_selector.select(results, recent_ids, script_index)
+                selected = script_selector.select(
+                    results, recent_ids, script_index, clip_map, embedding_map
+                )
             for result in results:
                 if result["clip_id"] not in recent_ids and result["score"] >= threshold:
-                    candidate_emb = self.db.get_embedding(result["clip_id"])
+                    candidate_emb = embedding_map.get(result["clip_id"])
                     if visual_filter.is_too_similar(candidate_emb):
                         continue
                     selected = result
@@ -211,7 +223,7 @@ class BrollMatcher:
             if not selected:
                 continue
 
-            clip = self.db.get_clip(selected["clip_id"]) or {}
+            clip = clip_map.get(selected["clip_id"]) or self.db.get_clip(selected["clip_id"]) or {}
             match = {
                 "sentence_id": sentence["id"],
                 "clip_id": selected["clip_id"],

@@ -1,4 +1,5 @@
 import logging
+from bisect import bisect_left
 import os
 import tempfile
 import subprocess
@@ -256,17 +257,24 @@ def align_sentences_to_srt(
     def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
         return max(0.0, min(a1, b1) - max(a0, b0))
 
+    entries_sorted = sorted(srt_entries, key=lambda entry: entry.start)
+    ends = [entry.end for entry in entries_sorted]
+    entry_count = len(entries_sorted)
+
     aligned: List[Dict[str, float]] = []
     for sentence in sentences:
+        s0 = float(sentence["t0"])
+        s1 = float(sentence["t1"])
         best_match = None
         best_overlap = 0.0
-        for entry in srt_entries:
-            overlap = _overlap(
-                float(sentence["t0"]), float(sentence["t1"]), entry.start, entry.end
-            )
+        idx = bisect_left(ends, s0)
+        while idx < entry_count and entries_sorted[idx].start < s1:
+            entry = entries_sorted[idx]
+            overlap = _overlap(s0, s1, entry.start, entry.end)
             if overlap > best_overlap:
                 best_overlap = overlap
                 best_match = entry
+            idx += 1
         metadata = sentence.get("metadata") or {}
         if best_match:
             metadata = {**metadata, "script_index": str(best_match.index), "source": "srt"}

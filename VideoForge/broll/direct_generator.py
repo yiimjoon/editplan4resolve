@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import subprocess
 import time
@@ -96,92 +97,123 @@ class DirectBrollGenerator:
         generated_files = []
         total_scenes = len(sentence_list)
 
-        for idx, sent in enumerate(sentence_list, start=1):
-            if on_progress:
-                on_progress(
-                    {
-                        "stage": "Generating B-roll",
-                        "current": idx,
-                        "total": total_scenes,
-                        "message": f"Scene {idx}/{total_scenes}",
-                    }
-                )
+        try:
+            for idx, sent in enumerate(sentence_list, start=1):
+                if on_progress:
+                    on_progress(
+                        {
+                            "stage": "Generating B-roll",
+                            "current": idx,
+                            "total": total_scenes,
+                            "message": f"Scene {idx}/{total_scenes}",
+                        }
+                    )
 
-            text = str(sent.get("text", "")).strip()
-            sent_id = sent.get("id")
-            uid = sent.get("metadata", {}).get("uid") or sent.get("uid", "")
+                text = str(sent.get("text", "")).strip()
+                sent_id = sent.get("id")
+                uid = sent.get("metadata", {}).get("uid") or sent.get("uid", "")
 
-            if not text:
-                logger.warning("Skipping empty sentence %d", idx)
-                continue
+                if not text:
+                    logger.warning("Skipping empty sentence %d", idx)
+                    continue
 
-            # Get scene analysis if available
-            scene = scene_map.get(sent_id, {})
-            visual_tags = scene.get("visual_tags", [])
-            scene_description = scene.get("scene_description", text)
+                # Get scene analysis if available
+                scene = scene_map.get(sent_id, {})
+                visual_tags = scene.get("visual_tags", [])
+                scene_description = scene.get("scene_description", text)
 
-            # Build search query from visual tags or text
-            if visual_tags:
-                query = ", ".join(visual_tags[:3])
-            else:
-                keywords = self._extract_search_tokens(text, limit=3)
-                query = ", ".join(keywords) if keywords else text
+                # Build search query from visual tags or text
+                if visual_tags:
+                    query = ", ".join(visual_tags[:3])
+                else:
+                    keywords = self._extract_search_tokens(text, limit=3)
+                    query = ", ".join(keywords) if keywords else text
 
-            logger.info("Scene %d: query='%s'", idx, query)
+                logger.info("Scene %d: query='%s'", idx, query)
 
-            # Generate media based on mode
-            media_path = None
-            media: Optional[StockMediaResult] = None
+                # Generate media based on mode
+                media_path = None
+                media: Optional[StockMediaResult] = None
 
-            if mode == "stock":
-                media = self._generate_stock(
-                    query, project_dir, f"scene_{idx:03d}", scene, prefer_video=prefer_video
-                )
-            elif mode == "ai":
-                media_path = self._generate_ai(
-                    scene_description, project_dir, f"scene_{idx:03d}", scene
-                )
-            elif mode == "hybrid":
-                # Try stock first, fallback to AI
-                media = self._generate_stock(
-                    query, project_dir, f"scene_{idx:03d}", scene, prefer_video=prefer_video
-                )
-                if not media and self.comfyui.is_available():
-                    logger.info("Stock failed, trying AI fallback")
+                if mode == "stock":
+                    media = self._generate_stock(
+                        query, project_dir, f"scene_{idx:03d}", scene, prefer_video=prefer_video
+                    )
+                elif mode == "ai":
                     media_path = self._generate_ai(
                         scene_description, project_dir, f"scene_{idx:03d}", scene
                     )
+                elif mode == "hybrid":
+                    # Try stock first, fallback to AI
+                    media = self._generate_stock(
+                        query, project_dir, f"scene_{idx:03d}", scene, prefer_video=prefer_video
+                    )
+                    if not media:
+                        logger.info("Stock failed, trying AI fallback")
+                        media_path = self._generate_ai(
+                            scene_description, project_dir, f"scene_{idx:03d}", scene
+                        )
 
-            if media:
-                media_path = media.path
-            if not media_path:
-                logger.warning("Failed to generate media for scene %d", idx)
-                continue
+                if media:
+                    media_path = media.path
+                if not media_path:
+                    logger.warning("Failed to generate media for scene %d", idx)
+                    continue
 
-            meta = media.metadata if media else BrollMetadata(source="unknown")
-            meta.apply_context(project_name, scene_description)
-            if visual_tags:
-                meta.merge_keywords(visual_tags)
-            if not meta.description:
-                meta.description = scene_description
+                # Build metadata
+                if media:
+                    meta = media.metadata
+                else:
+                    width = scene.get("comfyui_width") or 1920
+                    height = scene.get("comfyui_height") or 1024
+                    try:
+                        width = int(width)
+                        height = int(height)
+                    except (TypeError, ValueError):
+                        width, height = 1920, 1024
+                    # AI mode: build metadata from ComfyUI generation
+                    meta = self.comfyui.build_metadata(
+                        positive_prompt=scene.get("comfyui_positive", scene_description),
+                        negative_prompt=scene.get("comfyui_negative", ""),
+                        seed=scene.get("comfyui_seed"),
+                        width=width,
+                        height=height,
+                    )
 
-            # Convert to video if it's an image
-            if media_path.suffix.lower() in [".jpg", ".jpeg", ".png"]:
-                video_path = self._image_to_video(
-                    media_path, duration=5.0, output_name=f"scene_{idx:03d}.mp4"
-                )
-                if video_path:
-                    meta.duration = meta.duration or 5.0
+                meta.apply_context(project_name, scene_description)
+                if visual_tags:
+                    meta.merge_keywords(visual_tags)
+                if not meta.description:
+                    meta.description = scene_description
+
+                # Convert to video if it's an image
+                if media_path.suffix.lower() in [".jpg", ".jpeg", ".png"]:
+                    if not self._wait_for_file_ready(media_path):
+                        logger.warning(
+                            "Image not ready for conversion: %s", media_path.name
+                        )
+                        continue
+                    video_path = self._image_to_video(
+                        media_path, duration=5.0, output_name=f"scene_{idx:03d}.mp4"
+                    )
+                    if video_path:
+                        meta.duration = meta.duration or 5.0
+                        meta.raw_metadata.setdefault("scene_num", str(idx))
+                        meta.raw_metadata.setdefault("uid", uid)
+                        final_path = self._embed_metadata(video_path, meta.to_dict())
+                        generated_files.append(final_path)
+                    else:
+                        logger.warning(
+                            "Image-to-video conversion failed: %s", media_path.name
+                        )
+                else:
+                    # Already a video
                     meta.raw_metadata.setdefault("scene_num", str(idx))
                     meta.raw_metadata.setdefault("uid", uid)
-                    final_path = self._embed_metadata(video_path, meta.to_dict())
+                    final_path = self._embed_metadata(media_path, meta.to_dict())
                     generated_files.append(final_path)
-            else:
-                # Already a video
-                meta.raw_metadata.setdefault("scene_num", str(idx))
-                meta.raw_metadata.setdefault("uid", uid)
-                final_path = self._embed_metadata(media_path, meta.to_dict())
-                generated_files.append(final_path)
+        finally:
+            self.comfyui.stop_server()
 
         logger.info("Generated %d B-roll clips", len(generated_files))
         return generated_files
@@ -208,40 +240,94 @@ class DirectBrollGenerator:
         scene: Dict,
     ) -> Optional[Path]:
         """Generate B-roll using ComfyUI."""
-        if not self.comfyui.is_available():
+        if not self.comfyui.ensure_running():
             logger.warning("ComfyUI not available")
             return None
 
-        # Build prompts from scene analysis
-        camera = scene.get("camera", "medium shot")
-        mood = scene.get("mood", "professional")
-        lighting = scene.get("lighting", "natural")
+        # Use LLM-generated prompts if available, fallback to template
+        positive = scene.get("comfyui_positive")
+        negative = scene.get("comfyui_negative")
+        seed = scene.get("comfyui_seed")
+        width = scene.get("comfyui_width")
+        height = scene.get("comfyui_height")
 
-        positive = (
-            f"{scene_description}, {camera}, {mood} mood, {lighting} lighting, "
-            "professional photography, 8k resolution, highly detailed, "
-            "cinematic, photorealistic"
-        )
+        if not width or not height:
+            try:
+                from VideoForge.config.config_manager import Config
 
-        negative = (
-            "cartoon, illustration, anime, low quality, blurry, amateur, "
-            "artificial, oversaturated, cluttered, text, watermark"
-        )
+                res = str(Config.get("comfyui_resolution") or "1920x1024")
+            except Exception:
+                res = "1920x1024"
+            try:
+                w_str, h_str = res.lower().split("x", 1)
+                width = int(w_str.strip())
+                height = int(h_str.strip())
+            except Exception:
+                width, height = 1920, 1024
+
+        if not positive:
+            # Fallback: build prompts from scene analysis metadata
+            camera = scene.get("camera", "medium shot")
+            mood = scene.get("mood", "professional")
+            lighting = scene.get("lighting", "natural")
+
+            positive = (
+                f"{scene_description}, {camera}, {mood} mood, {lighting} lighting, "
+                "professional photography, 8k resolution, highly detailed, "
+                "cinematic, photorealistic"
+            )
+
+        if not negative:
+            negative = (
+                "cartoon, illustration, anime, low quality, blurry, amateur, "
+                "artificial, oversaturated, cluttered, lowres, jpeg artifacts, "
+                "text, watermark"
+            )
+
+        if seed is None:
+            seed = self.comfyui.random_seed()
+            scene["comfyui_seed"] = seed
+
+        scene["comfyui_positive"] = positive
+        scene["comfyui_negative"] = negative
 
         logger.info("Generating AI image: %s", filename_prefix)
 
         # Generate image
         success = self.comfyui.generate_and_wait(
-            positive, negative, filename_prefix, timeout_sec=300
+            positive,
+            negative,
+            filename_prefix,
+            seed=seed,
+            width=int(width),
+            height=int(height),
+            timeout_sec=300,
         )
 
         if not success:
+            logger.error("ComfyUI generation failed: %s", filename_prefix)
             return None
 
-        # ComfyUI saves to its output folder, we need to find and move it
-        # For now, return None (Phase 2: implement ComfyUI output folder monitoring)
-        logger.warning("ComfyUI output retrieval not implemented yet")
-        return None
+        # Find output images in ComfyUI output folder
+        output_files = self.comfyui.find_output_images(
+            filename_prefix, timeout_sec=60.0
+        )
+
+        if not output_files:
+            logger.warning("ComfyUI output not found: %s", filename_prefix)
+            return None
+
+        comfyui_output = output_files[0]
+
+        # Copy to project output directory
+        project_output = output_dir / f"{filename_prefix}.png"
+        try:
+            shutil.copy2(comfyui_output, project_output)
+            logger.info("Copied ComfyUI output: %s -> %s", comfyui_output.name, project_output.name)
+            return project_output
+        except Exception as exc:
+            logger.error("Failed to copy ComfyUI output: %s", exc)
+            return None
 
     def _image_to_video(
         self, image_path: Path, duration: float = 5.0, output_name: Optional[str] = None
@@ -303,6 +389,30 @@ class DirectBrollGenerator:
         except Exception as exc:
             logger.error("FFmpeg error: %s", exc)
             return None
+
+    @staticmethod
+    def _wait_for_file_ready(
+        file_path: Path, timeout_sec: float = 5.0, interval_sec: float = 0.2
+    ) -> bool:
+        """Wait until a file exists and size is stable."""
+        start = time.time()
+        last_size = -1
+        stable = 0
+        while (time.time() - start) < timeout_sec:
+            if file_path.exists():
+                try:
+                    size = file_path.stat().st_size
+                except OSError:
+                    size = -1
+                if size > 0 and size == last_size:
+                    stable += 1
+                    if stable >= 3:
+                        return True
+                else:
+                    stable = 0
+                    last_size = size
+            time.sleep(interval_sec)
+        return file_path.exists() and file_path.stat().st_size > 0
 
     def _embed_metadata(self, video_path: Path, metadata: Dict[str, object]) -> Path:
         """
