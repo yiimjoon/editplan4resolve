@@ -71,7 +71,7 @@ COLORS = {
     "error": "#d32f2f",
 }
 
-VERSION = "v1.7.0"
+VERSION = "v1.8.0"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
@@ -873,6 +873,58 @@ class VideoForgePanel(QWidget):
             self.min_quality_label.setText(f"Min Quality: {int(value)}%")
         except Exception:
             pass
+
+    def _on_sam3_tagging_changed(self, state: int) -> None:
+        """Toggle SAM3 auto-tagging."""
+        enabled = bool(state)
+        Config.set("use_sam3_tagging", enabled)
+        logging.getLogger("VideoForge.ui").info(
+            "SAM3 Auto-Tagging: %s", "enabled" if enabled else "disabled"
+        )
+
+    def _on_sam3_model_changed(self, model_size: str) -> None:
+        """Set SAM3 model size."""
+        value = str(model_size).strip()
+        if value:
+            Config.set("sam3_model_size", value)
+            logging.getLogger("VideoForge.ui").info("SAM3 Model Size: %s", value)
+
+    def _on_sam_audio_preprocessing_changed(self, state: int) -> None:
+        """Toggle SAM Audio preprocessing."""
+        enabled = bool(state)
+        Config.set("use_sam_audio_preprocessing", enabled)
+        logging.getLogger("VideoForge.ui").info(
+            "SAM Audio Preprocessing: %s", "enabled" if enabled else "disabled"
+        )
+
+    def _on_sam_audio_model_changed(self, model_size: str) -> None:
+        """Set SAM Audio model size."""
+        value = str(model_size).strip()
+        if value:
+            Config.set("sam_audio_model_size", value)
+            logging.getLogger("VideoForge.ui").info("SAM Audio Model Size: %s", value)
+
+    def _on_wsl_distro_changed(self, text: str) -> None:
+        """Update WSL distro name."""
+        value = str(text).strip()
+        if not value:
+            return
+        Config.set("sam3_wsl_distro", value)
+        Config.set("sam_audio_wsl_distro", value)
+
+    def _on_wsl_python_changed(self, text: str) -> None:
+        """Update WSL python command."""
+        value = str(text).strip()
+        if not value:
+            return
+        Config.set("sam3_wsl_python", value)
+        Config.set("sam_audio_wsl_python", value)
+
+    def _on_wsl_venv_changed(self, text: str) -> None:
+        """Update WSL virtualenv path."""
+        value = str(text).strip()
+        Config.set("sam3_wsl_venv", value)
+        Config.set("sam_audio_wsl_venv", value)
 
     def _on_llm_instructions_mode_changed(self, value: str) -> None:
         mode = str(value).strip().lower()

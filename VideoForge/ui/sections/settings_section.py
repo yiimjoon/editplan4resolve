@@ -392,7 +392,99 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     right_col.addWidget(panel.open_library_manager_btn)
 
     right_col.addSpacing(12)
-    right_col.addWidget(panel._create_section_title("G. Hybrid Search Weights"))
+    right_col.addWidget(panel._create_section_title("G. Advanced AI (SAM Models)"))
+
+    panel.sam3_checkbox = QCheckBox("Enable SAM3 Auto-Tagging (WSL)")
+    panel.sam3_checkbox.setChecked(Config.get("use_sam3_tagging", False))
+    panel.sam3_checkbox.setToolTip(
+        "Automatically detect objects in B-roll videos using SAM3\n"
+        "Requires WSL environment with SAM3 installed"
+    )
+    panel.sam3_checkbox.stateChanged.connect(panel._on_sam3_tagging_changed)
+    right_col.addWidget(panel.sam3_checkbox)
+
+    sam3_size_label = QLabel("SAM3 Model Size:")
+    sam3_size_label.setStyleSheet(
+        f"color: {panel.colors['text_dim']}; font-size: 11px;"
+    )
+    right_col.addWidget(sam3_size_label)
+
+    panel.sam3_model_combo = QComboBox()
+    panel.sam3_model_combo.addItems(["small", "base", "large"])
+    panel.sam3_model_combo.setCurrentText(
+        str(Config.get("sam3_model_size", "large"))
+    )
+    panel.sam3_model_combo.currentTextChanged.connect(panel._on_sam3_model_changed)
+    right_col.addWidget(panel.sam3_model_combo)
+
+    right_col.addSpacing(8)
+
+    panel.sam_audio_checkbox = QCheckBox("Enable SAM Audio Preprocessing (WSL)")
+    panel.sam_audio_checkbox.setChecked(
+        Config.get("use_sam_audio_preprocessing", False)
+    )
+    panel.sam_audio_checkbox.setToolTip(
+        "Remove background noise before Whisper transcription\n"
+        "Improves accuracy for noisy audio"
+    )
+    panel.sam_audio_checkbox.stateChanged.connect(
+        panel._on_sam_audio_preprocessing_changed
+    )
+    right_col.addWidget(panel.sam_audio_checkbox)
+
+    sam_audio_size_label = QLabel("SAM Audio Model Size:")
+    sam_audio_size_label.setStyleSheet(
+        f"color: {panel.colors['text_dim']}; font-size: 11px;"
+    )
+    right_col.addWidget(sam_audio_size_label)
+
+    panel.sam_audio_model_combo = QComboBox()
+    panel.sam_audio_model_combo.addItems(["base", "large"])
+    panel.sam_audio_model_combo.setCurrentText(
+        str(Config.get("sam_audio_model_size", "large"))
+    )
+    panel.sam_audio_model_combo.currentTextChanged.connect(
+        panel._on_sam_audio_model_changed
+    )
+    right_col.addWidget(panel.sam_audio_model_combo)
+
+    right_col.addSpacing(12)
+
+    wsl_label = QLabel("WSL Environment:")
+    wsl_label.setStyleSheet(
+        f"color: {panel.colors['text_dim']}; font-size: 11px; font-weight: bold;"
+    )
+    right_col.addWidget(wsl_label)
+
+    distro_layout = QHBoxLayout()
+    distro_layout.addWidget(QLabel("Distro:"))
+    panel.wsl_distro_input = QLineEdit()
+    panel.wsl_distro_input.setText(Config.get("sam3_wsl_distro", "Ubuntu"))
+    panel.wsl_distro_input.setPlaceholderText("Ubuntu")
+    panel.wsl_distro_input.textChanged.connect(panel._on_wsl_distro_changed)
+    distro_layout.addWidget(panel.wsl_distro_input)
+    right_col.addLayout(distro_layout)
+
+    python_layout = QHBoxLayout()
+    python_layout.addWidget(QLabel("Python:"))
+    panel.wsl_python_input = QLineEdit()
+    panel.wsl_python_input.setText(Config.get("sam3_wsl_python", "python3"))
+    panel.wsl_python_input.setPlaceholderText("python3")
+    panel.wsl_python_input.textChanged.connect(panel._on_wsl_python_changed)
+    python_layout.addWidget(panel.wsl_python_input)
+    right_col.addLayout(python_layout)
+
+    venv_layout = QHBoxLayout()
+    venv_layout.addWidget(QLabel("venv:"))
+    panel.wsl_venv_input = QLineEdit()
+    panel.wsl_venv_input.setText(Config.get("sam3_wsl_venv", ""))
+    panel.wsl_venv_input.setPlaceholderText("/home/user/vf-sam3")
+    panel.wsl_venv_input.textChanged.connect(panel._on_wsl_venv_changed)
+    venv_layout.addWidget(panel.wsl_venv_input)
+    right_col.addLayout(venv_layout)
+
+    right_col.addSpacing(12)
+    right_col.addWidget(panel._create_section_title("H. Hybrid Search Weights"))
 
     def add_weight_slider(layout, label_attr, slider_attr, label_text, min_val, max_val, current_val, callback):
         lbl = QLabel(label_text)
@@ -418,11 +510,11 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
                       panel.settings["broll"]["visual_similarity_threshold"] * 100, panel._on_visual_threshold_changed)
 
     right_col.addSpacing(12)
-    right_col.addWidget(panel._create_section_title("H. Maintenance"))
+    right_col.addWidget(panel._create_section_title("I. Maintenance"))
 
     # --- Maintenance & Misc ---
     right_col.addSpacing(12)
-    right_col.addWidget(panel._create_section_title("I. Miscellaneous"))
+    right_col.addWidget(panel._create_section_title("J. Miscellaneous"))
     
     srt_row = QHBoxLayout()
     panel.srt_path_edit = QLineEdit()

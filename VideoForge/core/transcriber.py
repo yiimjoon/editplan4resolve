@@ -1,6 +1,7 @@
 import logging
 from bisect import bisect_left
 import os
+from pathlib import Path
 import tempfile
 import subprocess
 import time
@@ -99,6 +100,7 @@ def transcribe_segments(
         source_path = video_path
         offset = 0.0
         temp_path = None
+        sam_audio_temp: List[str] = []
         if clip_range:
             duration = _get_media_duration(video_path)
             start, end = clip_range
@@ -119,6 +121,41 @@ def transcribe_segments(
                     float(start),
                     float(end),
                 )
+
+        use_sam_audio = False
+        try:
+            from VideoForge.config.config_manager import Config
+
+            use_sam_audio = bool(Config.get("use_sam_audio_preprocessing", False))
+        except Exception:
+            use_sam_audio = False
+
+        if use_sam_audio:
+            audio_input = source_path
+            if not str(audio_input).lower().endswith(".wav"):
+                try:
+                    extracted_audio = _extract_audio_full(str(audio_input))
+                    sam_audio_temp.append(extracted_audio)
+                    audio_input = extracted_audio
+                except Exception as exc:
+                    logger.warning("SAM Audio extraction failed, using original audio: %s", exc)
+                    audio_input = source_path
+            try:
+                from VideoForge.adapters.sam_audio_adapter import SAMAudioAdapter
+
+                sam_audio = SAMAudioAdapter()
+                preprocessed = sam_audio.preprocess_audio(Path(str(audio_input)))
+                if preprocessed and preprocessed.exists():
+                    source_path = str(preprocessed)
+                    if str(preprocessed) != str(audio_input):
+                        sam_audio_temp.append(str(preprocessed))
+                    logger.info("SAM Audio preprocessed: %s", preprocessed)
+                else:
+                    logger.warning("SAM Audio preprocessing failed, using original audio")
+                    source_path = str(audio_input)
+            except Exception as exc:
+                logger.warning("SAM Audio preprocessing error: %s", exc)
+                source_path = str(audio_input)
         results, _info = model.transcribe(source_path, **transcribe_kwargs)
         sentences: List[Dict[str, float]] = []
         segment_count = 0
@@ -164,9 +201,13 @@ def transcribe_segments(
                     sum(gaps) / len(gaps),
                 )
         logger.info(">>> Returning %d sentences to caller", len(sentences))
+        cleanup_paths = []
         if temp_path:
+            cleanup_paths.append(temp_path)
+        cleanup_paths.extend(sam_audio_temp)
+        for path in set(cleanup_paths):
             try:
-                os.unlink(temp_path)
+                os.unlink(path)
             except Exception:
                 pass
         return sentences
@@ -208,6 +249,38 @@ def _extract_audio_segment(video_path: str, start: float, end: float) -> str:
         raise RuntimeError("ffmpeg segment extraction timed out") from exc
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg segment extraction failed: {proc.stderr.strip()}")
+    return temp_path
+
+
+def _extract_audio_full(video_path: str) -> str:
+    """Extract a temporary WAV for the full media."""
+    temp_fd, temp_path = tempfile.mkstemp(suffix=".wav", prefix="vf_audio_")
+    os.close(temp_fd)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        video_path,
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        temp_path,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("ffmpeg audio extraction timed out") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg audio extraction failed: {proc.stderr.strip()}")
     return temp_path
 
 
