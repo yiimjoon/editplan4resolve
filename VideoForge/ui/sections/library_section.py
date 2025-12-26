@@ -18,6 +18,7 @@ def build_library_section(panel, parent_layout: QVBoxLayout) -> None:
 
     panel.library_path_edit = QLineEdit()
     panel.library_path_edit.setPlaceholderText("Library DB path...")
+    panel.library_path_edit.textChanged.connect(panel._on_library_path_changed)
 
     panel.open_log_btn = QPushButton("Open Log")
     panel.browse_btn = QPushButton("...")

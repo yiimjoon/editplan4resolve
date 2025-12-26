@@ -377,7 +377,22 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     right_col.addWidget(panel.min_quality_slider)
 
     right_col.addSpacing(12)
-    right_col.addWidget(panel._create_section_title("F. Hybrid Search Weights"))
+    right_col.addWidget(panel._create_section_title("F. Library"))
+
+    panel.library_path_display = QLineEdit()
+    panel.library_path_display.setReadOnly(True)
+    panel.library_path_display.setPlaceholderText("Library DB path...")
+    if hasattr(panel, "library_path_edit"):
+        panel.library_path_display.setText(panel.library_path_edit.text().strip())
+    add_setting_row(right_col, "Current DB", panel.library_path_display, label_width=120)
+
+    panel.open_library_manager_btn = QPushButton("Open Library Manager")
+    panel.open_library_manager_btn.setCursor(Qt.PointingHandCursor)
+    panel.open_library_manager_btn.clicked.connect(panel._on_open_library_manager)
+    right_col.addWidget(panel.open_library_manager_btn)
+
+    right_col.addSpacing(12)
+    right_col.addWidget(panel._create_section_title("G. Hybrid Search Weights"))
 
     def add_weight_slider(layout, label_attr, slider_attr, label_text, min_val, max_val, current_val, callback):
         lbl = QLabel(label_text)
@@ -403,11 +418,11 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
                       panel.settings["broll"]["visual_similarity_threshold"] * 100, panel._on_visual_threshold_changed)
 
     right_col.addSpacing(12)
-    right_col.addWidget(panel._create_section_title("G. Maintenance"))
+    right_col.addWidget(panel._create_section_title("H. Maintenance"))
 
     # --- Maintenance & Misc ---
     right_col.addSpacing(12)
-    right_col.addWidget(panel._create_section_title("H. Miscellaneous"))
+    right_col.addWidget(panel._create_section_title("I. Miscellaneous"))
     
     srt_row = QHBoxLayout()
     panel.srt_path_edit = QLineEdit()

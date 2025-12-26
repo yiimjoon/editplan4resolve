@@ -1536,6 +1536,10 @@ class VideoForgePanel(QWidget):
             self.saved_broll_dir = folder
             self.library_path_edit.setText(str(Path(folder) / "library.db"))
 
+    def _on_library_path_changed(self, value: str) -> None:
+        if hasattr(self, "library_path_display"):
+            self.library_path_display.setText(str(value or "").strip())
+
     def _on_scan_library(self) -> None:
         logging.getLogger("VideoForge.ui").info("Scan library clicked")
         default_dir = (
@@ -1571,6 +1575,19 @@ class VideoForgePanel(QWidget):
 
         self._set_status("Scanning library...")
         self._run_worker(_scan, on_done=_done)
+
+    def _on_open_library_manager(self) -> None:
+        try:
+            from VideoForge.ui.library_manager import LibraryManager
+        except Exception as exc:
+            self._set_status(f"Library Manager unavailable: {exc}")
+            return
+        db_path = self.library_path_edit.text().strip()
+        self._library_manager_window = LibraryManager.show_as_dialog(
+            self,
+            db_path=db_path if db_path else None,
+        )
+        self._set_status("Opened Library Manager.")
 
     def _on_browse_srt(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Select SRT File", "", "SRT Files (*.srt)")
