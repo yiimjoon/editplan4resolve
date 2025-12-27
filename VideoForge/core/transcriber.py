@@ -88,6 +88,7 @@ def transcribe_segments(
             "task": task,
             "condition_on_previous_text": False,  # Reduce long sentence merging
             "vad_filter": True,  # Enable VAD-based segmentation
+            "chunk_length": 10,  # Shorter chunks to preserve sentence breaks
             "vad_parameters": {
                 "threshold": 0.3,  # More sensitive to silence (0.5 default, lower = more splits)
                 "min_silence_duration_ms": 300,  # Shorter silence gap (500ms default)
