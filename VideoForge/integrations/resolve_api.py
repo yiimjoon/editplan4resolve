@@ -1002,6 +1002,119 @@ class ResolveAPI:
         logger.info("Insert clip range debug: no supported insert method")
         return None
 
+    def add_synced_clips_to_timeline(
+        self,
+        reference_path: str,
+        sync_results: Dict[Path, Dict[str, Any]],
+        start_frame: int = 0,
+    ) -> bool:
+        """Place synced clips on separate tracks with offset compensation."""
+        self._ensure_main_thread("add_synced_clips_to_timeline")
+        try:
+            timeline = self.get_current_timeline()
+        except Exception as exc:
+            logger.error("No active timeline: %s", exc)
+            return False
+
+        media_pool = self.get_media_pool()
+        if not media_pool:
+            logger.error("Cannot access media pool")
+            return False
+
+        fps = self.get_timeline_fps()
+        target_paths = list(sync_results.keys())
+        all_paths = [reference_path] + [str(p) for p in target_paths]
+
+        try:
+            imported_clips = media_pool.ImportMedia(all_paths)
+        except Exception as exc:
+            logger.error("Failed to import media: %s", exc)
+            return False
+
+        if not imported_clips:
+            logger.error("No clips imported")
+            return False
+
+        if start_frame == 0:
+            playhead = self._get_playhead_frame(timeline)
+            if playhead is not None:
+                start_frame = playhead
+
+        ref_clip = imported_clips[0]
+        if not self._add_clip_to_track(
+            timeline,
+            media_pool,
+            ref_clip,
+            track_index=1,
+            track_type="video",
+            start_frame=int(start_frame),
+        ):
+            logger.error("Failed to place reference clip")
+            return False
+
+        logger.info(
+            "Placed reference: %s at frame %d",
+            Path(reference_path).name,
+            int(start_frame),
+        )
+
+        for idx, target_path in enumerate(target_paths, start=2):
+            clip_index = idx - 1
+            if clip_index >= len(imported_clips):
+                logger.warning("Missing imported clip for %s", target_path)
+                continue
+            target_clip = imported_clips[clip_index]
+            result = sync_results.get(target_path, {})
+            offset_seconds = float(result.get("offset", 0.0))
+            confidence = float(result.get("confidence", 0.0))
+            offset_frames = int(-offset_seconds * fps)
+            target_start_frame = int(start_frame) + int(offset_frames)
+            success = self._add_clip_to_track(
+                timeline,
+                media_pool,
+                target_clip,
+                track_index=idx,
+                track_type="video",
+                start_frame=target_start_frame,
+            )
+            if success:
+                logger.info(
+                    "Placed target: %s at frame %d (offset=%.2fs, confidence=%.2f)",
+                    Path(target_path).name,
+                    target_start_frame,
+                    offset_seconds,
+                    confidence,
+                )
+            else:
+                logger.warning("Failed to place: %s", Path(target_path).name)
+
+        return True
+
+    def _add_clip_to_track(
+        self,
+        timeline: Any,
+        media_pool: Any,
+        clip: Any,
+        track_index: int,
+        track_type: str = "video",
+        start_frame: int = 0,
+    ) -> bool:
+        """Helper for placing a clip on a specific track."""
+        _ = timeline
+        _ = media_pool
+        try:
+            self.ensure_track(track_type, int(track_index))
+        except Exception as exc:
+            logger.error("Failed to ensure track %s %d: %s", track_type, track_index, exc)
+            return False
+        inserted = self.insert_clip_at_position(
+            track_type,
+            int(track_index),
+            clip,
+            int(start_frame),
+        )
+        return inserted is not None
+
     def get_timeline_fps(self) -> float:
         """Return timeline FPS or 24 if missing."""
         project = self.get_current_project()

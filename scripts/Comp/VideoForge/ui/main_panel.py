@@ -2217,7 +2217,38 @@ class VideoForgePanel(QWidget):
                     result.get("offset", 0.0),
                     result.get("confidence", 0.0),
                 )
-            self._set_status("Audio sync complete")
+            try:
+                from VideoForge.integrations.resolve_api import ResolveAPI
+
+                api = ResolveAPI()
+                success = api.add_synced_clips_to_timeline(
+                    reference_path=self.sync_ref_path,
+                    sync_results=results,
+                    start_frame=0,
+                )
+                if success:
+                    self.sync_status.setText(
+                        f"Placed {len(results) + 1} clips in timeline"
+                    )
+                    self.sync_status.setStyleSheet(
+                        f"color: {COLORS['success']}; font-size: 11px;"
+                    )
+                    self._set_status("Timeline placement complete")
+                else:
+                    self.sync_status.setText("Error: Timeline placement failed")
+                    self.sync_status.setStyleSheet(
+                        f"color: {COLORS['error']}; font-size: 11px;"
+                    )
+                    self._set_status("Timeline placement failed")
+            except Exception as exc:
+                logging.getLogger("VideoForge.ui").error(
+                    "Timeline placement error: %s", exc
+                )
+                self.sync_status.setText(f"Error: {exc}")
+                self.sync_status.setStyleSheet(
+                    f"color: {COLORS['error']}; font-size: 11px;"
+                )
+                self._set_status("Timeline placement error")
 
         self.sync_status.setText("Analyzing audio patterns...")
         self.sync_status.setStyleSheet(

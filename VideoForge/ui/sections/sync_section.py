@@ -67,7 +67,7 @@ def build_sync_section(panel, parent_layout: QVBoxLayout) -> None:
     )
     card_layout.addWidget(panel.sync_mode_combo)
 
-    panel.auto_sync_btn = QPushButton("Auto Sync")
+    panel.auto_sync_btn = QPushButton("Auto Sync & Place in Timeline")
     panel.auto_sync_btn.setCursor(Qt.PointingHandCursor)
     panel.auto_sync_btn.clicked.connect(panel._on_auto_sync_clicked)
     card_layout.addWidget(panel.auto_sync_btn)
