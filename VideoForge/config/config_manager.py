@@ -38,6 +38,7 @@ class ConfigManager:
                 logger.warning("Failed to migrate legacy config: %s", exc)
         self._load()
         self._migrate_library_config()
+        self._ensure_audio_sync_defaults()
 
     @staticmethod
     def _resolve_config_path() -> Path:
@@ -75,6 +76,22 @@ class ConfigManager:
             default_local = self._default_local_library_path()
             if default_local:
                 self._config["local_library_db_path"] = default_local
+                changed = True
+        if changed:
+            self._save()
+
+    def _ensure_audio_sync_defaults(self) -> None:
+        defaults = {
+            "audio_sync_threshold_db": -40.0,
+            "audio_sync_min_silence": 0.3,
+            "audio_sync_max_offset": 30.0,
+            "audio_sync_resolution": 0.1,
+            "audio_sync_min_confidence": 0.5,
+        }
+        changed = False
+        for key, value in defaults.items():
+            if key not in self._config:
+                self._config[key] = value
                 changed = True
         if changed:
             self._save()
