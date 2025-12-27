@@ -256,6 +256,8 @@ class VideoForgePanel(QWidget):
         self.colors = COLORS
         self.settings = self._load_settings()
         self._apply_broll_overrides()
+        self._global_library_locked = False
+        self._syncing_library_scope = False
         whisper_silence_override = Config.get("whisper_silence_enabled")
         if whisper_silence_override is not None:
             self.settings["silence"]["enable_removal"] = bool(whisper_silence_override)
@@ -284,6 +286,7 @@ class VideoForgePanel(QWidget):
             pass
         self._restore_library_path()
         self._restore_project_state()
+        self._sync_library_scope_combos(Config.get("library_search_scope", "both"))
         logging.getLogger("VideoForge.ui").info("UI init done (%s)", VERSION)
 
     def _get_project_key(self) -> Optional[str]:
@@ -326,6 +329,7 @@ class VideoForgePanel(QWidget):
             self.analyze_status.setText("Status: Loaded")
             self.analyze_status.setStyleSheet(f"color: {COLORS['success']}; margin-top: 6px;")
             self.edit_transcript_btn.setEnabled(True)
+            self._refresh_alignment_status()
             logging.getLogger("VideoForge.ui").info(
                 "Restored project DB for %s", project_key
             )
@@ -1466,6 +1470,7 @@ class VideoForgePanel(QWidget):
         def _done(result):
             if result is True and Config.get("render_mode", "Silence Removal") == "J/L-cut":
                 self._set_status("J/L-cut overlap inserted above tracks.")
+                self._refresh_alignment_status()
                 return
             if result is False:
                 self._set_status("Render failed. See log for details.")
@@ -1477,6 +1482,7 @@ class VideoForgePanel(QWidget):
                 except Exception:
                     pass
             self._set_status(f"Rendered: {Path(result).name}")
+            self._refresh_alignment_status()
 
         self._run_worker(_render, on_done=_done)
 
@@ -1646,6 +1652,7 @@ class VideoForgePanel(QWidget):
                 self.analyze_status.setStyleSheet(f"color: {COLORS['success']}; margin-top: 6px;")
                 self.edit_transcript_btn.setEnabled(True)
                 self._save_project_state()
+                self._refresh_alignment_status()
                 self._set_progress_value(90)
                 self._set_status("Saving... (3/4)")
                 self._set_progress_value(100)
@@ -1734,6 +1741,7 @@ class VideoForgePanel(QWidget):
             self.analyze_status.setStyleSheet(f"color: {COLORS['success']}; margin-top: 6px;")
             self.edit_transcript_btn.setEnabled(True)
             self._save_project_state()
+            self._refresh_alignment_status()
             warning = result.get("warning")
             if warning:
                 self._set_status(f"Warning: {warning}")
@@ -1747,6 +1755,9 @@ class VideoForgePanel(QWidget):
 
     def _on_browse_library(self) -> None:
         logging.getLogger("VideoForge.ui").info("Browse library clicked")
+        if not hasattr(self, "library_path_edit"):
+            self._set_status("Library path input removed. Set Global/Local paths in Settings.")
+            return
         default_dir = (
             self.saved_broll_dir
             if self.saved_broll_dir and Path(self.saved_broll_dir).exists()
@@ -1758,8 +1769,147 @@ class VideoForgePanel(QWidget):
             self.saved_broll_dir = folder
             self.library_path_edit.setText(str(Path(folder) / "library.db"))
 
+    @staticmethod
+    def _normalize_scope(value: str) -> str:
+        scope = str(value or "").strip().lower()
+        if scope in {"global", "local", "both"}:
+            return scope
+        return "both"
+
+    def _get_library_paths(self) -> tuple[str, str]:
+        global_path = str(Config.get("global_library_db_path") or "").strip()
+        local_path = str(Config.get("local_library_db_path") or "").strip()
+        return global_path, local_path
+
+    def _validate_library_scope(self) -> bool:
+        scope = self._normalize_scope(Config.get("library_search_scope", "both"))
+        global_path, local_path = self._get_library_paths()
+        message = ""
+        if scope == "global" and not global_path:
+            message = "Set Global library DB path in Settings first."
+        elif scope == "local" and not local_path:
+            message = "Set Local library DB path in Settings first."
+        elif scope == "both" and not (global_path or local_path):
+            message = "Set Global/Local library DB path in Settings first."
+        if message:
+            self._set_status(message)
+            QMessageBox.information(self, "Library Match", message)
+            return False
+        return True
+
+    def _validate_library_paths(self, title: str) -> bool:
+        global_path, local_path = self._get_library_paths()
+        if global_path or local_path:
+            return True
+        message = "Set Global/Local library DB path in Settings first."
+        self._set_status(message)
+        QMessageBox.information(self, title, message)
+        return False
+
+    def _sync_library_scope_combos(self, scope: str) -> None:
+        if self._syncing_library_scope:
+            return
+        scope_map = {"both": 0, "global": 1, "local": 2}
+        index = scope_map.get(self._normalize_scope(scope), 0)
+        self._syncing_library_scope = True
+        for attr in ("library_scope_combo", "match_scope_combo"):
+            combo = getattr(self, attr, None)
+            if not combo:
+                continue
+            if combo.currentIndex() == index:
+                continue
+            combo.blockSignals(True)
+            combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+        self._syncing_library_scope = False
+
+    def _refresh_alignment_status(self) -> None:
+        label = getattr(self, "alignment_status_label", None)
+        if not label:
+            return
+        if not self.project_db or not Path(self.project_db).exists():
+            label.setText("Alignment: -")
+            return
+        try:
+            store = SegmentStore(self.project_db)
+            render_segments = store.get_artifact("render_segments") or []
+            render_mode = store.get_artifact("render_mode")
+            if isinstance(render_segments, list) and render_segments:
+                mode_label = str(render_mode or "Custom")
+                label.setText(f"Alignment: {mode_label} ({len(render_segments)} segments)")
+            else:
+                label.setText("Alignment: Original")
+        except Exception:
+            label.setText("Alignment: Unknown")
+
+    def _on_reset_alignment_clicked(self) -> None:
+        if not self.project_db:
+            self._set_status("Analyze a clip first.")
+            return
+        if not Path(self.project_db).exists():
+            self._set_status("Project database missing. Re-run analysis.")
+            return
+        reply = QMessageBox.question(
+            self,
+            "Reset Alignment",
+            "Clear stored render alignment and use original clip timing?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        def _reset():
+            store = SegmentStore(self.project_db)
+            for key in (
+                "render_mode",
+                "render_segments",
+                "render_overlap_frames",
+                "render_overlap_jitter",
+                "render_overlap_seed",
+                "render_source_range",
+            ):
+                store.save_artifact(key, None)
+            return True
+
+        def _done(_result):
+            self._refresh_alignment_status()
+            self._set_status("Alignment reset to original timing.")
+
+        self._set_status("Resetting alignment...")
+        self._run_worker(_reset, on_done=_done)
+
+    def _set_global_library_locked(self, locked: bool) -> None:
+        self._global_library_locked = bool(locked)
+        if hasattr(self, "global_library_path_input"):
+            self.global_library_path_input.setReadOnly(self._global_library_locked)
+        if hasattr(self, "global_library_browse_btn"):
+            self.global_library_browse_btn.setEnabled(not self._global_library_locked)
+        if hasattr(self, "global_library_unlock_btn"):
+            self.global_library_unlock_btn.setVisible(self._global_library_locked)
+
+    def _on_unlock_global_library(self) -> None:
+        if not self._global_library_locked:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Change Global Library",
+            "Unlock global library path for editing?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        self._set_global_library_locked(False)
+
     def _on_browse_global_library(self) -> None:
         logging.getLogger("VideoForge.ui").info("Browse global library clicked")
+        if self._global_library_locked:
+            QMessageBox.information(
+                self,
+                "Global Library",
+                "Global library path is locked. Click Change to unlock.",
+            )
+            return
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Select Global Library Database",
@@ -1770,6 +1920,7 @@ class VideoForgePanel(QWidget):
             Config.set("global_library_db_path", path)
             if hasattr(self, "global_library_path_input"):
                 self.global_library_path_input.setText(path)
+            self._set_global_library_locked(True)
 
     def _on_browse_local_library(self) -> None:
         logging.getLogger("VideoForge.ui").info("Browse local library clicked")
@@ -1784,17 +1935,55 @@ class VideoForgePanel(QWidget):
             if hasattr(self, "local_library_path_input"):
                 self.local_library_path_input.setText(path)
 
+    def _on_browse_global_scan_folder(self) -> None:
+        logging.getLogger("VideoForge.ui").info("Browse global scan folder clicked")
+        default_dir = str(Config.get("global_library_scan_dir") or "").strip()
+        if not default_dir and self.saved_broll_dir and Path(self.saved_broll_dir).exists():
+            default_dir = self.saved_broll_dir
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Global Library Folder", default_dir
+        )
+        if folder:
+            Config.set("global_library_scan_dir", folder)
+            if hasattr(self, "global_scan_path_input"):
+                self.global_scan_path_input.setText(folder)
+
+    def _on_browse_local_scan_folder(self) -> None:
+        logging.getLogger("VideoForge.ui").info("Browse local scan folder clicked")
+        default_dir = str(Config.get("local_library_scan_dir") or "").strip()
+        if not default_dir and self.saved_broll_dir and Path(self.saved_broll_dir).exists():
+            default_dir = self.saved_broll_dir
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Local Library Folder", default_dir
+        )
+        if folder:
+            Config.set("local_library_scan_dir", folder)
+            if hasattr(self, "local_scan_path_input"):
+                self.local_scan_path_input.setText(folder)
+
     def _on_library_scope_changed(self, index: int) -> None:
         scope_map = {0: "both", 1: "global", 2: "local"}
         scope = scope_map.get(int(index), "both")
         Config.set("library_search_scope", scope)
+        self._sync_library_scope_combos(scope)
         logging.getLogger("VideoForge.ui").info("Library search scope: %s", scope)
 
     def _on_global_library_path_changed(self, value: str) -> None:
-        Config.set("global_library_db_path", str(value or "").strip())
+        path = str(value or "").strip()
+        Config.set("global_library_db_path", path)
+        if path and not self._global_library_locked and path.lower().endswith(".db"):
+            self._set_global_library_locked(True)
+        if not path:
+            self._set_global_library_locked(False)
+
+    def _on_global_scan_path_changed(self, value: str) -> None:
+        Config.set("global_library_scan_dir", str(value or "").strip())
 
     def _on_local_library_path_changed(self, value: str) -> None:
         Config.set("local_library_db_path", str(value or "").strip())
+
+    def _on_local_scan_path_changed(self, value: str) -> None:
+        Config.set("local_library_scan_dir", str(value or "").strip())
 
     def _on_library_path_changed(self, value: str) -> None:
         if hasattr(self, "library_path_display"):
@@ -1806,6 +1995,9 @@ class VideoForgePanel(QWidget):
             return
 
         logging.getLogger("VideoForge.ui").info("Scan library clicked")
+        if not hasattr(self, "library_path_edit"):
+            self._set_status("Use Global/Local scan in Library tab.")
+            return
         default_dir = (
             self.saved_broll_dir
             if self.saved_broll_dir and Path(self.saved_broll_dir).exists()
@@ -1835,7 +2027,6 @@ class VideoForgePanel(QWidget):
             self.library_status.setText(f"Status: Indexed {result} clips")
             self.library_status.setStyleSheet(f"color: {COLORS['success']}; margin-top: 6px;")
             self._set_status("Library scan complete")
-            self.bridge.save_library_path(self.library_path_edit.text().strip())
 
         self._set_status("Scanning library...")
         self._run_worker(_scan, on_done=_done)
@@ -1849,18 +2040,33 @@ class VideoForgePanel(QWidget):
             self._set_status(message)
             QMessageBox.information(self, "Library Scan", message)
             return
-        default_dir = (
-            self.saved_broll_dir
-            if self.saved_broll_dir and Path(self.saved_broll_dir).exists()
-            else ""
+
+        scan_key = (
+            "global_library_scan_dir"
+            if library_type == "global"
+            else "local_library_scan_dir"
         )
-        folder = QFileDialog.getExistingDirectory(
-            self,
-            f"Select {library_type.title()} Library Folder",
-            default_dir,
-        )
+        folder = str(Config.get(scan_key, "") or "").strip()
+        if folder and not Path(folder).exists():
+            folder = ""
         if not folder:
-            return
+            default_dir = (
+                self.saved_broll_dir
+                if self.saved_broll_dir and Path(self.saved_broll_dir).exists()
+                else ""
+            )
+            folder = QFileDialog.getExistingDirectory(
+                self,
+                f"Select {library_type.title()} Library Folder",
+                default_dir,
+            )
+            if not folder:
+                return
+            Config.set(scan_key, folder)
+            if library_type == "global" and hasattr(self, "global_scan_path_input"):
+                self.global_scan_path_input.setText(folder)
+            elif library_type == "local" and hasattr(self, "local_scan_path_input"):
+                self.local_scan_path_input.setText(folder)
 
         def _scan():
             indexer = LibraryIndexer()
@@ -1879,11 +2085,34 @@ class VideoForgePanel(QWidget):
         try:
             from VideoForge.ui.library_manager import LibraryManager
         except Exception as exc:
-            self._set_status(f"Library Manager unavailable: {exc}")
+            message = f"Library Manager unavailable: {exc}"
+            self._set_status(message)
+            QMessageBox.warning(self, "Library Manager", message)
             return
-        global_path = str(Config.get("global_library_db_path") or "").strip()
-        local_path = str(Config.get("local_library_db_path") or "").strip()
-        db_path = global_path or local_path or self.library_path_edit.text().strip()
+        global_path, local_path = self._get_library_paths()
+        db_path = None
+        if global_path and local_path:
+            dialog = QMessageBox(self)
+            dialog.setWindowTitle("Open Library Manager")
+            dialog.setText("Choose which library to open.")
+            global_btn = dialog.addButton("Global", QMessageBox.AcceptRole)
+            local_btn = dialog.addButton("Local", QMessageBox.AcceptRole)
+            dialog.addButton(QMessageBox.Cancel)
+            dialog.exec()
+            clicked = dialog.clickedButton()
+            if clicked == global_btn:
+                db_path = global_path
+            elif clicked == local_btn:
+                db_path = local_path
+            else:
+                return
+        else:
+            db_path = global_path or local_path
+        if not db_path:
+            message = "Set Global/Local library DB path in Settings first."
+            self._set_status(message)
+            QMessageBox.information(self, "Library Manager", message)
+            return
         self._library_manager_window = LibraryManager.show_as_dialog(
             self,
             db_path=db_path if db_path else None,
@@ -1932,21 +2161,8 @@ class VideoForgePanel(QWidget):
         if not self.project_db:
             self._set_status("Analyze a clip first.")
             return
-        library_path = self.library_path_edit.text().strip()
-        if not library_path:
-            default_dir = (
-                self.saved_broll_dir
-                if self.saved_broll_dir and Path(self.saved_broll_dir).exists()
-                else ""
-            )
-            folder = QFileDialog.getExistingDirectory(self, "Select B-roll Folder", default_dir)
-            if not folder:
-                self._set_status("Set a library DB path first.")
-                return
-            Config.set("broll_dir", folder)
-            self.saved_broll_dir = folder
-            library_path = str(Path(folder) / "library.db")
-            self.library_path_edit.setText(library_path)
+        if not self._validate_library_scope():
+            return
         threshold = self.threshold_slider.value() / 100.0
         if not 0.0 <= threshold <= 1.0:
             self._set_status(f"Invalid threshold: {threshold}")
@@ -1954,7 +2170,7 @@ class VideoForgePanel(QWidget):
         self.settings["broll"]["matching_threshold"] = threshold
 
         def _match():
-            return self.bridge.match_broll(self.project_db, library_path)
+            return self.bridge.match_broll(self.project_db)
 
         def _done(result):
             count = result.get("count", 0)
@@ -1968,7 +2184,7 @@ class VideoForgePanel(QWidget):
         self._run_worker(_match, on_done=_done)
 
     def _run_broll_generation_with_analysis(
-        self, sentences: list[dict], library_path: str, use_llm: bool
+        self, sentences: list[dict], use_llm: bool
     ) -> None:
         """Generate B-roll with optional LLM scene analysis (Direct mode)."""
         sentences = [s for s in sentences if str(s.get("text", "")).strip()]
@@ -2125,7 +2341,12 @@ class VideoForgePanel(QWidget):
             schema_path = repo_root / "VideoForge" / "config" / "schema.sql"
             if not schema_path.exists():
                 schema_path = repo_root / "config" / "schema.sql"
-            library_db = LibraryDB(library_path, schema_path=str(schema_path))
+            global_path, local_path = self._get_library_paths()
+            library_db = LibraryDB(
+                global_db_path=global_path or None,
+                local_db_path=local_path or None,
+                schema_path=str(schema_path),
+            )
             remaining_sentences = list(selected_sentences)
             if str(config.source_mode or "").startswith("library"):
                 from VideoForge.broll.orchestrator import BrollOrchestrator
@@ -2193,7 +2414,6 @@ class VideoForgePanel(QWidget):
             match_ids = sorted({int(sid) for sid in selected_ids if sid is not None}) if selected_ids else None
             rematch = self.bridge.match_broll(
                 self.project_db,
-                library_path,
                 sentence_ids=match_ids,
             )
             return {"generated": len(clip_ids), "match": rematch}
@@ -2298,14 +2518,11 @@ class VideoForgePanel(QWidget):
         if reply != QMessageBox.Yes:
             return
 
-        # Get library path
-        library_path = self.library_path_edit.text().strip()
-        if not library_path:
-            self._set_status("Set library path first.")
+        if not self._validate_library_paths("B-roll Generation"):
             return
 
         # Run B-roll generation with LLM analysis
-        self._run_broll_generation_with_analysis(sentences, library_path, use_llm_analysis)
+        self._run_broll_generation_with_analysis(sentences, use_llm_analysis)
 
     def _get_broll_gen_max_scenes(self) -> int | None:
         raw = Config.get("broll_max_scenes")
@@ -2396,9 +2613,7 @@ class VideoForgePanel(QWidget):
         if not self.project_db:
             self._set_status("Analyze a clip first.")
             return
-        library_path = self.library_path_edit.text().strip()
-        if not library_path:
-            self._set_status("Set library path first.")
+        if not self._validate_library_paths("Reset Project B-roll"):
             return
 
         project_name = self._get_broll_project_name()
@@ -2432,7 +2647,12 @@ class VideoForgePanel(QWidget):
             schema_path = self._resolve_repo_root() / "VideoForge" / "config" / "schema.sql"
             if not schema_path.exists():
                 schema_path = self._resolve_repo_root() / "config" / "schema.sql"
-            library_db = LibraryDB(library_path, schema_path=str(schema_path))
+            global_path, local_path = self._get_library_paths()
+            library_db = LibraryDB(
+                global_db_path=global_path or None,
+                local_db_path=local_path or None,
+                schema_path=str(schema_path),
+            )
             prefixes = {str(project_dir), str(project_dir.resolve())}
             for prefix in prefixes:
                 removed_db += library_db.delete_clips_by_path_prefix(prefix)
@@ -2610,6 +2830,8 @@ class VideoForgePanel(QWidget):
             return
 
     def _restore_library_path(self) -> None:
+        if not hasattr(self, "library_path_edit"):
+            return
         try:
             saved = self.bridge.get_saved_library_path()
         except Exception:

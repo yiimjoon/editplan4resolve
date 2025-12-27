@@ -313,7 +313,7 @@ def _read_sidecar_metadata(path: Path) -> Dict:
     return {}
 
 
-def _convert_maker_metadata(meta: Dict) -> Dict[str, str]:
+def _convert_maker_metadata(meta: Dict, include_script_tags: bool = False) -> Dict[str, str]:
     if not meta:
         return {}
     raw = meta.get("raw_metadata") if isinstance(meta.get("raw_metadata"), dict) else {}
@@ -326,10 +326,11 @@ def _convert_maker_metadata(meta: Dict) -> Dict[str, str]:
         tags.append(str(source))
     if model:
         tags.append(str(model))
-    if scene_num:
-        tags.append(f"Scene {scene_num}")
-    if script_index:
-        tags.append(f"Script {script_index}")
+    if include_script_tags:
+        if scene_num:
+            tags.append(f"Scene {scene_num}")
+        if script_index:
+            tags.append(f"Script {script_index}")
     folder_tags = ", ".join(tags)
     keywords = meta.get("keywords") or []
     visual_elements = meta.get("visual_elements") or []
@@ -438,21 +439,10 @@ def scan_library(
                     pass
             embedding = encode_image_clip(str(path))
 
-        merged = _convert_maker_metadata(embedded)
+        merged = _convert_maker_metadata(embedded, include_script_tags=(target_db == "local"))
         for key, value in merged.items():
             if value:
                 metadata[key] = value
-
-        if suffix in VIDEO_EXTS:
-            try:
-                use_sam3 = Config.get("use_sam3_tagging", False)
-            except Exception:
-                use_sam3 = False
-
-            if use_sam3:
-                logger.info(
-                    "SAM3 auto-tagging is disabled in the indexing pipeline. Use the SAM3 tool in Misc tab."
-                )
 
         db.upsert_clip(metadata, embedding, target_db=target_db)
         count += 1

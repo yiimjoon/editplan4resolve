@@ -390,9 +390,13 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.global_library_path_input.textChanged.connect(panel._on_global_library_path_changed)
     global_layout.addWidget(panel.global_library_path_input)
 
-    global_browse_btn = QPushButton("Browse...")
-    global_browse_btn.clicked.connect(panel._on_browse_global_library)
-    global_layout.addWidget(global_browse_btn)
+    panel.global_library_browse_btn = QPushButton("Browse...")
+    panel.global_library_browse_btn.clicked.connect(panel._on_browse_global_library)
+    global_layout.addWidget(panel.global_library_browse_btn)
+
+    panel.global_library_unlock_btn = QPushButton("Change")
+    panel.global_library_unlock_btn.clicked.connect(panel._on_unlock_global_library)
+    global_layout.addWidget(panel.global_library_unlock_btn)
     right_col.addLayout(global_layout)
 
     local_label = QLabel("Local Library (project-specific):")
@@ -461,5 +465,8 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     llm_enabled = panel.llm_provider_combo.currentText() != "disabled"
     panel.llm_model_edit.setEnabled(llm_enabled)
     panel.llm_key_edit.setEnabled(llm_enabled)
+
+    global_path = str(Config.get("global_library_db_path", "") or "").strip()
+    panel._set_global_library_locked(bool(global_path))
 
     parent_layout.addWidget(card)

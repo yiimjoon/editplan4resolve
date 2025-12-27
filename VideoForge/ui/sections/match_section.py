@@ -51,6 +51,21 @@ def build_match_section(panel, parent_layout: QVBoxLayout) -> None:
 
     card_layout.addSpacing(6)
 
+    scope_row = QHBoxLayout()
+    scope_label = QLabel("Library Scope")
+    scope_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
+    panel.match_scope_combo = QComboBox()
+    panel.match_scope_combo.addItems(
+        ["Both (Global + Local)", "Global only", "Local only"]
+    )
+    current_scope = Config.get("library_search_scope", "both")
+    scope_map = {"both": 0, "global": 1, "local": 2}
+    panel.match_scope_combo.setCurrentIndex(scope_map.get(current_scope, 0))
+    panel.match_scope_combo.currentIndexChanged.connect(panel._on_library_scope_changed)
+    scope_row.addWidget(scope_label)
+    scope_row.addWidget(panel.match_scope_combo)
+    card_layout.addLayout(scope_row)
+
     button_layout = QHBoxLayout()
     button_layout.setSpacing(8)
 
@@ -72,6 +87,22 @@ def build_match_section(panel, parent_layout: QVBoxLayout) -> None:
     button_layout.addWidget(panel.match_btn, 1)
     button_layout.addWidget(panel.apply_btn, 2)
     card_layout.addLayout(button_layout)
+
+    align_row = QHBoxLayout()
+    align_label = QLabel("Alignment")
+    align_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
+    panel.alignment_status_label = QLabel("Alignment: -")
+    panel.alignment_status_label.setStyleSheet(
+        f"color: {panel.colors['text_dim']}; font-size: 11px;"
+    )
+    panel.reset_alignment_btn = QPushButton("Reset Alignment")
+    panel.reset_alignment_btn.setCursor(Qt.PointingHandCursor)
+    panel.reset_alignment_btn.clicked.connect(panel._on_reset_alignment_clicked)
+    align_row.addWidget(align_label)
+    align_row.addWidget(panel.alignment_status_label)
+    align_row.addStretch()
+    align_row.addWidget(panel.reset_alignment_btn)
+    card_layout.addLayout(align_row)
 
     parent_layout.addWidget(card)
 

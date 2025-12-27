@@ -12,6 +12,7 @@ from VideoForge.core.silence_processor import process_silence
 from VideoForge.core.timeline_builder import TimelineBuilder
 from VideoForge.core.srt_parser import parse_srt
 from VideoForge.core.transcriber import align_sentences_to_srt, transcribe_segments
+from VideoForge.config.config_manager import Config
 from VideoForge.integrations.resolve_api import ResolveAPI
 from VideoForge.plugin.project_manager import ProjectManager
 from VideoForge.errors import AnalysisError, MatchError, TimelineError
@@ -107,10 +108,6 @@ class ResolveBridge:
         store.clear_analysis_data()
         store.save_artifact("project_id", project_id)
         store.save_artifact("whisper_model", whisper_model)
-        store.save_artifact("render_mode", None)
-        store.save_artifact("render_segments", None)
-        store.save_artifact("render_overlap_frames", None)
-        store.save_artifact("render_source_range", None)
 
         try:
             self.logger.info("=== [BRIDGE] analyze_from_path called ===")
@@ -265,10 +262,6 @@ class ResolveBridge:
             store.clear_analysis_data()
             store.save_artifact("project_id", project_id)
             store.save_artifact("whisper_model", "resolve_ai")
-            store.save_artifact("render_mode", None)
-            store.save_artifact("render_segments", None)
-            store.save_artifact("render_overlap_frames", None)
-            store.save_artifact("render_source_range", None)
             self.logger.info("[BRIDGE] Resolve AI saving to database...")
             store.save_project_data(segments=segments, sentences=sentences)
             self.logger.info("[BRIDGE] Resolve AI database save complete")
@@ -283,7 +276,7 @@ class ResolveBridge:
     def match_broll(
         self,
         project_db_path: str,
-        library_db_path: str,
+        library_db_path: str | None = None,
         sentence_ids: Optional[Iterable[int]] = None,
     ) -> Dict[str, str | int]:
         """Match B-roll clips against stored sentences."""
@@ -302,7 +295,15 @@ class ResolveBridge:
                 return {"count": 0, "warning": ""}
 
         schema_path = self._resolve_schema_path()
-        library_db = LibraryDB(library_db_path, schema_path=str(schema_path))
+        global_path = str(Config.get("global_library_db_path") or "").strip()
+        local_path = str(Config.get("local_library_db_path") or "").strip()
+        if library_db_path and not (global_path or local_path):
+            global_path = str(library_db_path).strip()
+        library_db = LibraryDB(
+            global_db_path=global_path or None,
+            local_db_path=local_path or None,
+            schema_path=str(schema_path),
+        )
         matcher = BrollMatcher(library_db, self.settings)
         try:
             matches = matcher.match(sentences)

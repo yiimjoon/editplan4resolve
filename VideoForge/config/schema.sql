@@ -9,11 +9,16 @@ CREATE TABLE IF NOT EXISTS clips (
   fps REAL,
   width INTEGER,
   height INTEGER,
+  library_folder TEXT,
   folder_tags TEXT,
   vision_tags TEXT,
   description TEXT,
   embedding BLOB,
   created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS library_folders (
+  name TEXT PRIMARY KEY
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS clips_fts USING fts5(
