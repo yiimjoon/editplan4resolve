@@ -1,7 +1,6 @@
 import logging
 from bisect import bisect_left
 import os
-from pathlib import Path
 import tempfile
 import subprocess
 import time
@@ -88,7 +87,6 @@ def transcribe_segments(
             "task": task,
             "condition_on_previous_text": False,  # Reduce long sentence merging
             "vad_filter": True,  # Enable VAD-based segmentation
-            "chunk_length": 10,  # Shorter chunks to preserve sentence breaks
             "vad_parameters": {
                 "threshold": 0.3,  # More sensitive to silence (0.5 default, lower = more splits)
                 "min_silence_duration_ms": 300,  # Shorter silence gap (500ms default)
@@ -121,7 +119,6 @@ def transcribe_segments(
                     float(start),
                     float(end),
                 )
-
         results, _info = model.transcribe(source_path, **transcribe_kwargs)
         sentences: List[Dict[str, float]] = []
         segment_count = 0
@@ -167,12 +164,9 @@ def transcribe_segments(
                     sum(gaps) / len(gaps),
                 )
         logger.info(">>> Returning %d sentences to caller", len(sentences))
-        cleanup_paths = []
         if temp_path:
-            cleanup_paths.append(temp_path)
-        for path in set(cleanup_paths):
             try:
-                os.unlink(path)
+                os.unlink(temp_path)
             except Exception:
                 pass
         return sentences
@@ -214,38 +208,6 @@ def _extract_audio_segment(video_path: str, start: float, end: float) -> str:
         raise RuntimeError("ffmpeg segment extraction timed out") from exc
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg segment extraction failed: {proc.stderr.strip()}")
-    return temp_path
-
-
-def _extract_audio_full(video_path: str) -> str:
-    """Extract a temporary WAV for the full media."""
-    temp_fd, temp_path = tempfile.mkstemp(suffix=".wav", prefix="vf_audio_")
-    os.close(temp_fd)
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        video_path,
-        "-vn",
-        "-ac",
-        "1",
-        "-ar",
-        "16000",
-        temp_path,
-    ]
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            encoding="utf-8",
-            errors="ignore",
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("ffmpeg audio extraction timed out") from exc
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg audio extraction failed: {proc.stderr.strip()}")
     return temp_path
 
 
