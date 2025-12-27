@@ -55,6 +55,7 @@ from VideoForge.ui.sections.library_section import build_library_section
 from VideoForge.ui.sections.match_section import build_match_section
 from VideoForge.ui.sections.misc_section import build_misc_section
 from VideoForge.ui.sections.settings_section import build_settings_section
+from VideoForge.ui.sections.sync_section import build_sync_section
 
 
 # --- Color Palette (Parchment & Mist) ---
@@ -71,6 +72,7 @@ COLORS = {
     "highlight": "rgba(0, 0, 0, 0.02)",
     "success": "#4caf50",
     "error": "#d32f2f",
+    "warning": "#FFA500",
 }
 
 VERSION = "v1.8.0"
@@ -390,7 +392,20 @@ class VideoForgePanel(QWidget):
         match_layout.addStretch()
         self.tabs.addTab(match_scroll, "🎬 Match")
 
-        # Tab 3: Settings
+        # Tab 3: Sync
+        sync_scroll = QScrollArea()
+        sync_scroll.setWidgetResizable(True)
+        sync_scroll.setFrameShape(QFrame.NoFrame)
+        sync_tab = QWidget()
+        sync_scroll.setWidget(sync_tab)
+
+        sync_layout = QVBoxLayout(sync_tab)
+        sync_layout.setContentsMargins(8, 8, 8, 8)
+        build_sync_section(self, sync_layout)
+        sync_layout.addStretch()
+        self.tabs.addTab(sync_scroll, "Sync")
+
+        # Tab 4: Settings
         settings_scroll = QScrollArea()
         settings_scroll.setWidgetResizable(True)
         settings_scroll.setFrameShape(QFrame.NoFrame)
@@ -403,7 +418,7 @@ class VideoForgePanel(QWidget):
         settings_layout.addStretch()
         self.tabs.addTab(settings_scroll, "⚙️ Settings")
 
-        # Tab 4: Misc
+        # Tab 5: Misc
         misc_scroll = QScrollArea()
         misc_scroll.setWidgetResizable(True)
         misc_scroll.setFrameShape(QFrame.NoFrame)
@@ -2118,6 +2133,98 @@ class VideoForgePanel(QWidget):
             db_path=db_path if db_path else None,
         )
         self._set_status("Opened Library Manager.")
+
+    def _on_browse_sync_reference(self) -> None:
+        from VideoForge.ui.qt_compat import QFileDialog
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Reference Video (A-roll)",
+            "",
+            "Video Files (*.mp4 *.mov *.mxf *.avi)",
+        )
+        if path:
+            self.sync_ref_path = path
+            self.sync_ref_label.setText(Path(path).name)
+            logging.getLogger("VideoForge.ui").info("Reference video: %s", path)
+
+    def _on_add_sync_targets(self) -> None:
+        from VideoForge.ui.qt_compat import QFileDialog
+
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select Target Videos (B-roll / Multi-camera)",
+            "",
+            "Video Files (*.mp4 *.mov *.mxf *.avi)",
+        )
+        for path in paths:
+            self.sync_target_list.addItem(path)
+        if paths:
+            logging.getLogger("VideoForge.ui").info("Added %d target videos", len(paths))
+
+    def _on_auto_sync_clicked(self) -> None:
+        if not hasattr(self, "sync_ref_path"):
+            self.sync_status.setText("Error: No reference video selected")
+            self.sync_status.setStyleSheet(
+                f"color: {COLORS['error']}; font-size: 11px;"
+            )
+            return
+
+        target_paths = [
+            self.sync_target_list.item(i).text()
+            for i in range(self.sync_target_list.count())
+        ]
+        if not target_paths:
+            self.sync_status.setText("Error: No target videos added")
+            self.sync_status.setStyleSheet(
+                f"color: {COLORS['error']}; font-size: 11px;"
+            )
+            return
+
+        mode = "same" if self.sync_mode_combo.currentIndex() == 0 else "inverse"
+
+        def _sync():
+            from VideoForge.core.sync_matcher import SyncMatcher
+
+            matcher = SyncMatcher()
+            return matcher.sync_multiple(
+                Path(self.sync_ref_path),
+                [Path(p) for p in target_paths],
+                mode=mode,
+            )
+
+        def _done(results):
+            low_confidence = [
+                (path, result["confidence"])
+                for path, result in results.items()
+                if result.get("confidence", 0.0) < 0.5
+            ]
+            if low_confidence:
+                names = ", ".join([Path(p).name for p, _ in low_confidence])
+                self.sync_status.setText(f"Warning: Low confidence for {names}")
+                self.sync_status.setStyleSheet(
+                    f"color: {COLORS['warning']}; font-size: 11px;"
+                )
+            else:
+                self.sync_status.setText(f"Synced {len(results)} clips successfully")
+                self.sync_status.setStyleSheet(
+                    f"color: {COLORS['success']}; font-size: 11px;"
+                )
+            for path, result in results.items():
+                logging.getLogger("VideoForge.ui").info(
+                    "Sync result: %s -> offset=%.2fs confidence=%.2f",
+                    Path(path).name,
+                    result.get("offset", 0.0),
+                    result.get("confidence", 0.0),
+                )
+            self._set_status("Audio sync complete")
+
+        self.sync_status.setText("Analyzing audio patterns...")
+        self.sync_status.setStyleSheet(
+            f"color: {COLORS['text_dim']}; font-size: 11px;"
+        )
+        self._set_status("Running audio sync...")
+        self._run_worker(_sync, on_done=_done)
 
     def _on_browse_srt(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Select SRT File", "", "SRT Files (*.srt)")
