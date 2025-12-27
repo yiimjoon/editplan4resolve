@@ -83,6 +83,33 @@ def _time_to_frames(seconds: float, fps: float) -> int:
     return int(round(seconds * fps))
 
 
+def _insert_clip(
+    media_pool,
+    media_item,
+    track_type: str,
+    track_index: int,
+    timeline_start: int,
+    media_start: int,
+    media_end: int,
+) -> None:
+    append_method = getattr(media_pool, "AppendToTimeline", None)
+    if callable(append_method):
+        payload = {
+            "mediaPoolItem": media_item,
+            "startFrame": int(media_start),
+            "endFrame": int(media_end),
+            "recordFrame": int(timeline_start),
+            "trackIndex": int(track_index),
+            "trackType": track_type,
+        }
+        try:
+            append_method([payload])
+            return
+        except Exception:
+            pass
+    media_pool.InsertClips([media_item], track_type, int(track_index), int(timeline_start))
+
+
 def export_to_resolve(timeline_json: Dict, timeline_name_prefix: str) -> None:
     resolve = _get_resolve()
     project_manager = resolve.GetProjectManager()
@@ -105,10 +132,25 @@ def export_to_resolve(timeline_json: Dict, timeline_name_prefix: str) -> None:
             media_item = _ensure_media(media_pool, clip["file"])
             if media_item is None:
                 continue
-            media_start = _time_to_frames(clip["media_start"], fps)
-            timeline_start = _time_to_frames(clip["timeline_start"], fps)
-            duration = _time_to_frames(clip["duration"], fps)
-            media_pool.InsertClips([media_item], track_type, track_index, timeline_start)
+            media_start = _time_to_frames(float(clip.get("media_start", 0.0)), fps)
+            timeline_start = _time_to_frames(float(clip.get("timeline_start", 0.0)), fps)
+            media_end_sec = clip.get("media_end")
+            if media_end_sec is None:
+                media_end_sec = float(clip.get("media_start", 0.0)) + float(
+                    clip.get("duration", 0.0)
+                )
+            media_end = _time_to_frames(float(media_end_sec), fps)
+            if media_end <= media_start:
+                media_end = media_start + 1
+            _insert_clip(
+                media_pool,
+                media_item,
+                track_type,
+                track_index,
+                timeline_start,
+                media_start,
+                media_end,
+            )
 
             if track["type"] == "video_broll" and not clip.get("audio_enabled", False):
                 items = timeline.GetItemListInTrack(track_type, track_index)

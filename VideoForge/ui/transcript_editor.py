@@ -172,7 +172,8 @@ class TranscriptEditorPanel(QWidget):
         export_layout = QHBoxLayout()
         self.export_resolve_btn = QPushButton("Export to Resolve")
         self.export_resolve_btn.setCursor(Qt.PointingHandCursor)
-        self.export_resolve_btn.clicked.connect(self._export_to_resolve)
+        self.export_resolve_btn.setEnabled(False)
+        self.export_resolve_btn.setToolTip("Disabled: Resolve export is deprecated/unreliable.")
         export_layout.addWidget(self.export_resolve_btn)
 
         self.export_txt_btn = QPushButton("TXT")

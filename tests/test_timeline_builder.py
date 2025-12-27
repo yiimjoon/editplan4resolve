@@ -26,7 +26,8 @@ def test_timeline_builder_required_fields():
         builder = TimelineBuilder(store, settings)
         timeline = builder.build("main.mp4")
 
-        assert timeline["schema_version"] == "1.0"
+        # Updated to match SegmentStore.SCHEMA_VERSION.
+        assert timeline["schema_version"] == "1.1"
         assert "metadata" in timeline
         assert "tracks" in timeline
         assert timeline["tracks"][0]["id"] == "V1"

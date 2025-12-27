@@ -719,16 +719,37 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
     def _sanitize_scene_list(
         self, scenes: Iterable[Dict[str, Any]], sentences: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        sentence_map = {s.get("id"): s for s in sentences if s.get("id") is not None}
+        sentence_map: Dict[int, Dict[str, Any]] = {}
+        for sentence in sentences:
+            raw_id = sentence.get("id")
+            if raw_id is None:
+                continue
+            try:
+                sentence_id = int(raw_id)
+            except (TypeError, ValueError):
+                logger.warning("Invalid sentence id in data: %s", raw_id)
+                continue
+            sentence_map[sentence_id] = sentence
+
         results = []
+        invalid_ids: List[object] = []
         for scene in scenes:
-            sentence_id = scene.get("sentence_id")
-            if sentence_id is None:
+            raw_id = scene.get("sentence_id")
+            if raw_id is None:
+                continue
+            try:
+                sentence_id = int(raw_id)
+            except (TypeError, ValueError):
+                invalid_ids.append(raw_id)
                 continue
             sentence = sentence_map.get(sentence_id)
             if not sentence:
                 continue
             results.append(self._build_scene_entry(sentence, scene))
+
+        if invalid_ids:
+            logger.warning("LLM returned invalid sentence_id, using all sentences")
+            return self._fallback_analysis(sentences)
         return results
 
     def _build_scene_entry(self, sentence: Dict[str, Any], scene: Dict[str, Any]) -> Dict[str, Any]:

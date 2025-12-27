@@ -11,6 +11,15 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 _LOGGED_SUBPROCESS_MODE = False
+_LOGGED_WORKER_MISSING = False
+
+
+def _log_worker_missing() -> None:
+    global _LOGGED_WORKER_MISSING
+    if _LOGGED_WORKER_MISSING:
+        return
+    logger.info("OpenCV worker not found, using time-based sampling")
+    _LOGGED_WORKER_MISSING = True
 
 
 def _is_resolve_host() -> bool:
@@ -93,23 +102,30 @@ def should_use_subprocess() -> bool:
         if value is None:
             enabled = True
         else:
-            enabled = True
+            enabled = bool(value)
 
-        if enabled and not _LOGGED_SUBPROCESS_MODE:
+        if enabled:
             python_exe = _get_worker_python_exe()
-            logger.info(
-                "OpenCV subprocess mode enabled (Resolve host). Worker python=%s",
-                str(python_exe) if python_exe else "(auto-detect failed)",
-            )
-            _LOGGED_SUBPROCESS_MODE = True
+            if not python_exe:
+                _log_worker_missing()
+                return False
+            if not _LOGGED_SUBPROCESS_MODE:
+                logger.info(
+                    "OpenCV subprocess mode enabled (Resolve host). Worker python=%s",
+                    str(python_exe),
+                )
+                _LOGGED_SUBPROCESS_MODE = True
 
         return enabled
     except Exception:
+        python_exe = _get_worker_python_exe()
+        if not python_exe:
+            _log_worker_missing()
+            return False
         if not _LOGGED_SUBPROCESS_MODE:
-            python_exe = _get_worker_python_exe()
             logger.info(
                 "OpenCV subprocess mode enabled (Resolve host). Worker python=%s",
-                str(python_exe) if python_exe else "(auto-detect failed)",
+                str(python_exe),
             )
             _LOGGED_SUBPROCESS_MODE = True
         return True

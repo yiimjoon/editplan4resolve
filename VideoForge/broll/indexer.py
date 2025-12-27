@@ -407,26 +407,9 @@ def scan_library(library_dir: str, db: LibraryDB) -> int:
                 use_sam3 = False
 
             if use_sam3:
-                try:
-                    from VideoForge.adapters.sam3_adapter import SAM3Adapter
-
-                    sam3 = SAM3Adapter()
-                    vision_tags = sam3.generate_vision_tags(
-                        path,
-                        min_frames=5,
-                        max_frames=300,
-                    )
-                    if vision_tags:
-                        existing = [t.strip() for t in str(metadata.get("vision_tags") or "").split(",") if t.strip()]
-                        combined = sorted(set(existing + vision_tags))
-                        metadata["vision_tags"] = ", ".join(combined)
-                        logger.info(
-                            "SAM3 auto-tagged: %s -> %s",
-                            path.name,
-                            ", ".join(vision_tags),
-                        )
-                except Exception as exc:
-                    logger.warning("SAM3 auto-tagging failed for %s: %s", path.name, exc)
+                logger.info(
+                    "SAM3 auto-tagging is disabled in the indexing pipeline. Use the SAM3 tool in Misc tab."
+                )
 
         db.upsert_clip(metadata, embedding)
         count += 1

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import secrets
@@ -52,6 +53,7 @@ from VideoForge.ui.qt_compat import (
 from VideoForge.ui.sections.analyze_section import build_analyze_section
 from VideoForge.ui.sections.library_section import build_library_section
 from VideoForge.ui.sections.match_section import build_match_section
+from VideoForge.ui.sections.misc_section import build_misc_section
 from VideoForge.ui.sections.settings_section import build_settings_section
 
 
@@ -396,6 +398,19 @@ class VideoForgePanel(QWidget):
         build_settings_section(self, settings_layout)
         settings_layout.addStretch()
         self.tabs.addTab(settings_scroll, "⚙️ Settings")
+
+        # Tab 4: Misc
+        misc_scroll = QScrollArea()
+        misc_scroll.setWidgetResizable(True)
+        misc_scroll.setFrameShape(QFrame.NoFrame)
+        misc_tab = QWidget()
+        misc_scroll.setWidget(misc_tab)
+
+        misc_layout = QVBoxLayout(misc_tab)
+        misc_layout.setContentsMargins(8, 8, 8, 8)
+        build_misc_section(self, misc_layout)
+        misc_layout.addStretch()
+        self.tabs.addTab(misc_scroll, "🧰 Misc")
 
         # --- Footer (Always Visible) ---
         self._setup_footer(layout)
@@ -888,6 +903,91 @@ class VideoForgePanel(QWidget):
         if value:
             Config.set("sam3_model_size", value)
             logging.getLogger("VideoForge.ui").info("SAM3 Model Size: %s", value)
+
+    def _on_sam3_prompt_changed(self, value: str) -> None:
+        Config.set("sam3_prompt", value)
+
+    def _on_sam3_input_changed(self, value: str) -> None:
+        Config.set("sam3_input_path", value)
+
+    def _on_sam3_output_changed(self, value: str) -> None:
+        Config.set("sam3_output_dir", value)
+
+    def _on_sam3_input_browse(self) -> None:
+        start_dir = str(Config.get("sam3_input_path") or "")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Video File",
+            start_dir,
+            "Video Files (*.mp4 *.mov *.mkv *.avi);;All Files (*)",
+        )
+        if not file_path:
+            return
+        self.sam3_input_edit.setText(file_path)
+        Config.set("sam3_input_path", file_path)
+
+    def _on_sam3_output_browse(self) -> None:
+        start_dir = str(Config.get("sam3_output_dir") or "")
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select Output Folder",
+            start_dir,
+        )
+        if not folder:
+            return
+        self.sam3_output_edit.setText(folder)
+        Config.set("sam3_output_dir", folder)
+
+    def _on_sam3_run_clicked(self) -> None:
+        prompt = (self.sam3_prompt_edit.text() or "").strip()
+        if not prompt:
+            self._set_status("Enter a SAM3 prompt first.")
+            return
+        source_path = (self.sam3_input_edit.text() or "").strip()
+        if not source_path:
+            self._set_status("Select a video file.")
+            return
+        source = Path(source_path)
+        if not source.exists():
+            self._set_status(f"Input file not found: {source.name}")
+            return
+
+        output_dir = (self.sam3_output_edit.text() or "").strip()
+        output_root = Path(output_dir) if output_dir else source.parent
+        output_root.mkdir(parents=True, exist_ok=True)
+        output_path = output_root / f"{source.stem}_sam3.json"
+
+        try:
+            model_size = str(Config.get("sam3_model_size") or "large")
+        except Exception:
+            model_size = "large"
+
+        def _run():
+            from VideoForge.adapters.sam3_subprocess import SAM3Subprocess
+
+            adapter = SAM3Subprocess()
+            result = adapter.segment_video(
+                source,
+                prompt,
+                model_size=model_size,
+                max_frames=300,
+            )
+            if not result:
+                return None
+            output_path.write_text(
+                json.dumps(result, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return str(output_path)
+
+        def _done(result):
+            if result:
+                self._set_status(f"SAM3 saved: {Path(result).name}")
+            else:
+                self._set_status("SAM3 failed. Check prompt or WSL logs.")
+
+        self._set_status("Running SAM3 segmentation...")
+        self._run_worker(_run, on_done=_done)
 
     def _on_sam_audio_model_changed(self, model_size: str) -> None:
         """Set SAM Audio model size."""

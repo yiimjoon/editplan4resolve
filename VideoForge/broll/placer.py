@@ -1,5 +1,9 @@
 from bisect import bisect_right
+import logging
 from typing import Dict, List
+
+
+logger = logging.getLogger(__name__)
 
 
 def _map_time_to_timeline(segment_map: List, time_sec: float) -> float:
@@ -30,6 +34,13 @@ def _map_time_to_timeline_fast(
     return 0.0
 
 
+def _time_in_segment_map(starts: List[float], ends: List[float], time_sec: float) -> bool:
+    idx = bisect_right(starts, float(time_sec)) - 1
+    if idx < 0:
+        return False
+    return float(time_sec) <= ends[idx]
+
+
 def build_broll_clips(
     sentences: List[Dict],
     matches: List[Dict],
@@ -53,12 +64,17 @@ def build_broll_clips(
         if not clip_path:
             continue
 
-        sentence_duration = float(sentence["t1"]) - float(sentence["t0"])
+        t0 = float(sentence["t0"])
+        t1 = float(sentence["t1"])
+        if not _time_in_segment_map(starts, ends, t0) or not _time_in_segment_map(starts, ends, t1):
+            logger.info("Skipping B-roll (out of range)")
+            continue
+        sentence_duration = t1 - t0
         timeline_start = _map_time_to_timeline_fast(
-            starts, ends, timeline_starts, float(sentence["t0"])
+            starts, ends, timeline_starts, t0
         )
         timeline_end = _map_time_to_timeline_fast(
-            starts, ends, timeline_starts, float(sentence["t1"])
+            starts, ends, timeline_starts, t1
         )
         timeline_duration = max(0.0, timeline_end - timeline_start)
         if timeline_duration <= 0:
