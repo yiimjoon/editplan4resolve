@@ -36,6 +36,37 @@ def build_library_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.scan_library_btn.clicked.connect(panel._on_scan_library)
     card_layout.addWidget(panel.scan_library_btn)
 
+    card_layout.addSpacing(6)
+    scope_label = QLabel("Global / Local Library")
+    scope_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
+    card_layout.addWidget(scope_label)
+
+    global_row = QHBoxLayout()
+    global_label = QLabel("Global Library (Shared)")
+    global_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
+    panel.scan_global_library_btn = QPushButton("Scan Global Library")
+    panel.scan_global_library_btn.setCursor(Qt.PointingHandCursor)
+    panel.scan_global_library_btn.clicked.connect(
+        lambda _checked=False: panel._on_scan_library("global")
+    )
+    global_row.addWidget(global_label)
+    global_row.addStretch()
+    global_row.addWidget(panel.scan_global_library_btn)
+    card_layout.addLayout(global_row)
+
+    local_row = QHBoxLayout()
+    local_label = QLabel("Local Library (Project)")
+    local_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
+    panel.scan_local_library_btn = QPushButton("Scan Local Library")
+    panel.scan_local_library_btn.setCursor(Qt.PointingHandCursor)
+    panel.scan_local_library_btn.clicked.connect(
+        lambda _checked=False: panel._on_scan_library("local")
+    )
+    local_row.addWidget(local_label)
+    local_row.addStretch()
+    local_row.addWidget(panel.scan_local_library_btn)
+    card_layout.addLayout(local_row)
+
     panel.library_status = QLabel("Status: Library not scanned")
     panel.library_status.setObjectName("StatusLabel")
     card_layout.addWidget(panel.library_status)

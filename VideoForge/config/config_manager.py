@@ -37,6 +37,7 @@ class ConfigManager:
             except Exception as exc:
                 logger.warning("Failed to migrate legacy config: %s", exc)
         self._load()
+        self._migrate_library_config()
 
     @staticmethod
     def _resolve_config_path() -> Path:
@@ -64,6 +65,36 @@ class ConfigManager:
         else:
             self._config = {}
 
+    def _migrate_library_config(self) -> None:
+        changed = False
+        legacy_path = self._config.pop("library_db_path", None)
+        if legacy_path and not self._config.get("global_library_db_path"):
+            self._config["global_library_db_path"] = legacy_path
+            changed = True
+        if "local_library_db_path" not in self._config:
+            default_local = self._default_local_library_path()
+            if default_local:
+                self._config["local_library_db_path"] = default_local
+                changed = True
+        if changed:
+            self._save()
+
+    def _default_local_library_path(self) -> str:
+        project_name = os.environ.get("VIDEOFORGE_PROJECT_NAME", "").strip() or None
+        if not project_name:
+            try:
+                from VideoForge.integrations.resolve_api import ResolveAPI
+
+                resolve_api = ResolveAPI()
+                project = resolve_api.get_current_project()
+                project_name = project.GetName() if project else None
+            except Exception:
+                project_name = None
+        safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in (project_name or "default"))
+        base = Path(__file__).resolve().parents[1] / "data" / "projects"
+        base.mkdir(parents=True, exist_ok=True)
+        return str(base / f"{safe}_local.db")
+
     def _save(self) -> None:
         """Save config to JSON file."""
         if not self._config_path:
@@ -79,10 +110,14 @@ class ConfigManager:
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a config value."""
+        if key == "library_db_path":
+            key = "global_library_db_path"
         return self._config.get(key, default)
 
     def set(self, key: str, value: Any) -> None:
         """Set a config value and persist to disk."""
+        if key == "library_db_path":
+            key = "global_library_db_path"
         self._config[key] = value
         self._save()
 

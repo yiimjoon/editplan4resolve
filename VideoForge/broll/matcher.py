@@ -8,6 +8,7 @@ import numpy as np
 from VideoForge.adapters.embedding_adapter import encode_text_clip
 from VideoForge.broll.db import LibraryDB
 from VideoForge.broll.keyword_tools import translate_keywords
+from VideoForge.config.config_manager import Config
 
 
 DEFAULT_STOPWORDS = {
@@ -169,7 +170,14 @@ class ScriptIndexSelector:
 
 
 class BrollMatcher:
-    def __init__(self, db: LibraryDB, settings: Dict[str, Dict[str, float]]) -> None:
+    def __init__(self, db: LibraryDB | None, settings: Dict[str, Dict[str, float]]) -> None:
+        if db is None:
+            global_db_path = Config.get("global_library_db_path", "")
+            local_db_path = Config.get("local_library_db_path", "")
+            db = LibraryDB(
+                global_db_path=global_db_path or None,
+                local_db_path=local_db_path or None,
+            )
         self.db = db
         self.settings = settings
         self.query_generator = QueryGenerator(top_n=settings["query"]["top_n_tokens"])

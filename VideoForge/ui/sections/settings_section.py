@@ -377,14 +377,53 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     right_col.addWidget(panel.min_quality_slider)
 
     right_col.addSpacing(12)
-    right_col.addWidget(panel._create_section_title("F. Library"))
+    right_col.addWidget(panel._create_section_title("F. Library Paths"))
 
-    panel.library_path_display = QLineEdit()
-    panel.library_path_display.setReadOnly(True)
-    panel.library_path_display.setPlaceholderText("Library DB path...")
-    if hasattr(panel, "library_path_edit"):
-        panel.library_path_display.setText(panel.library_path_edit.text().strip())
-    add_setting_row(right_col, "Current DB", panel.library_path_display, label_width=120)
+    global_label = QLabel("Global Library (shared):")
+    global_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
+    right_col.addWidget(global_label)
+
+    global_layout = QHBoxLayout()
+    panel.global_library_path_input = QLineEdit()
+    panel.global_library_path_input.setText(str(Config.get("global_library_db_path", "")))
+    panel.global_library_path_input.setPlaceholderText("E:/BrollLibrary/global.db")
+    panel.global_library_path_input.textChanged.connect(panel._on_global_library_path_changed)
+    global_layout.addWidget(panel.global_library_path_input)
+
+    global_browse_btn = QPushButton("Browse...")
+    global_browse_btn.clicked.connect(panel._on_browse_global_library)
+    global_layout.addWidget(global_browse_btn)
+    right_col.addLayout(global_layout)
+
+    local_label = QLabel("Local Library (project-specific):")
+    local_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
+    right_col.addWidget(local_label)
+
+    local_layout = QHBoxLayout()
+    panel.local_library_path_input = QLineEdit()
+    panel.local_library_path_input.setText(str(Config.get("local_library_db_path", "")))
+    panel.local_library_path_input.setPlaceholderText("{project_folder}/local_broll.db")
+    panel.local_library_path_input.textChanged.connect(panel._on_local_library_path_changed)
+    local_layout.addWidget(panel.local_library_path_input)
+
+    local_browse_btn = QPushButton("Browse...")
+    local_browse_btn.clicked.connect(panel._on_browse_local_library)
+    local_layout.addWidget(local_browse_btn)
+    right_col.addLayout(local_layout)
+
+    scope_label = QLabel("Search Scope:")
+    scope_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
+    right_col.addWidget(scope_label)
+
+    panel.library_scope_combo = QComboBox()
+    panel.library_scope_combo.addItems(
+        ["Both (Global + Local)", "Global only", "Local only"]
+    )
+    current_scope = str(Config.get("library_search_scope", "both")).strip().lower()
+    scope_map = {"both": 0, "global": 1, "local": 2}
+    panel.library_scope_combo.setCurrentIndex(scope_map.get(current_scope, 0))
+    panel.library_scope_combo.currentIndexChanged.connect(panel._on_library_scope_changed)
+    right_col.addWidget(panel.library_scope_combo)
 
     panel.open_library_manager_btn = QPushButton("Open Library Manager")
     panel.open_library_manager_btn.setCursor(Qt.PointingHandCursor)

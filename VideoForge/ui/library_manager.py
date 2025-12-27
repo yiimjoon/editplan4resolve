@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
+
+from VideoForge.config.config_manager import Config
 
 try:
     from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QUrl
@@ -15,6 +19,7 @@ try:
     from PySide6.QtWidgets import (
         QApplication,
         QAbstractItemView,
+        QComboBox,
         QFileDialog,
         QHBoxLayout,
         QInputDialog,
@@ -42,6 +47,7 @@ except Exception:
     from PySide2.QtWidgets import (
         QApplication,
         QAbstractItemView,
+        QComboBox,
         QFileDialog,
         QHBoxLayout,
         QInputDialog,
@@ -160,7 +166,9 @@ class LibraryManager(QMainWindow):
         self._sort_column = "created_at"
         self._sort_order = "DESC"
         self._search_text = ""
+        self._format_filter = "all"
         self._stats_dirty = True
+        self._library_type = "Custom"
 
         self._player: Optional[QMediaPlayer] = None
         self._audio_output: Optional[QAudioOutput] = None
@@ -174,6 +182,12 @@ class LibraryManager(QMainWindow):
         file_menu = QMenu("File", self)
         open_action = file_menu.addAction("Open Database")
         open_action.triggered.connect(self._open_database)
+        switch_menu = QMenu("Switch Library", self)
+        switch_global = switch_menu.addAction("Global Library")
+        switch_global.triggered.connect(lambda: self._switch_library("global"))
+        switch_local = switch_menu.addAction("Local Library")
+        switch_local.triggered.connect(lambda: self._switch_library("local"))
+        file_menu.addMenu(switch_menu)
         file_menu.addSeparator()
         exit_action = file_menu.addAction("Exit")
         exit_action.triggered.connect(self.close)
@@ -186,6 +200,8 @@ class LibraryManager(QMainWindow):
 
         self.db_label = QLabel("Database: (not loaded)")
         layout.addWidget(self.db_label)
+        self.library_type_label = QLabel("Library Type: -")
+        layout.addWidget(self.library_type_label)
 
         search_row = QHBoxLayout()
         self.search_input = QLineEdit()
@@ -194,7 +210,13 @@ class LibraryManager(QMainWindow):
         search_button.clicked.connect(self._run_search)
         clear_button = QPushButton("Clear")
         clear_button.clicked.connect(self._clear_search)
+        format_label = QLabel("Format")
+        self.format_filter_combo = QComboBox()
+        self.format_filter_combo.addItems(["All", "mp4", "mov", "png", "jpg"])
+        self.format_filter_combo.currentTextChanged.connect(self._on_format_filter_changed)
         search_row.addWidget(self.search_input)
+        search_row.addWidget(format_label)
+        search_row.addWidget(self.format_filter_combo)
         search_row.addWidget(search_button)
         search_row.addWidget(clear_button)
         layout.addLayout(search_row)
@@ -235,6 +257,11 @@ class LibraryManager(QMainWindow):
         self.play_button.setEnabled(False)
         self.play_button.clicked.connect(self._toggle_play)
         right_layout.addWidget(self.play_button)
+
+        self.add_to_timeline_button = QPushButton("Add to Timeline")
+        self.add_to_timeline_button.setEnabled(False)
+        self.add_to_timeline_button.clicked.connect(self._on_add_to_timeline)
+        right_layout.addWidget(self.add_to_timeline_button)
 
         edit_label = QLabel("Metadata")
         right_layout.addWidget(edit_label)
@@ -285,16 +312,38 @@ class LibraryManager(QMainWindow):
         delete_row.addWidget(self.delete_files_button)
         right_layout.addLayout(delete_row)
 
+        organize_label = QLabel("Organize")
+        right_layout.addWidget(organize_label)
+
+        organize_row = QHBoxLayout()
+        self.move_folder_button = QPushButton("Move to Folder")
+        self.move_folder_button.clicked.connect(self._move_selected_to_folder)
+        organize_row.addWidget(self.move_folder_button)
+        right_layout.addLayout(organize_row)
+
+        auto_row = QHBoxLayout()
+        self.group_date_button = QPushButton("Group by Date")
+        self.group_date_button.clicked.connect(self._group_selected_by_date)
+        self.group_tag_button = QPushButton("Group by Tag")
+        self.group_tag_button.clicked.connect(self._group_selected_by_tag)
+        auto_row.addWidget(self.group_date_button)
+        auto_row.addWidget(self.group_tag_button)
+        right_layout.addLayout(auto_row)
+
         stats_label = QLabel("Stats")
         right_layout.addWidget(stats_label)
+        self.stats_library_label = QLabel("Library Type: -")
         self.stats_count_label = QLabel("Total Clips: -")
         self.stats_size_label = QLabel("Total Size: -")
         self.stats_duration_label = QLabel("Avg Duration: -")
         self.stats_resolution_label = QLabel("Resolutions: -")
+        self.stats_format_label = QLabel("Formats: -")
+        right_layout.addWidget(self.stats_library_label)
         right_layout.addWidget(self.stats_count_label)
         right_layout.addWidget(self.stats_size_label)
         right_layout.addWidget(self.stats_duration_label)
         right_layout.addWidget(self.stats_resolution_label)
+        right_layout.addWidget(self.stats_format_label)
 
         nav_row = QHBoxLayout()
         self.prev_button = QPushButton("Prev")
@@ -336,9 +385,39 @@ class LibraryManager(QMainWindow):
             return
         self.load_database(path)
 
+    def _switch_library(self, library_type: str) -> None:
+        key = "global_library_db_path" if library_type == "global" else "local_library_db_path"
+        path = str(Config.get(key, "") or "").strip()
+        if not path:
+            QMessageBox.information(
+                self,
+                "Library Manager",
+                f"Set {library_type} library DB path in Settings first.",
+            )
+            return
+        self.load_database(path)
+
+    @staticmethod
+    def _normalize_path(path: str) -> str:
+        return os.path.normcase(os.path.abspath(path))
+
+    def _resolve_library_type(self, path: Path) -> str:
+        global_path = str(Config.get("global_library_db_path", "") or "").strip()
+        local_path = str(Config.get("local_library_db_path", "") or "").strip()
+        target = self._normalize_path(str(path))
+        if global_path and self._normalize_path(global_path) == target:
+            return "Global"
+        if local_path and self._normalize_path(local_path) == target:
+            return "Local"
+        return "Custom"
+
     def load_database(self, path: str) -> None:
         self._db_path = Path(path)
+        self._library_type = self._resolve_library_type(self._db_path)
         self.db_label.setText(f"Database: {path}")
+        self.library_type_label.setText(f"Library Type: {self._library_type}")
+        self.stats_library_label.setText(f"Library Type: {self._library_type}")
+        self.setWindowTitle(f"VideoForge Library Manager ({self._library_type})")
         self._load_columns()
         self._page = 0
         self._search_text = ""
@@ -384,28 +463,29 @@ class LibraryManager(QMainWindow):
         order_clause = self._safe_order_clause()
         fts_query = _build_fts_query(self._search_text)
         if fts_query:
+            filter_clause, filter_params = self._format_filter_clause("AND", "clips.path")
             rows_query = (
                 "SELECT clips.* FROM clips_fts "
                 "JOIN clips ON clips_fts.rowid = clips.rowid "
-                "WHERE clips_fts MATCH ? "
+                f"WHERE clips_fts MATCH ? {filter_clause} "
                 f"{order_clause} LIMIT ? OFFSET ?"
             )
             count_query = (
                 "SELECT COUNT(*) FROM clips_fts "
                 "JOIN clips ON clips_fts.rowid = clips.rowid "
-                "WHERE clips_fts MATCH ?"
+                f"WHERE clips_fts MATCH ? {filter_clause}"
             )
-            params = (fts_query, PAGE_SIZE, offset)
+            params = (fts_query, *filter_params, PAGE_SIZE, offset)
+            count_params = (fts_query, *filter_params)
         else:
-            rows_query = f"SELECT * FROM clips {order_clause} LIMIT ? OFFSET ?"
-            count_query = "SELECT COUNT(*) FROM clips"
-            params = (PAGE_SIZE, offset)
+            filter_clause, filter_params = self._format_filter_clause("WHERE", "path")
+            rows_query = f"SELECT * FROM clips {filter_clause} {order_clause} LIMIT ? OFFSET ?"
+            count_query = f"SELECT COUNT(*) FROM clips {filter_clause}"
+            params = (*filter_params, PAGE_SIZE, offset)
+            count_params = tuple(filter_params)
         with self._connect() as conn:
             rows = conn.execute(rows_query, params).fetchall()
-            if fts_query:
-                total = conn.execute(count_query, (fts_query,)).fetchone()[0]
-            else:
-                total = conn.execute(count_query).fetchone()[0]
+            total = conn.execute(count_query, count_params).fetchone()[0]
         self._total_rows = int(total or 0)
         data = []
         for row in rows:
@@ -438,6 +518,22 @@ class LibraryManager(QMainWindow):
         self._search_text = ""
         self._page = 0
         self._load_page()
+
+    def _on_format_filter_changed(self, value: str) -> None:
+        self._format_filter = str(value or "all").strip().lower()
+        if not self._format_filter:
+            self._format_filter = "all"
+        self._page = 0
+        self._load_page()
+
+    def _format_filter_clause(self, prefix: str, path_expr: str) -> tuple[str, List[str]]:
+        if self._format_filter in ("", "all"):
+            return "", []
+        if self._format_filter == "jpg":
+            clause = f"{prefix} (lower({path_expr}) LIKE ? OR lower({path_expr}) LIKE ?)"
+            return clause, ["%.jpg", "%.jpeg"]
+        clause = f"{prefix} lower({path_expr}) LIKE ?"
+        return clause, [f"%.{self._format_filter}"]
 
     def _on_header_clicked(self, index: int) -> None:
         if not self._columns:
@@ -584,6 +680,85 @@ class LibraryManager(QMainWindow):
         self._player.play()
         self._video_playing = True
         self.play_button.setText("Pause")
+
+    def _on_add_to_timeline(self) -> None:
+        row = self._current_row()
+        if not row:
+            QMessageBox.information(self, "Add to Timeline", "No clip selected.")
+            return
+        path = str(row.get("path") or "")
+        if not path or not Path(path).exists():
+            QMessageBox.warning(self, "Add to Timeline", "File path not found.")
+            return
+        try:
+            from VideoForge.integrations.resolve_api import ResolveAPI
+
+            resolve_api = ResolveAPI()
+        except Exception as exc:
+            QMessageBox.information(self, "Add to Timeline", f"Resolve API unavailable: {exc}")
+            return
+        try:
+            timeline = resolve_api.get_current_timeline()
+        except Exception as exc:
+            QMessageBox.warning(self, "Add to Timeline", f"Timeline unavailable: {exc}")
+            return
+
+        start_frame = None
+        base_track = 0
+        primary = resolve_api.get_primary_clip()
+        if primary:
+            start_frame, _ = resolve_api._get_item_range(primary)
+            base_track = int(resolve_api._safe_call(primary, "GetTrackIndex") or 1)
+        if start_frame is None:
+            start_frame = resolve_api._safe_call(timeline, "GetCurrentFrame")
+        if start_frame is None:
+            start_frame = 0
+
+        media_item = resolve_api.import_media_if_needed(path)
+        if media_item is None:
+            QMessageBox.warning(self, "Add to Timeline", "Failed to import media to Resolve.")
+            return
+
+        fps = resolve_api.get_timeline_fps()
+        duration = resolve_api._get_media_item_duration_frames(media_item, fps)
+        if duration <= 0:
+            duration = 1
+        end_frame = int(start_frame) + int(duration) - 1
+        target_track = self._resolve_insert_track_index(
+            resolve_api, int(start_frame), int(end_frame), base_track
+        )
+        inserted = resolve_api.insert_clip_at_position(
+            "video", int(target_track), media_item, int(start_frame)
+        )
+        if inserted is None:
+            QMessageBox.warning(self, "Add to Timeline", "Failed to insert clip into timeline.")
+            return
+        QMessageBox.information(
+            self,
+            "Add to Timeline",
+            f"Inserted clip on V{target_track} at frame {start_frame}.",
+        )
+
+    @staticmethod
+    def _resolve_insert_track_index(
+        resolve_api, start_frame: int, end_frame: int, base_track: int
+    ) -> int:
+        timeline = resolve_api.get_current_timeline()
+        track_count = int(timeline.GetTrackCount("video") or 0)
+        top_index = 0
+        for track_index in range(1, track_count + 1):
+            items = timeline.GetItemListInTrack("video", track_index) or []
+            for item in items:
+                s, e = resolve_api._get_item_range(item)
+                if s is None or e is None:
+                    continue
+                if s <= end_frame and e >= start_frame:
+                    top_index = max(top_index, track_index)
+                    break
+        anchor = max(top_index, int(base_track) if base_track else 0)
+        if anchor <= 0:
+            return 1
+        return anchor + 1
 
     def _stop_player(self) -> None:
         if not self._player:
@@ -770,6 +945,226 @@ class LibraryManager(QMainWindow):
             progress.close()
         QMessageBox.information(self, "Re-index", "Re-indexing complete.")
 
+    def _move_selected_to_folder(self) -> None:
+        rows = self._selected_rows()
+        if not rows:
+            QMessageBox.information(self, "Move to Folder", "No clips selected.")
+            return
+        default_root = self._default_folder_root(rows)
+        base_dir = QFileDialog.getExistingDirectory(
+            self, "Select Base Folder", default_root
+        )
+        if not base_dir:
+            return
+        folder_name, ok = QInputDialog.getText(self, "Create Folder", "Folder name:")
+        if not ok:
+            return
+        folder_name = self._sanitize_folder_name(folder_name)
+        if not folder_name:
+            QMessageBox.information(self, "Move to Folder", "Folder name is empty.")
+            return
+        target_dir = Path(base_dir) / folder_name
+        confirm = QMessageBox.question(
+            self,
+            "Move to Folder",
+            f"Move {len(rows)} clips into:\n{target_dir}",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        self._move_rows_to_folders(rows, lambda _row: target_dir, "Move to Folder")
+
+    def _group_selected_by_date(self) -> None:
+        rows = self._selected_rows()
+        if not rows:
+            QMessageBox.information(self, "Group by Date", "No clips selected.")
+            return
+        default_root = self._default_folder_root(rows)
+        base_dir = QFileDialog.getExistingDirectory(
+            self, "Select Base Folder", default_root
+        )
+        if not base_dir:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Group by Date",
+            f"Group {len(rows)} clips into date folders under:\n{base_dir}",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        def folder_for_row(row):
+            date_key = self._extract_date_key(row)
+            return Path(base_dir) / date_key
+
+        self._move_rows_to_folders(rows, folder_for_row, "Group by Date")
+
+    def _group_selected_by_tag(self) -> None:
+        rows = self._selected_rows()
+        if not rows:
+            QMessageBox.information(self, "Group by Tag", "No clips selected.")
+            return
+        tag_source, ok = QInputDialog.getItem(
+            self,
+            "Group by Tag",
+            "Tag source:",
+            ["Folder Tags", "Vision Tags"],
+            0,
+            False,
+        )
+        if not ok:
+            return
+        field = "folder_tags" if tag_source.startswith("Folder") else "vision_tags"
+        default_root = self._default_folder_root(rows)
+        base_dir = QFileDialog.getExistingDirectory(
+            self, "Select Base Folder", default_root
+        )
+        if not base_dir:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Group by Tag",
+            f"Group {len(rows)} clips into tag folders under:\n{base_dir}",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        def folder_for_row(row):
+            tag = self._extract_tag_key(row, field)
+            return Path(base_dir) / tag
+
+        self._move_rows_to_folders(rows, folder_for_row, "Group by Tag")
+
+    def _default_folder_root(self, rows: List[Dict[str, object]]) -> str:
+        parents = []
+        for row in rows:
+            path = str(row.get("path") or "")
+            if path:
+                parents.append(str(Path(path).parent))
+        if not parents:
+            return ""
+        try:
+            return os.path.commonpath(parents)
+        except Exception:
+            return parents[0]
+
+    @staticmethod
+    def _sanitize_folder_name(name: str) -> str:
+        cleaned = re.sub(r"[^0-9A-Za-z _-]+", "_", str(name or "").strip())
+        return cleaned.strip(" _-")
+
+    @staticmethod
+    def _ensure_unique_path(target: Path) -> Path:
+        if not target.exists():
+            return target
+        stem = target.stem
+        suffix = target.suffix
+        parent = target.parent
+        for idx in range(2, 1000):
+            candidate = parent / f"{stem}_{idx}{suffix}"
+            if not candidate.exists():
+                return candidate
+        return target
+
+    def _extract_date_key(self, row: Dict[str, object]) -> str:
+        created_at = str(row.get("created_at") or "").strip()
+        if created_at:
+            text = created_at.replace("Z", "+00:00")
+            try:
+                dt = datetime.fromisoformat(text)
+                return dt.date().isoformat()
+            except Exception:
+                pass
+        path = str(row.get("path") or "")
+        if path:
+            try:
+                ts = Path(path).stat().st_mtime
+                return datetime.fromtimestamp(ts).date().isoformat()
+            except Exception:
+                pass
+        return "unknown_date"
+
+    def _extract_tag_key(self, row: Dict[str, object], field: str) -> str:
+        raw = str(row.get(field) or "")
+        tokens = [t.strip() for t in re.split(r"[,\s;|]+", raw) if t.strip()]
+        tag = tokens[0] if tokens else "unclassified"
+        sanitized = self._sanitize_folder_name(tag)
+        return sanitized or "unclassified"
+
+    def _move_rows_to_folders(
+        self,
+        rows: List[Dict[str, object]],
+        folder_resolver,
+        title: str,
+    ) -> None:
+        if not self._db_path:
+            QMessageBox.warning(self, title, "Database not loaded.")
+            return
+        progress = QProgressDialog(
+            "Moving clips...", "Cancel", 0, len(rows), self
+        )
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        moved = 0
+        failed: List[str] = []
+        processed = 0
+        try:
+            with self._connect() as conn:
+                for row in rows:
+                    if progress.wasCanceled():
+                        break
+                    processed += 1
+                    clip_id = row.get("id")
+                    src = str(row.get("path") or "")
+                    if not clip_id or not src:
+                        failed.append(src or "<missing>")
+                        progress.setValue(processed)
+                        continue
+                    src_path = Path(src)
+                    if not src_path.exists():
+                        failed.append(src)
+                        progress.setValue(processed)
+                        continue
+                    target_folder = folder_resolver(row)
+                    if not target_folder:
+                        failed.append(src)
+                        progress.setValue(processed)
+                        continue
+                    target_folder = Path(target_folder)
+                    try:
+                        target_folder.mkdir(parents=True, exist_ok=True)
+                    except Exception:
+                        failed.append(src)
+                        progress.setValue(processed)
+                        continue
+                    dest_path = self._ensure_unique_path(target_folder / src_path.name)
+                    try:
+                        shutil.move(str(src_path), str(dest_path))
+                    except Exception:
+                        failed.append(str(src_path))
+                        progress.setValue(processed)
+                        continue
+                    try:
+                        conn.execute(
+                            "UPDATE clips SET path = ? WHERE id = ?",
+                            (str(dest_path), str(clip_id)),
+                        )
+                        moved += 1
+                    except Exception:
+                        failed.append(str(dest_path))
+                    progress.setValue(processed)
+        finally:
+            progress.close()
+        self._stats_dirty = True
+        self._page = 0
+        self._load_page()
+        summary = f"Moved {moved} clips."
+        if failed:
+            summary += f" Failed: {len(failed)}."
+        QMessageBox.information(self, title, summary)
+
     def _prev_page(self) -> None:
         if self._page <= 0:
             return
@@ -805,10 +1200,14 @@ class LibraryManager(QMainWindow):
                 ).fetchall()
                 paths = conn.execute("SELECT path FROM clips").fetchall()
             total_bytes = 0
+            ext_counts: Dict[str, int] = {}
             for row in paths:
                 path = str(row["path"] or "")
                 if not path:
                     continue
+                ext = Path(path).suffix.lower()
+                if ext:
+                    ext_counts[ext] = ext_counts.get(ext, 0) + 1
                 try:
                     total_bytes += Path(path).stat().st_size
                 except Exception:
@@ -828,12 +1227,21 @@ class LibraryManager(QMainWindow):
             else:
                 self.stats_duration_label.setText(f"Avg Duration: {float(avg_duration):.2f}s")
             self.stats_resolution_label.setText(f"Resolutions: {res_text}")
+            format_parts = []
+            for ext, cnt in sorted(ext_counts.items(), key=lambda item: (-item[1], item[0])):
+                label = ext.lstrip(".") or "unknown"
+                format_parts.append(f"{label}: {cnt}")
+                if len(format_parts) >= 6:
+                    break
+            format_text = ", ".join(format_parts) if format_parts else "-"
+            self.stats_format_label.setText(f"Formats: {format_text}")
             self._stats_dirty = False
         except Exception:
             self.stats_count_label.setText("Total Clips: -")
             self.stats_size_label.setText("Total Size: -")
             self.stats_duration_label.setText("Avg Duration: -")
             self.stats_resolution_label.setText("Resolutions: -")
+            self.stats_format_label.setText("Formats: -")
 
     def _refresh_buttons(self) -> None:
         self.prev_button.setEnabled(self._page > 0)
@@ -846,6 +1254,10 @@ class LibraryManager(QMainWindow):
         self.reindex_button.setEnabled(has_selection)
         self.delete_db_button.setEnabled(has_selection)
         self.delete_files_button.setEnabled(has_selection)
+        self.add_to_timeline_button.setEnabled(has_selection)
+        self.move_folder_button.setEnabled(has_selection)
+        self.group_date_button.setEnabled(has_selection)
+        self.group_tag_button.setEnabled(has_selection)
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key_Delete and self.table.hasFocus():

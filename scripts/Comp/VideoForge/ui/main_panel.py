@@ -13,7 +13,7 @@ import yaml
 
 from VideoForge.broll.db import LibraryDB
 from VideoForge.broll.metadata import coerce_metadata_dict
-from VideoForge.broll.indexer import scan_library
+from VideoForge.broll.indexer import LibraryIndexer, scan_library
 from VideoForge.broll.sidecar_tools import generate_comfyui_sidecars, generate_scene_sidecars
 from VideoForge.config.config_manager import Config
 from VideoForge.core.segment_store import SegmentStore
@@ -612,7 +612,10 @@ class VideoForgePanel(QWidget):
     def _set_busy(self, busy: bool) -> None:
         self.progress.setVisible(busy)
         self.analyze_btn.setEnabled(not busy)
-        self.scan_library_btn.setEnabled(not busy)
+        for attr in ("scan_library_btn", "scan_global_library_btn", "scan_local_library_btn"):
+            button = getattr(self, attr, None)
+            if button:
+                button.setEnabled(not busy)
         self.generate_broll_btn.setEnabled(not busy)
         self.match_btn.setEnabled(not busy)
         self.apply_btn.setEnabled(not busy)
@@ -1755,11 +1758,53 @@ class VideoForgePanel(QWidget):
             self.saved_broll_dir = folder
             self.library_path_edit.setText(str(Path(folder) / "library.db"))
 
+    def _on_browse_global_library(self) -> None:
+        logging.getLogger("VideoForge.ui").info("Browse global library clicked")
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Select Global Library Database",
+            "",
+            "SQLite Database (*.db)",
+        )
+        if path:
+            Config.set("global_library_db_path", path)
+            if hasattr(self, "global_library_path_input"):
+                self.global_library_path_input.setText(path)
+
+    def _on_browse_local_library(self) -> None:
+        logging.getLogger("VideoForge.ui").info("Browse local library clicked")
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Select Local Library Database",
+            "",
+            "SQLite Database (*.db)",
+        )
+        if path:
+            Config.set("local_library_db_path", path)
+            if hasattr(self, "local_library_path_input"):
+                self.local_library_path_input.setText(path)
+
+    def _on_library_scope_changed(self, index: int) -> None:
+        scope_map = {0: "both", 1: "global", 2: "local"}
+        scope = scope_map.get(int(index), "both")
+        Config.set("library_search_scope", scope)
+        logging.getLogger("VideoForge.ui").info("Library search scope: %s", scope)
+
+    def _on_global_library_path_changed(self, value: str) -> None:
+        Config.set("global_library_db_path", str(value or "").strip())
+
+    def _on_local_library_path_changed(self, value: str) -> None:
+        Config.set("local_library_db_path", str(value or "").strip())
+
     def _on_library_path_changed(self, value: str) -> None:
         if hasattr(self, "library_path_display"):
             self.library_path_display.setText(str(value or "").strip())
 
-    def _on_scan_library(self) -> None:
+    def _on_scan_library(self, library_type: str | None = None) -> None:
+        if library_type in ("global", "local"):
+            self._on_scan_scoped_library(library_type)
+            return
+
         logging.getLogger("VideoForge.ui").info("Scan library clicked")
         default_dir = (
             self.saved_broll_dir
@@ -1795,13 +1840,50 @@ class VideoForgePanel(QWidget):
         self._set_status("Scanning library...")
         self._run_worker(_scan, on_done=_done)
 
+    def _on_scan_scoped_library(self, library_type: str) -> None:
+        logging.getLogger("VideoForge.ui").info("Scan %s library clicked", library_type)
+        db_key = "global_library_db_path" if library_type == "global" else "local_library_db_path"
+        db_path = str(Config.get(db_key, "") or "").strip()
+        if not db_path:
+            message = f"Set {library_type} library DB path in Settings first."
+            self._set_status(message)
+            QMessageBox.information(self, "Library Scan", message)
+            return
+        default_dir = (
+            self.saved_broll_dir
+            if self.saved_broll_dir and Path(self.saved_broll_dir).exists()
+            else ""
+        )
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            f"Select {library_type.title()} Library Folder",
+            default_dir,
+        )
+        if not folder:
+            return
+
+        def _scan():
+            indexer = LibraryIndexer()
+            return indexer.index_library(Path(folder), library_type=library_type)
+
+        def _done(result):
+            label = "Global" if library_type == "global" else "Local"
+            self.library_status.setText(f"Status: Indexed {result} clips ({label})")
+            self.library_status.setStyleSheet(f"color: {COLORS['success']}; margin-top: 6px;")
+            self._set_status(f"{label} library scan complete")
+
+        self._set_status(f"Scanning {library_type} library...")
+        self._run_worker(_scan, on_done=_done)
+
     def _on_open_library_manager(self) -> None:
         try:
             from VideoForge.ui.library_manager import LibraryManager
         except Exception as exc:
             self._set_status(f"Library Manager unavailable: {exc}")
             return
-        db_path = self.library_path_edit.text().strip()
+        global_path = str(Config.get("global_library_db_path") or "").strip()
+        local_path = str(Config.get("local_library_db_path") or "").strip()
+        db_path = global_path or local_path or self.library_path_edit.text().strip()
         self._library_manager_window = LibraryManager.show_as_dialog(
             self,
             db_path=db_path if db_path else None,

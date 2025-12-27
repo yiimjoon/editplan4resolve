@@ -3,11 +3,12 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Callable, Dict, Iterable, List, Optional
 
 from VideoForge.adapters.embedding_adapter import encode_image_clip, encode_video_clip
 from VideoForge.broll.db import LibraryDB
 from VideoForge.broll.metadata import coerce_metadata_dict
+from VideoForge.config.config_manager import Config
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,46 @@ try:
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
+
+
+class LibraryIndexer:
+    def __init__(self, clip_model=None) -> None:
+        self.clip_model = clip_model
+        global_db_path = str(Config.get("global_library_db_path", "") or "").strip()
+        local_db_path = str(Config.get("local_library_db_path", "") or "").strip()
+        self.db = LibraryDB(
+            global_db_path=global_db_path or None,
+            local_db_path=local_db_path or None,
+        )
+
+    def index_library(
+        self,
+        library_path: Path,
+        library_type: str = "global",
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> int:
+        if library_type not in ("global", "local"):
+            raise ValueError(f"Invalid library_type: {library_type}")
+        target_db_path = (
+            Config.get("global_library_db_path")
+            if library_type == "global"
+            else Config.get("local_library_db_path")
+        )
+        target_db_path = str(target_db_path or "").strip()
+        if not target_db_path:
+            raise ValueError(f"{library_type} library DB path not configured")
+        logger.info(
+            "Indexing %s library: %s -> %s",
+            library_type,
+            library_path,
+            target_db_path,
+        )
+        return scan_library(
+            str(library_path),
+            self.db,
+            target_db=library_type,
+            progress_callback=progress_callback,
+        )
 
 
 def smart_frame_sampling(
@@ -314,7 +355,12 @@ def _convert_maker_metadata(meta: Dict) -> Dict[str, str]:
     }
 
 
-def scan_library(library_dir: str, db: LibraryDB) -> int:
+def scan_library(
+    library_dir: str,
+    db: LibraryDB,
+    target_db: str = "auto",
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> int:
     library_path = Path(library_dir)
     if not library_path.exists():
         raise FileNotFoundError(library_dir)
@@ -329,8 +375,6 @@ def scan_library(library_dir: str, db: LibraryDB) -> int:
             total_images += 1
 
     try:
-        from VideoForge.config.config_manager import Config
-
         use_scene_detection = Config.get("use_scene_detection")
         if use_scene_detection is None:
             use_scene_detection = True
@@ -348,6 +392,7 @@ def scan_library(library_dir: str, db: LibraryDB) -> int:
         )
 
     count = 0
+    total_items = total_videos + total_images
     for path in library_path.rglob("*"):
         suffix = path.suffix.lower()
         if suffix not in VIDEO_EXTS and suffix not in IMAGE_EXTS:
@@ -400,8 +445,6 @@ def scan_library(library_dir: str, db: LibraryDB) -> int:
 
         if suffix in VIDEO_EXTS:
             try:
-                from VideoForge.config.config_manager import Config
-
                 use_sam3 = Config.get("use_sam3_tagging", False)
             except Exception:
                 use_sam3 = False
@@ -411,6 +454,8 @@ def scan_library(library_dir: str, db: LibraryDB) -> int:
                     "SAM3 auto-tagging is disabled in the indexing pipeline. Use the SAM3 tool in Misc tab."
                 )
 
-        db.upsert_clip(metadata, embedding)
+        db.upsert_clip(metadata, embedding, target_db=target_db)
         count += 1
+        if progress_callback:
+            progress_callback(count, total_items)
     return count
