@@ -75,7 +75,7 @@ COLORS = {
     "warning": "#FFA500",
 }
 
-VERSION = "v1.8.0"
+VERSION = "v1.10.0"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
