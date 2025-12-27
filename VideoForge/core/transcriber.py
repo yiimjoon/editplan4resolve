@@ -100,7 +100,6 @@ def transcribe_segments(
         source_path = video_path
         offset = 0.0
         temp_path = None
-        sam_audio_temp: List[str] = []
         if clip_range:
             duration = _get_media_duration(video_path)
             start, end = clip_range
@@ -122,40 +121,6 @@ def transcribe_segments(
                     float(end),
                 )
 
-        use_sam_audio = False
-        try:
-            from VideoForge.config.config_manager import Config
-
-            use_sam_audio = bool(Config.get("use_sam_audio_preprocessing", False))
-        except Exception:
-            use_sam_audio = False
-
-        if use_sam_audio:
-            audio_input = source_path
-            if not str(audio_input).lower().endswith(".wav"):
-                try:
-                    extracted_audio = _extract_audio_full(str(audio_input))
-                    sam_audio_temp.append(extracted_audio)
-                    audio_input = extracted_audio
-                except Exception as exc:
-                    logger.warning("SAM Audio extraction failed, using original audio: %s", exc)
-                    audio_input = source_path
-            try:
-                from VideoForge.adapters.sam_audio_adapter import SAMAudioAdapter
-
-                sam_audio = SAMAudioAdapter()
-                preprocessed = sam_audio.preprocess_audio(Path(str(audio_input)))
-                if preprocessed and preprocessed.exists():
-                    source_path = str(preprocessed)
-                    if str(preprocessed) != str(audio_input):
-                        sam_audio_temp.append(str(preprocessed))
-                    logger.info("SAM Audio preprocessed: %s", preprocessed)
-                else:
-                    logger.warning("SAM Audio preprocessing failed, using original audio")
-                    source_path = str(audio_input)
-            except Exception as exc:
-                logger.warning("SAM Audio preprocessing error: %s", exc)
-                source_path = str(audio_input)
         results, _info = model.transcribe(source_path, **transcribe_kwargs)
         sentences: List[Dict[str, float]] = []
         segment_count = 0
@@ -204,7 +169,6 @@ def transcribe_segments(
         cleanup_paths = []
         if temp_path:
             cleanup_paths.append(temp_path)
-        cleanup_paths.extend(sam_audio_temp)
         for path in set(cleanup_paths):
             try:
                 os.unlink(path)

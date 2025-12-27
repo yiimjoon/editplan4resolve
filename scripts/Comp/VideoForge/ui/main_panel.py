@@ -889,20 +889,82 @@ class VideoForgePanel(QWidget):
             Config.set("sam3_model_size", value)
             logging.getLogger("VideoForge.ui").info("SAM3 Model Size: %s", value)
 
-    def _on_sam_audio_preprocessing_changed(self, state: int) -> None:
-        """Toggle SAM Audio preprocessing."""
-        enabled = bool(state)
-        Config.set("use_sam_audio_preprocessing", enabled)
-        logging.getLogger("VideoForge.ui").info(
-            "SAM Audio Preprocessing: %s", "enabled" if enabled else "disabled"
-        )
-
     def _on_sam_audio_model_changed(self, model_size: str) -> None:
         """Set SAM Audio model size."""
         value = str(model_size).strip()
         if value:
             Config.set("sam_audio_model_size", value)
             logging.getLogger("VideoForge.ui").info("SAM Audio Model Size: %s", value)
+
+    def _on_sam_audio_prompt_changed(self, value: str) -> None:
+        Config.set("sam_audio_prompt", value)
+
+    def _on_sam_audio_input_changed(self, value: str) -> None:
+        Config.set("sam_audio_input_path", value)
+
+    def _on_sam_audio_output_changed(self, value: str) -> None:
+        Config.set("sam_audio_output_dir", value)
+
+    def _on_sam_audio_input_browse(self) -> None:
+        start_dir = str(Config.get("sam_audio_input_path") or "")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Audio/Video File",
+            start_dir,
+            "Media Files (*.wav *.mp3 *.m4a *.flac *.aac *.mp4 *.mov *.mkv);;All Files (*)",
+        )
+        if not file_path:
+            return
+        self.sam_audio_input_edit.setText(file_path)
+        Config.set("sam_audio_input_path", file_path)
+
+    def _on_sam_audio_output_browse(self) -> None:
+        start_dir = str(Config.get("sam_audio_output_dir") or "")
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select Output Folder",
+            start_dir,
+        )
+        if not folder:
+            return
+        self.sam_audio_output_edit.setText(folder)
+        Config.set("sam_audio_output_dir", folder)
+
+    def _on_sam_audio_run_clicked(self) -> None:
+        prompt = (self.sam_audio_prompt_edit.text() or "").strip()
+        if not prompt:
+            self._set_status("Enter an isolation prompt first.")
+            return
+        source_path = (self.sam_audio_input_edit.text() or "").strip()
+        if not source_path:
+            self._set_status("Select an audio/video file.")
+            return
+        source = Path(source_path)
+        if not source.exists():
+            self._set_status(f"Input file not found: {source.name}")
+            return
+
+        output_dir = (self.sam_audio_output_edit.text() or "").strip()
+        output_path = None
+        if output_dir:
+            output_root = Path(output_dir)
+            output_root.mkdir(parents=True, exist_ok=True)
+            output_path = output_root / f"{source.stem}_isolated.wav"
+
+        def _run():
+            from VideoForge.adapters.sam_audio_adapter import SAMAudioAdapter
+
+            adapter = SAMAudioAdapter()
+            return adapter.separate_audio(source, prompt=prompt, output_path=output_path)
+
+        def _done(result):
+            if result:
+                self._set_status(f"SAM Audio saved: {Path(result).name}")
+            else:
+                self._set_status("SAM Audio failed. Check prompt or WSL logs.")
+
+        self._set_status("Running SAM Audio isolation...")
+        self._run_worker(_run, on_done=_done)
 
     def _on_wsl_distro_changed(self, text: str) -> None:
         """Update WSL distro name."""
@@ -1525,7 +1587,12 @@ class VideoForgePanel(QWidget):
             analyze_thread.daemon = True
             analyze_thread.start()
 
-            timeout = 600
+            try:
+                from VideoForge.config.config_manager import Config
+
+                timeout = int(Config.get("analyze_timeout_sec") or 1200)
+            except Exception:
+                timeout = 1200
             elapsed = 0
             while analyze_thread.is_alive() and elapsed < timeout:
                 analyze_thread.join(timeout=5)

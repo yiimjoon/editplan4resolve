@@ -392,7 +392,7 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     right_col.addWidget(panel.open_library_manager_btn)
 
     right_col.addSpacing(12)
-    right_col.addWidget(panel._create_section_title("G. Advanced AI (SAM Models)"))
+    right_col.addWidget(panel._create_section_title("G. Advanced AI (SAM3)"))
 
     panel.sam3_checkbox = QCheckBox("Enable SAM3 Auto-Tagging (WSL)")
     panel.sam3_checkbox.setChecked(Config.get("use_sam3_tagging", False))
@@ -416,37 +416,6 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     )
     panel.sam3_model_combo.currentTextChanged.connect(panel._on_sam3_model_changed)
     right_col.addWidget(panel.sam3_model_combo)
-
-    right_col.addSpacing(8)
-
-    panel.sam_audio_checkbox = QCheckBox("Enable SAM Audio Preprocessing (WSL)")
-    panel.sam_audio_checkbox.setChecked(
-        Config.get("use_sam_audio_preprocessing", False)
-    )
-    panel.sam_audio_checkbox.setToolTip(
-        "Remove background noise before Whisper transcription\n"
-        "Improves accuracy for noisy audio"
-    )
-    panel.sam_audio_checkbox.stateChanged.connect(
-        panel._on_sam_audio_preprocessing_changed
-    )
-    right_col.addWidget(panel.sam_audio_checkbox)
-
-    sam_audio_size_label = QLabel("SAM Audio Model Size:")
-    sam_audio_size_label.setStyleSheet(
-        f"color: {panel.colors['text_dim']}; font-size: 11px;"
-    )
-    right_col.addWidget(sam_audio_size_label)
-
-    panel.sam_audio_model_combo = QComboBox()
-    panel.sam_audio_model_combo.addItems(["base", "large"])
-    panel.sam_audio_model_combo.setCurrentText(
-        str(Config.get("sam_audio_model_size", "large"))
-    )
-    panel.sam_audio_model_combo.currentTextChanged.connect(
-        panel._on_sam_audio_model_changed
-    )
-    right_col.addWidget(panel.sam_audio_model_combo)
 
     right_col.addSpacing(12)
 
@@ -484,7 +453,75 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     right_col.addLayout(venv_layout)
 
     right_col.addSpacing(12)
-    right_col.addWidget(panel._create_section_title("H. Hybrid Search Weights"))
+    right_col.addWidget(panel._create_section_title("H. Audio Tools (SAM Audio)"))
+
+    sam_audio_note = QLabel("Isolate audio by prompt (does not affect transcription).")
+    sam_audio_note.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 10px;")
+    right_col.addWidget(sam_audio_note)
+
+    prompt_label = QLabel("Isolation Prompt:")
+    prompt_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
+    right_col.addWidget(prompt_label)
+
+    panel.sam_audio_prompt_edit = QLineEdit()
+    panel.sam_audio_prompt_edit.setPlaceholderText("e.g. voice, applause, music")
+    panel.sam_audio_prompt_edit.setText(str(Config.get("sam_audio_prompt") or ""))
+    panel.sam_audio_prompt_edit.textChanged.connect(panel._on_sam_audio_prompt_changed)
+    right_col.addWidget(panel.sam_audio_prompt_edit)
+
+    input_label = QLabel("Input File:")
+    input_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
+    right_col.addWidget(input_label)
+
+    panel.sam_audio_input_edit = QLineEdit()
+    panel.sam_audio_input_edit.setPlaceholderText("Select audio/video file...")
+    panel.sam_audio_input_edit.setText(str(Config.get("sam_audio_input_path") or ""))
+    panel.sam_audio_input_edit.textChanged.connect(panel._on_sam_audio_input_changed)
+    panel.sam_audio_input_browse_btn = QPushButton("Browse")
+    panel.sam_audio_input_browse_btn.setFixedWidth(60)
+    panel.sam_audio_input_browse_btn.clicked.connect(panel._on_sam_audio_input_browse)
+    sam_audio_input_row = QHBoxLayout()
+    sam_audio_input_row.addWidget(panel.sam_audio_input_edit)
+    sam_audio_input_row.addWidget(panel.sam_audio_input_browse_btn)
+    right_col.addLayout(sam_audio_input_row)
+
+    output_label = QLabel("Output Folder (optional):")
+    output_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
+    right_col.addWidget(output_label)
+
+    panel.sam_audio_output_edit = QLineEdit()
+    panel.sam_audio_output_edit.setPlaceholderText("Use input folder if empty")
+    panel.sam_audio_output_edit.setText(str(Config.get("sam_audio_output_dir") or ""))
+    panel.sam_audio_output_edit.textChanged.connect(panel._on_sam_audio_output_changed)
+    panel.sam_audio_output_browse_btn = QPushButton("Browse")
+    panel.sam_audio_output_browse_btn.setFixedWidth(60)
+    panel.sam_audio_output_browse_btn.clicked.connect(panel._on_sam_audio_output_browse)
+    sam_audio_output_row = QHBoxLayout()
+    sam_audio_output_row.addWidget(panel.sam_audio_output_edit)
+    sam_audio_output_row.addWidget(panel.sam_audio_output_browse_btn)
+    right_col.addLayout(sam_audio_output_row)
+
+    sam_audio_size_label = QLabel("SAM Audio Model Size:")
+    sam_audio_size_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
+    right_col.addWidget(sam_audio_size_label)
+
+    panel.sam_audio_model_combo = QComboBox()
+    panel.sam_audio_model_combo.addItems(["base", "large"])
+    panel.sam_audio_model_combo.setCurrentText(
+        str(Config.get("sam_audio_model_size", "large"))
+    )
+    panel.sam_audio_model_combo.currentTextChanged.connect(
+        panel._on_sam_audio_model_changed
+    )
+    right_col.addWidget(panel.sam_audio_model_combo)
+
+    panel.sam_audio_run_btn = QPushButton("Extract SAM Audio")
+    panel.sam_audio_run_btn.setCursor(Qt.PointingHandCursor)
+    panel.sam_audio_run_btn.clicked.connect(panel._on_sam_audio_run_clicked)
+    right_col.addWidget(panel.sam_audio_run_btn)
+
+    right_col.addSpacing(12)
+    right_col.addWidget(panel._create_section_title("I. Hybrid Search Weights"))
 
     def add_weight_slider(layout, label_attr, slider_attr, label_text, min_val, max_val, current_val, callback):
         lbl = QLabel(label_text)
@@ -510,11 +547,11 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
                       panel.settings["broll"]["visual_similarity_threshold"] * 100, panel._on_visual_threshold_changed)
 
     right_col.addSpacing(12)
-    right_col.addWidget(panel._create_section_title("I. Maintenance"))
+    right_col.addWidget(panel._create_section_title("J. Maintenance"))
 
     # --- Maintenance & Misc ---
     right_col.addSpacing(12)
-    right_col.addWidget(panel._create_section_title("J. Miscellaneous"))
+    right_col.addWidget(panel._create_section_title("K. Miscellaneous"))
     
     srt_row = QHBoxLayout()
     panel.srt_path_edit = QLineEdit()
