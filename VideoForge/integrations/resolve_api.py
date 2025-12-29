@@ -122,6 +122,116 @@ class ResolveAPI:
                     continue
         return selected
 
+    def get_selected_items(self, track_types: Optional[List[str]] = None) -> List[Any]:
+        """Return selected timeline items across track types."""
+        self._ensure_main_thread("get_selected_items")
+        timeline = self.get_current_timeline()
+        getter = getattr(timeline, "GetSelectedItems", None)
+        logger.info("Selection debug: GetSelectedItems callable=%s", callable(getter))
+        if callable(getter):
+            try:
+                raw = getter()
+                selected = self._flatten_selected_items(raw)
+                logger.info(
+                    "Selection debug: GetSelectedItems() returned %d item(s) (type=%s)",
+                    len(selected),
+                    type(raw).__name__,
+                )
+                if selected:
+                    return selected
+            except Exception:
+                logger.info("Selection debug: GetSelectedItems() failed", exc_info=True)
+                pass
+            if track_types:
+                for track_type in track_types:
+                    try:
+                        raw = getter(track_type)
+                        selected = self._flatten_selected_items(raw)
+                        logger.info(
+                            "Selection debug: GetSelectedItems(%s) returned %d item(s) (type=%s)",
+                            track_type,
+                            len(selected),
+                            type(raw).__name__,
+                        )
+                        if selected:
+                            return selected
+                    except Exception:
+                        logger.info(
+                            "Selection debug: GetSelectedItems(%s) failed",
+                            track_type,
+                            exc_info=True,
+                        )
+                        continue
+        selected: List[Any] = []
+        track_types = track_types or ["video", "audio"]
+        for track_type in track_types:
+            track_count = int(timeline.GetTrackCount(track_type) or 0)
+            logger.info(
+                "Selection debug: scanning track_type=%s tracks=%d", track_type, track_count
+            )
+            for track_index in range(1, track_count + 1):
+                items = timeline.GetItemListInTrack(track_type, track_index) or []
+                for item in items:
+                    try:
+                        if item.GetSelected():
+                            selected.append(item)
+                    except Exception:
+                        continue
+        logger.info("Selection debug: fallback selected=%d item(s)", len(selected))
+        return selected
+
+    def get_items_at_playhead(self, track_types: Optional[List[str]] = None) -> List[Any]:
+        """Return timeline items that overlap the playhead frame."""
+        self._ensure_main_thread("get_items_at_playhead")
+        timeline = self.get_current_timeline()
+        frame = self._get_playhead_frame(timeline)
+        if frame is None:
+            return []
+        items_at_frame: List[Any] = []
+        track_types = track_types or ["video"]
+        for track_type in track_types:
+            track_count = int(timeline.GetTrackCount(track_type) or 0)
+            for track_index in range(1, track_count + 1):
+                items = timeline.GetItemListInTrack(track_type, track_index) or []
+                for item in items:
+                    start, end = self._get_item_range(item)
+                    if start is None or end is None:
+                        continue
+                    if start <= frame <= end:
+                        items_at_frame.append(item)
+        return items_at_frame
+
+    @staticmethod
+    def _flatten_selected_items(raw: Any) -> List[Any]:
+        items: List[Any] = []
+        if raw is None:
+            return items
+        if isinstance(raw, dict):
+            for value in raw.values():
+                items.extend(ResolveAPI._flatten_selected_items(value))
+            return items
+        if isinstance(raw, list):
+            for value in raw:
+                items.extend(ResolveAPI._flatten_selected_items(value))
+            return items
+        items.append(raw)
+        return items
+
+    def get_item_start_frame(self, item: Any) -> Optional[int]:
+        """Return timeline start frame for a clip."""
+        self._ensure_main_thread("get_item_start_frame")
+        start, _end = self._get_item_range(item)
+        return int(start) if start is not None else None
+
+    def get_selected_clip_paths(self) -> List[str]:
+        """Return file paths for selected timeline clips."""
+        paths: List[str] = []
+        for item in self.get_selected_items():
+            path = self.get_item_media_path(item)
+            if path:
+                paths.append(path)
+        return paths
+
     def get_primary_clip(self) -> Optional[Any]:
         """Return selected clip or fallback to the clip under the playhead."""
         self._ensure_main_thread("get_primary_clip")
@@ -512,6 +622,22 @@ class ResolveAPI:
         return best
 
     def _timeline_item_media_path(self, item: Any) -> Optional[str]:
+        prop = getattr(item, "GetClipProperty", None)
+        if callable(prop):
+            try:
+                value = prop("File Path")
+                if value:
+                    return value
+            except Exception:
+                pass
+            try:
+                props = prop()
+                if isinstance(props, dict):
+                    path = props.get("File Path") or props.get("FilePath")
+                    if path:
+                        return path
+            except Exception:
+                pass
         pool_item = getattr(item, "GetMediaPoolItem", None)
         if callable(pool_item):
             try:
@@ -525,6 +651,10 @@ class ResolveAPI:
             except Exception:
                 return None
         return None
+
+    def get_item_media_path(self, item: Any) -> Optional[str]:
+        """Return media file path for a timeline item."""
+        return self._timeline_item_media_path(item)
 
     def _find_latest_item_by_media_path(
         self, track_type: str, track_index: int, path: str

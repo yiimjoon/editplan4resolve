@@ -2198,9 +2198,31 @@ class VideoForgePanel(QWidget):
             "Video Files (*.mp4 *.mov *.mxf *.avi)",
         )
         if path:
-            self.sync_ref_path = path
-            self.sync_ref_label.setText(Path(path).name)
+            self._set_sync_reference(path, None)
             logging.getLogger("VideoForge.ui").info("Reference video: %s", path)
+
+    def _set_sync_reference(self, path: str, start_frame: int | None) -> None:
+        self.sync_ref_path = path
+        self.sync_ref_label.setText(Path(path).name)
+        self.sync_insert_start_frame = start_frame
+
+    def _add_sync_targets_from_paths(self, paths: list[str]) -> int:
+        existing = {
+            self.sync_target_list.item(i).text()
+            for i in range(self.sync_target_list.count())
+        }
+        added = 0
+        for path in paths:
+            if not path:
+                continue
+            if path == getattr(self, "sync_ref_path", None):
+                continue
+            if path in existing:
+                continue
+            self.sync_target_list.addItem(path)
+            existing.add(path)
+            added += 1
+        return added
 
     def _on_add_sync_targets(self) -> None:
         from VideoForge.ui.qt_compat import QFileDialog
@@ -2211,13 +2233,105 @@ class VideoForgePanel(QWidget):
             "",
             "Video Files (*.mp4 *.mov *.mxf *.avi)",
         )
-        for path in paths:
-            self.sync_target_list.addItem(path)
-        if paths:
-            logging.getLogger("VideoForge.ui").info("Added %d target videos", len(paths))
+        if not paths:
+            return
+        if not getattr(self, "sync_ref_path", None):
+            self._set_sync_reference(paths[0], None)
+            added = self._add_sync_targets_from_paths(list(paths[1:]))
+            self._set_status(
+                f"Reference set, added {added} target(s)."
+                if added
+                else "Reference set. Add target videos."
+            )
+        else:
+            added = self._add_sync_targets_from_paths(list(paths))
+            self._set_status(f"Added {added} target(s)." if added else "No new targets added.")
+        logging.getLogger("VideoForge.ui").info("Added %d target videos", len(paths))
+
+    def _on_use_sync_selection(self) -> None:
+        ui_logger = logging.getLogger("VideoForge.ui")
+        try:
+            selected_items = self.bridge.resolve_api.get_selected_items()
+        except Exception as exc:
+            self._set_status(f"Failed to read timeline selection: {exc}")
+            return
+        ui_logger.info("Sync selection: selected items=%d", len(selected_items))
+        source = "selection"
+        if not selected_items:
+            selected_items = self.bridge.resolve_api.get_items_at_playhead()
+            ui_logger.info("Sync selection: playhead items=%d", len(selected_items))
+            source = "playhead"
+        if not selected_items:
+            self._set_status(
+                "Select clips on the timeline or place the playhead over them."
+            )
+            return
+        path_map: dict[str, int | None] = {}
+        for item in selected_items:
+            path = self.bridge.resolve_api.get_item_media_path(item)
+            if not path:
+                ui_logger.info(
+                    "Sync selection: item missing path (type=%s)",
+                    type(item).__name__,
+                )
+                continue
+            start = self.bridge.resolve_api.get_item_start_frame(item)
+            if path not in path_map or (
+                start is not None and (path_map[path] is None or start < path_map[path])
+            ):
+                path_map[path] = start
+        ui_logger.info("Sync selection: path_map entries=%d", len(path_map))
+        if not path_map:
+            self._set_status("Selected clips have no file paths.")
+            return
+        items = sorted(
+            path_map.items(),
+            key=lambda entry: entry[1] if entry[1] is not None else 0,
+        )
+        ref_path = None
+        ref_start = None
+        primary_item = self.bridge.resolve_api.get_primary_clip()
+        if primary_item is not None:
+            primary_path = self.bridge.resolve_api.get_item_media_path(primary_item)
+            if primary_path and primary_path in path_map:
+                ref_path = primary_path
+                ref_start = path_map.get(primary_path)
+        if not getattr(self, "sync_ref_path", None):
+            if ref_path is None:
+                ref_path, ref_start = items[0]
+            self._set_sync_reference(ref_path, ref_start)
+            targets = [path for path, _ in items if path != ref_path]
+            added = self._add_sync_targets_from_paths(targets)
+            if targets:
+                self._set_status(
+                    f"Reference set from {source}, added {added} target(s)."
+                )
+            else:
+                self._set_status("Reference set. Add target videos.")
+        else:
+            targets = [path for path, _ in items]
+            added = self._add_sync_targets_from_paths(targets)
+            self._set_status(
+                f"Added {added} target(s)." if added else "No new targets added."
+            )
 
     def _on_audio_sync_normalize_changed(self, state: int) -> None:
         Config.set("audio_sync_normalize", state == Qt.Checked)
+
+    def _on_clear_sync_targets(self) -> None:
+        selected = self.sync_target_list.selectedItems()
+        if selected:
+            for item in selected:
+                row = self.sync_target_list.row(item)
+                if row >= 0:
+                    self.sync_target_list.takeItem(row)
+            self._set_status(f"Removed {len(selected)} target(s).")
+            return
+        self.sync_target_list.clear()
+        self.sync_ref_label.setText("No file selected")
+        self.sync_ref_path = None
+        self.sync_insert_start_frame = None
+        self._set_status("Cleared sync reference and targets.")
 
     def _on_auto_sync_clicked(self) -> None:
         if not hasattr(self, "sync_ref_path"):
@@ -2318,10 +2432,11 @@ class VideoForgePanel(QWidget):
                 from VideoForge.integrations.resolve_api import ResolveAPI
 
                 api = ResolveAPI()
+                start_frame = int(getattr(self, "sync_insert_start_frame", 0) or 0)
                 success = api.add_synced_clips_to_timeline(
                     reference_path=self.sync_ref_path,
                     sync_results=results,
-                    start_frame=0,
+                    start_frame=start_frame,
                 )
                 if success:
                     self.sync_status.setText(

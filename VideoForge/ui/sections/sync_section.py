@@ -44,15 +44,19 @@ def build_sync_section(panel, parent_layout: QVBoxLayout) -> None:
 
     panel.sync_target_list = QListWidget()
     panel.sync_target_list.setMaximumHeight(100)
+    panel.sync_target_list.setSelectionMode(QListWidget.ExtendedSelection)
     panel.sync_target_list.setStyleSheet("font-size: 10px;")
     card_layout.addWidget(panel.sync_target_list)
 
     tgt_btn_layout = QHBoxLayout()
     panel.sync_add_btn = QPushButton("Add Files...")
     panel.sync_add_btn.clicked.connect(panel._on_add_sync_targets)
+    panel.sync_use_selected_btn = QPushButton("Use Timeline Selection")
+    panel.sync_use_selected_btn.clicked.connect(panel._on_use_sync_selection)
     panel.sync_clear_btn = QPushButton("Clear")
-    panel.sync_clear_btn.clicked.connect(panel.sync_target_list.clear)
+    panel.sync_clear_btn.clicked.connect(panel._on_clear_sync_targets)
     tgt_btn_layout.addWidget(panel.sync_add_btn)
+    tgt_btn_layout.addWidget(panel.sync_use_selected_btn)
     tgt_btn_layout.addWidget(panel.sync_clear_btn)
     card_layout.addLayout(tgt_btn_layout)
 
