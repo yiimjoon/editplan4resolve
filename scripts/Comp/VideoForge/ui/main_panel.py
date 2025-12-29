@@ -2181,7 +2181,20 @@ class VideoForgePanel(QWidget):
             )
             return
 
-        mode = "same" if self.sync_mode_combo.currentIndex() == 0 else "inverse"
+        mode_map = {0: "same", 1: "inverse", 2: "voice"}
+        mode = mode_map.get(self.sync_mode_combo.currentIndex(), "same")
+        if mode == "voice":
+            from VideoForge.adapters.voice_detector import VoiceDetector
+
+            if not VoiceDetector.is_available():
+                self.sync_status.setText(
+                    "Error: Voice Pattern requires PyTorch (torch)."
+                )
+                self.sync_status.setStyleSheet(
+                    f"color: {COLORS['error']}; font-size: 11px;"
+                )
+                self._set_status("Voice Pattern requires PyTorch.")
+                return
 
         def _sync():
             from VideoForge.core.sync_matcher import SyncMatcher
@@ -2194,6 +2207,19 @@ class VideoForgePanel(QWidget):
             )
 
         def _done(results):
+            errors = [
+                result.get("error")
+                for result in results.values()
+                if result.get("error")
+            ]
+            if errors:
+                self.sync_status.setText(f"Error: {errors[0]}")
+                self.sync_status.setStyleSheet(
+                    f"color: {COLORS['error']}; font-size: 11px;"
+                )
+                self._set_status(errors[0])
+                return
+
             low_confidence = [
                 (path, result["confidence"])
                 for path, result in results.items()

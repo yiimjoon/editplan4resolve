@@ -87,6 +87,10 @@ class ConfigManager:
             "audio_sync_max_offset": 30.0,
             "audio_sync_resolution": 0.1,
             "audio_sync_min_confidence": 0.5,
+            "audio_sync_voice_threshold": 0.5,
+            "audio_sync_voice_min_speech_ms": 250,
+            "audio_sync_voice_min_silence_ms": 100,
+            "audio_sync_voice_pad_ms": 30,
         }
         changed = False
         for key, value in defaults.items():

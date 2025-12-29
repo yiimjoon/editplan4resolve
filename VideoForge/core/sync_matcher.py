@@ -12,11 +12,12 @@ except Exception:  # pragma: no cover - fallback when SciPy is unavailable
     correlate = None
 
 from VideoForge.adapters.audio_sync import SilenceDetector
+from VideoForge.adapters.voice_detector import VoiceDetector
 from VideoForge.config.config_manager import Config
 
 logger = logging.getLogger(__name__)
 
-SyncMode = Literal["same", "inverse"]
+SyncMode = Literal["same", "inverse", "voice"]
 
 
 class SyncMatcher:
@@ -25,6 +26,7 @@ class SyncMatcher:
     def __init__(
         self,
         silence_detector: SilenceDetector | None = None,
+        voice_detector: VoiceDetector | None = None,
         resolution: float | None = None,
     ) -> None:
         self.resolution = float(
@@ -38,10 +40,17 @@ class SyncMatcher:
         min_silence = float(Config.get("audio_sync_min_silence", 0.3))
         self.max_offset_default = float(Config.get("audio_sync_max_offset", 30.0))
         self.min_confidence = float(Config.get("audio_sync_min_confidence", 0.5))
+        self.voice_threshold = float(Config.get("audio_sync_voice_threshold", 0.5))
+        self.voice_min_speech_ms = int(Config.get("audio_sync_voice_min_speech_ms", 250))
+        self.voice_min_silence_ms = int(
+            Config.get("audio_sync_voice_min_silence_ms", 100)
+        )
+        self.voice_pad_ms = int(Config.get("audio_sync_voice_pad_ms", 30))
         self.detector = silence_detector or SilenceDetector(
             threshold_db=threshold_db,
             min_silence_duration=min_silence,
         )
+        self.voice_detector = voice_detector
 
     def find_sync_offset(
         self,
@@ -65,6 +74,68 @@ class SyncMatcher:
         max_offset = float(max_offset) if max_offset is not None else self.max_offset_default
         if max_offset <= 0:
             max_offset = self.max_offset_default
+
+        if mode == "voice":
+            if self.voice_detector is None and not VoiceDetector.is_available():
+                return {
+                    "offset": 0.0,
+                    "confidence": 0.0,
+                    "ref_voice": [],
+                    "tgt_voice": [],
+                    "error": "Voice Pattern requires PyTorch.",
+                }
+            ref_voice = self._detect_voice(Path(reference_video))
+            tgt_voice = self._detect_voice(Path(target_video))
+            if not ref_voice or not tgt_voice:
+                logger.warning("No voice detected in one or both videos.")
+                return {
+                    "offset": 0.0,
+                    "confidence": 0.0,
+                    "ref_voice": ref_voice,
+                    "tgt_voice": tgt_voice,
+                    "error": "No voice patterns found",
+                }
+            logger.info(
+                "Voice ranges: ref=%d target=%d",
+                len(ref_voice),
+                len(tgt_voice),
+            )
+            duration = max_offset * 2.0
+            ref_pattern = self._silences_to_pattern(
+                ref_voice, duration, self.resolution
+            )
+            tgt_pattern = self._silences_to_pattern(
+                tgt_voice, duration, self.resolution
+            )
+            if not ref_pattern.any() or not tgt_pattern.any():
+                logger.warning("Voice patterns empty after binning.")
+                return {
+                    "offset": 0.0,
+                    "confidence": 0.0,
+                    "ref_voice": ref_voice,
+                    "tgt_voice": tgt_voice,
+                    "error": "No voice patterns found",
+                }
+            offset, confidence = self._correlate_patterns(
+                ref_pattern,
+                tgt_pattern,
+                mode="same",
+                max_offset=max_offset,
+            )
+            logger.info(
+                "Audio sync offset=%.3fs confidence=%.2f mode=%s",
+                offset,
+                confidence,
+                mode,
+            )
+            if confidence < self.min_confidence:
+                logger.warning("Low confidence: %.2f", confidence)
+            return {
+                "offset": offset,
+                "confidence": confidence,
+                "ref_voice": ref_voice,
+                "tgt_voice": tgt_voice,
+            }
         ref_silences = self.detector.detect_silence(Path(reference_video))
         tgt_silences = self.detector.detect_silence(Path(target_video))
 
@@ -136,6 +207,18 @@ class SyncMatcher:
                 mode=mode,
             )
         return results
+
+    def _detect_voice(self, video_path: Path) -> List[Tuple[float, float]]:
+        detector = self.voice_detector
+        if detector is None:
+            detector = VoiceDetector(
+                threshold=self.voice_threshold,
+                min_speech_ms=self.voice_min_speech_ms,
+                min_silence_ms=self.voice_min_silence_ms,
+                speech_pad_ms=self.voice_pad_ms,
+            )
+            self.voice_detector = detector
+        return detector.detect_voice(video_path)
 
     def _correlate_patterns(
         self,
