@@ -13,6 +13,8 @@ except Exception:  # pragma: no cover - fallback when SciPy is unavailable
 
 from VideoForge.adapters.audio_sync import SilenceDetector
 from VideoForge.adapters.voice_detector import VoiceDetector
+from VideoForge.adapters.sync_subprocess import run_sync as run_sync_subprocess
+from VideoForge.adapters.sync_subprocess import should_use_subprocess as should_use_sync_subprocess
 from VideoForge.core.content_matcher import ContentMatcher
 from VideoForge.config.config_manager import Config
 
@@ -81,6 +83,14 @@ class SyncMatcher:
         max_offset = float(max_offset) if max_offset is not None else self.max_offset_default
         if max_offset <= 0:
             max_offset = self.max_offset_default
+
+        if should_use_sync_subprocess(mode):
+            return run_sync_subprocess(
+                Path(reference_video),
+                Path(target_video),
+                mode=mode,
+                max_offset=max_offset,
+            )
 
         if mode == "content":
             if self.content_matcher is None and not ContentMatcher.is_available():

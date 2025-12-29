@@ -524,6 +524,15 @@ class VideoForgePanel(QWidget):
             content_enabled = ContentMatcher.is_available()
         except Exception:
             content_enabled = False
+        try:
+            from VideoForge.adapters.sync_subprocess import should_use_subprocess
+
+            if should_use_subprocess("voice"):
+                voice_enabled = True
+            if should_use_subprocess("content"):
+                content_enabled = True
+        except Exception:
+            pass
 
         def _set_item(index: int, enabled: bool, tooltip: str | None) -> None:
             item = model.item(index)
@@ -2207,6 +2216,9 @@ class VideoForgePanel(QWidget):
         if paths:
             logging.getLogger("VideoForge.ui").info("Added %d target videos", len(paths))
 
+    def _on_audio_sync_normalize_changed(self, state: int) -> None:
+        Config.set("audio_sync_normalize", state == Qt.Checked)
+
     def _on_auto_sync_clicked(self) -> None:
         if not hasattr(self, "sync_ref_path"):
             self.sync_status.setText("Error: No reference video selected")
@@ -2230,8 +2242,9 @@ class VideoForgePanel(QWidget):
         mode = mode_map.get(self.sync_mode_combo.currentIndex(), "same")
         if mode == "voice":
             from VideoForge.adapters.voice_detector import VoiceDetector
+            from VideoForge.adapters.sync_subprocess import should_use_subprocess
 
-            if not VoiceDetector.is_available():
+            if not VoiceDetector.is_available() and not should_use_subprocess("voice"):
                 self.sync_status.setText(
                     "Error: Voice Pattern requires PyTorch (torch)."
                 )
@@ -2242,8 +2255,9 @@ class VideoForgePanel(QWidget):
                 return
         if mode == "content":
             from VideoForge.core.content_matcher import ContentMatcher
+            from VideoForge.adapters.sync_subprocess import should_use_subprocess
 
-            if not ContentMatcher.is_available():
+            if not ContentMatcher.is_available() and not should_use_subprocess("content"):
                 self.sync_status.setText(
                     "Error: Content Pattern requires librosa."
                 )

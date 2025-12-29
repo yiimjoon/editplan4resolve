@@ -8,24 +8,38 @@ from typing import List, Tuple
 
 import numpy as np
 
+from VideoForge.config.config_manager import Config
+
 logger = logging.getLogger(__name__)
 
 
-def _extract_pcm(video_path: Path, sample_rate: int) -> bytes:
+def _extract_pcm(
+    video_path: Path,
+    sample_rate: int,
+    normalize: bool | None = None,
+) -> bytes:
+    if normalize is None:
+        normalize = bool(Config.get("audio_sync_normalize", True))
     cmd = [
         "ffmpeg",
         "-v",
         "error",
         "-i",
         str(video_path),
-        "-ac",
-        "1",
-        "-ar",
-        str(sample_rate),
-        "-f",
-        "s16le",
-        "-",
     ]
+    if normalize:
+        cmd.extend(["-filter:a", "loudnorm=I=-16:TP=-1.5:LRA=11"])
+    cmd.extend(
+        [
+            "-ac",
+            "1",
+            "-ar",
+            str(sample_rate),
+            "-f",
+            "s16le",
+            "-",
+        ]
+    )
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=300)
     except subprocess.TimeoutExpired as exc:

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from VideoForge.config.config_manager import Config
 from VideoForge.ui.qt_compat import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -68,6 +70,15 @@ def build_sync_section(panel, parent_layout: QVBoxLayout) -> None:
         ]
     )
     card_layout.addWidget(panel.sync_mode_combo)
+
+    panel.sync_normalize_checkbox = QCheckBox("Normalize Audio for Sync")
+    panel.sync_normalize_checkbox.setChecked(
+        bool(Config.get("audio_sync_normalize", True))
+    )
+    panel.sync_normalize_checkbox.stateChanged.connect(
+        panel._on_audio_sync_normalize_changed
+    )
+    card_layout.addWidget(panel.sync_normalize_checkbox)
 
     panel.auto_sync_btn = QPushButton("Auto Sync & Place in Timeline")
     panel.auto_sync_btn.setCursor(Qt.PointingHandCursor)
