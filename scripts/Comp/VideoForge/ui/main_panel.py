@@ -277,6 +277,7 @@ class VideoForgePanel(QWidget):
         self.status_signal.connect(self._set_status)
         self.progress_signal.connect(self._set_progress_value)
         self._init_ui()
+        self._configure_sync_mode_options()
         self._start_resolve_watchdog()
         if self._startup_warning:
             self._set_status(self._startup_warning)
@@ -501,6 +502,50 @@ class VideoForgePanel(QWidget):
         self.log_timer = QTimer(self)
         self.log_timer.timeout.connect(self._update_last_log)
         self.log_timer.start(1000)
+
+    def _configure_sync_mode_options(self) -> None:
+        combo = getattr(self, "sync_mode_combo", None)
+        if not combo:
+            return
+        model = combo.model()
+        if not model:
+            return
+        voice_enabled = True
+        content_enabled = True
+        try:
+            from VideoForge.adapters.voice_detector import VoiceDetector
+
+            voice_enabled = VoiceDetector.is_available()
+        except Exception:
+            voice_enabled = False
+        try:
+            from VideoForge.core.content_matcher import ContentMatcher
+
+            content_enabled = ContentMatcher.is_available()
+        except Exception:
+            content_enabled = False
+
+        def _set_item(index: int, enabled: bool, tooltip: str | None) -> None:
+            item = model.item(index)
+            if not item:
+                return
+            item.setEnabled(enabled)
+            if tooltip:
+                combo.setItemData(index, tooltip, Qt.ToolTipRole)
+
+        if not voice_enabled:
+            _set_item(2, False, "Install PyTorch (torch) to enable Voice Pattern.")
+        if not content_enabled:
+            _set_item(3, False, "Install librosa to enable Content Pattern.")
+
+        current = combo.currentIndex()
+        disabled_indexes = set()
+        for idx in (2, 3):
+            item = model.item(idx)
+            if item is not None and not item.isEnabled():
+                disabled_indexes.add(idx)
+        if current in disabled_indexes:
+            combo.setCurrentIndex(0)
 
     # --- Helper Methods ---
 
@@ -2181,7 +2226,7 @@ class VideoForgePanel(QWidget):
             )
             return
 
-        mode_map = {0: "same", 1: "inverse", 2: "voice"}
+        mode_map = {0: "same", 1: "inverse", 2: "voice", 3: "content"}
         mode = mode_map.get(self.sync_mode_combo.currentIndex(), "same")
         if mode == "voice":
             from VideoForge.adapters.voice_detector import VoiceDetector
@@ -2194,6 +2239,18 @@ class VideoForgePanel(QWidget):
                     f"color: {COLORS['error']}; font-size: 11px;"
                 )
                 self._set_status("Voice Pattern requires PyTorch.")
+                return
+        if mode == "content":
+            from VideoForge.core.content_matcher import ContentMatcher
+
+            if not ContentMatcher.is_available():
+                self.sync_status.setText(
+                    "Error: Content Pattern requires librosa."
+                )
+                self.sync_status.setStyleSheet(
+                    f"color: {COLORS['error']}; font-size: 11px;"
+                )
+                self._set_status("Content Pattern requires librosa.")
                 return
 
         def _sync():

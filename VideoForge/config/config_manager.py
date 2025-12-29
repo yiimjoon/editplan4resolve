@@ -91,6 +91,10 @@ class ConfigManager:
             "audio_sync_voice_min_speech_ms": 250,
             "audio_sync_voice_min_silence_ms": 100,
             "audio_sync_voice_pad_ms": 30,
+            "audio_sync_content_feature": "chroma",
+            "audio_sync_content_sample_rate": 22050,
+            "audio_sync_content_hop_length": 512,
+            "audio_sync_content_n_fft": 2048,
         }
         changed = False
         for key, value in defaults.items():

@@ -19,6 +19,19 @@ class DummyVoiceDetector:
         return self.mapping[str(video_path)]
 
 
+class DummyContentMatcher:
+    def __init__(self, offset: float, confidence: float):
+        self.offset = offset
+        self.confidence = confidence
+
+    def match(self, reference_video: Path, target_video: Path, max_offset: float):
+        return {
+            "offset": self.offset,
+            "confidence": self.confidence,
+            "feature": "chroma",
+        }
+
+
 def test_same_pattern_sync():
     """Case 1: multi-camera same-pattern sync."""
     ref = Path("camera1.mp4")
@@ -67,8 +80,23 @@ def test_voice_pattern_sync():
     assert abs(result["offset"] - (-1.0)) <= 0.5
 
 
+def test_content_pattern_sync():
+    """Case 4: content-pattern sync."""
+    ref = Path("camera1.mp4")
+    tgt = Path("camera2.mp4")
+    matcher = SyncMatcher(
+        silence_detector=DummyDetector({str(ref): [], str(tgt): []}),
+        voice_detector=DummyVoiceDetector({str(ref): [], str(tgt): []}),
+        content_matcher=DummyContentMatcher(offset=-1.5, confidence=0.9),
+        resolution=1.0,
+    )
+    result = matcher.find_sync_offset(ref, tgt, mode="content", max_offset=3.0)
+    assert result["confidence"] > 0.5
+    assert abs(result["offset"] - (-1.5)) <= 0.1
+
+
 def test_multiple_sync():
-    """Case 4: multi-target sync."""
+    """Case 5: multi-target sync."""
     ref = Path("camera1.mp4")
     tgt_a = Path("camera2.mp4")
     tgt_b = Path("camera3.mp4")

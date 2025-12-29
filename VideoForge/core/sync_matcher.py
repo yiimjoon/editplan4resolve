@@ -13,11 +13,12 @@ except Exception:  # pragma: no cover - fallback when SciPy is unavailable
 
 from VideoForge.adapters.audio_sync import SilenceDetector
 from VideoForge.adapters.voice_detector import VoiceDetector
+from VideoForge.core.content_matcher import ContentMatcher
 from VideoForge.config.config_manager import Config
 
 logger = logging.getLogger(__name__)
 
-SyncMode = Literal["same", "inverse", "voice"]
+SyncMode = Literal["same", "inverse", "voice", "content"]
 
 
 class SyncMatcher:
@@ -27,6 +28,7 @@ class SyncMatcher:
         self,
         silence_detector: SilenceDetector | None = None,
         voice_detector: VoiceDetector | None = None,
+        content_matcher: ContentMatcher | None = None,
         resolution: float | None = None,
     ) -> None:
         self.resolution = float(
@@ -46,11 +48,16 @@ class SyncMatcher:
             Config.get("audio_sync_voice_min_silence_ms", 100)
         )
         self.voice_pad_ms = int(Config.get("audio_sync_voice_pad_ms", 30))
+        self.content_feature = str(Config.get("audio_sync_content_feature", "chroma"))
+        self.content_sample_rate = int(Config.get("audio_sync_content_sample_rate", 22050))
+        self.content_hop_length = int(Config.get("audio_sync_content_hop_length", 512))
+        self.content_n_fft = int(Config.get("audio_sync_content_n_fft", 2048))
         self.detector = silence_detector or SilenceDetector(
             threshold_db=threshold_db,
             min_silence_duration=min_silence,
         )
         self.voice_detector = voice_detector
+        self.content_matcher = content_matcher
 
     def find_sync_offset(
         self,
@@ -74,6 +81,31 @@ class SyncMatcher:
         max_offset = float(max_offset) if max_offset is not None else self.max_offset_default
         if max_offset <= 0:
             max_offset = self.max_offset_default
+
+        if mode == "content":
+            if self.content_matcher is None and not ContentMatcher.is_available():
+                return {
+                    "offset": 0.0,
+                    "confidence": 0.0,
+                    "error": "Content Pattern requires librosa.",
+                }
+            matcher = self.content_matcher
+            if matcher is None:
+                matcher = ContentMatcher(
+                    feature=self.content_feature,
+                    sample_rate=self.content_sample_rate,
+                    hop_length=self.content_hop_length,
+                    n_fft=self.content_n_fft,
+                )
+                self.content_matcher = matcher
+            result = matcher.match(
+                Path(reference_video),
+                Path(target_video),
+                max_offset=max_offset,
+            )
+            if result.get("confidence", 0.0) < self.min_confidence:
+                logger.warning("Low confidence: %.2f", result.get("confidence", 0.0))
+            return result
 
         if mode == "voice":
             if self.voice_detector is None and not VoiceDetector.is_available():

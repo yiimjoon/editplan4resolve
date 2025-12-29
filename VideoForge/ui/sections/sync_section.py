@@ -64,6 +64,7 @@ def build_sync_section(panel, parent_layout: QVBoxLayout) -> None:
             "Same Pattern (Multi-camera)",
             "Inverse Pattern (A-roll <-> B-roll)",
             "Voice Pattern (Speech-only)",
+            "Content Pattern (Music)",
         ]
     )
     card_layout.addWidget(panel.sync_mode_combo)
