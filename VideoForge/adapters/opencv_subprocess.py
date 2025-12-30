@@ -179,3 +179,32 @@ def run_quality_check(
         "noise_level": float(metrics.get("noise_level", 0.0) or 0.0),
         "quality_score": float(metrics.get("quality_score", 0.0) or 0.0),
     }
+
+
+def run_angle_score(
+    video_path: Path,
+    timestamp_sec: float,
+    face_detector: str = "opencv_dnn",
+    timeout_sec: float = 120.0,
+) -> Dict[str, float]:
+    result = _run_worker(
+        [
+            "angle_score",
+            "--video",
+            str(video_path),
+            "--timestamp",
+            str(float(timestamp_sec)),
+            "--face-detector",
+            str(face_detector),
+        ],
+        timeout_sec=timeout_sec,
+    )
+    metrics = result.get("metrics")
+    if not isinstance(metrics, dict):
+        return {"sharpness": 0.0, "motion": 0.0, "stability": 0.0, "face_score": 0.0}
+    return {
+        "sharpness": float(metrics.get("sharpness", 0.0) or 0.0),
+        "motion": float(metrics.get("motion", 0.0) or 0.0),
+        "stability": float(metrics.get("stability", 0.0) or 0.0),
+        "face_score": float(metrics.get("face_score", 0.0) or 0.0),
+    }

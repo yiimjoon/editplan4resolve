@@ -40,6 +40,7 @@ class ConfigManager:
         self._migrate_library_config()
         self._ensure_llm_defaults()
         self._ensure_audio_sync_defaults()
+        self._ensure_multicam_defaults()
         self._ensure_agent_defaults()
 
     @staticmethod
@@ -112,6 +113,24 @@ class ConfigManager:
     def _ensure_llm_defaults(self) -> None:
         defaults = {
             "llm_max_tokens": 4096,
+        }
+        changed = False
+        for key, value in defaults.items():
+            if key not in self._config:
+                self._config[key] = value
+                changed = True
+        if changed:
+            self._save()
+
+    def _ensure_multicam_defaults(self) -> None:
+        defaults = {
+            "multicam_max_segment_sec": 10.0,
+            "multicam_min_hold_sec": 2.0,
+            "multicam_max_repeat": 3,
+            "multicam_closeup_weight": 0.3,
+            "multicam_wide_weight": 0.2,
+            "multicam_face_detector": "opencv_dnn",
+            "multicam_boundary_mode": "hybrid",
         }
         changed = False
         for key, value in defaults.items():
