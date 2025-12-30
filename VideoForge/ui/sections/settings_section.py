@@ -542,6 +542,14 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     )
     add_setting_row(right_col, "Face Model Dir (Optional)", panel.face_model_dir_input)
 
+    panel.multicam_edl_dir_input = QLineEdit()
+    panel.multicam_edl_dir_input.setPlaceholderText("Optional EDL output dir or .edl path")
+    panel.multicam_edl_dir_input.setText(str(Config.get("multicam_edl_output_dir", "")))
+    panel.multicam_edl_dir_input.textChanged.connect(
+        lambda value: Config.set("multicam_edl_output_dir", value)
+    )
+    add_setting_row(right_col, "EDL Output Path (Optional)", panel.multicam_edl_dir_input)
+
     # Final logic
     panel._update_transcript_option_visibility(panel.engine_combo.currentText())
     llm_enabled = panel.llm_provider_combo.currentText() != "disabled"

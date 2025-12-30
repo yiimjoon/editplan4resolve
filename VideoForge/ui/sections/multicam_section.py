@@ -408,6 +408,58 @@ class MulticamSection(QWidget):
         settings_layout.addRow("Min Hold Time:", self.min_hold_slider)
         settings_layout.addRow("", self.min_hold_label)
 
+        self.sharpness_weight_slider = self._make_slider(
+            0, 100, int(float(Config.get("multicam_weight_sharpness", 0.4)) * 100)
+        )
+        self.sharpness_weight_label = QLabel(f"{self.sharpness_weight_slider.value() / 100.0:.2f}")
+        self.sharpness_weight_slider.valueChanged.connect(
+            lambda v: Config.set("multicam_weight_sharpness", v / 100.0)
+        )
+        self.sharpness_weight_slider.valueChanged.connect(
+            lambda v: self.sharpness_weight_label.setText(f"{v / 100.0:.2f}")
+        )
+        settings_layout.addRow("Sharpness Weight:", self.sharpness_weight_slider)
+        settings_layout.addRow("", self.sharpness_weight_label)
+
+        self.stability_weight_slider = self._make_slider(
+            0, 100, int(float(Config.get("multicam_weight_stability", 0.3)) * 100)
+        )
+        self.stability_weight_label = QLabel(f"{self.stability_weight_slider.value() / 100.0:.2f}")
+        self.stability_weight_slider.valueChanged.connect(
+            lambda v: Config.set("multicam_weight_stability", v / 100.0)
+        )
+        self.stability_weight_slider.valueChanged.connect(
+            lambda v: self.stability_weight_label.setText(f"{v / 100.0:.2f}")
+        )
+        settings_layout.addRow("Stability Weight:", self.stability_weight_slider)
+        settings_layout.addRow("", self.stability_weight_label)
+
+        self.motion_weight_slider = self._make_slider(
+            0, 100, int(float(Config.get("multicam_weight_motion", 0.2)) * 100)
+        )
+        self.motion_weight_label = QLabel(f"{self.motion_weight_slider.value() / 100.0:.2f}")
+        self.motion_weight_slider.valueChanged.connect(
+            lambda v: Config.set("multicam_weight_motion", v / 100.0)
+        )
+        self.motion_weight_slider.valueChanged.connect(
+            lambda v: self.motion_weight_label.setText(f"{v / 100.0:.2f}")
+        )
+        settings_layout.addRow("Motion Weight:", self.motion_weight_slider)
+        settings_layout.addRow("", self.motion_weight_label)
+
+        self.face_weight_slider = self._make_slider(
+            0, 100, int(float(Config.get("multicam_weight_face", 0.1)) * 100)
+        )
+        self.face_weight_label = QLabel(f"{self.face_weight_slider.value() / 100.0:.2f}")
+        self.face_weight_slider.valueChanged.connect(
+            lambda v: Config.set("multicam_weight_face", v / 100.0)
+        )
+        self.face_weight_slider.valueChanged.connect(
+            lambda v: self.face_weight_label.setText(f"{v / 100.0:.2f}")
+        )
+        settings_layout.addRow("Face Weight:", self.face_weight_slider)
+        settings_layout.addRow("", self.face_weight_label)
+
         self.face_detection_check = QCheckBox("Enable Face Detection")
         face_detector = str(Config.get("multicam_face_detector", "opencv_dnn")).strip().lower()
         self.face_detection_check.setChecked(face_detector != "disabled")

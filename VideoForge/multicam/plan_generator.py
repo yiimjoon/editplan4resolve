@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from VideoForge.agent.planner import EditAction, EditPlan
 
@@ -15,6 +15,7 @@ class MulticamPlanGenerator:
         angle_selections: List[Dict],
         timeline_info: Dict,
         source_clips: List[str],
+        source_paths: Optional[List[str]] = None,
     ) -> EditPlan:
         actions: List[EditAction] = []
         fps = timeline_info.get("fps", 24.0)
@@ -37,6 +38,10 @@ class MulticamPlanGenerator:
                         "start_sec": start_sec,
                         "end_sec": float(sel.get("end_sec", 0.0)),
                         "source_clips": source_clips,
+                        "source_paths": source_paths or [],
+                        "source_path": sel.get("source_path"),
+                        "source_in_sec": sel.get("source_in_sec"),
+                        "source_out_sec": sel.get("source_out_sec"),
                         "angle_score": float(sel.get("angle_score", 0.0)),
                     },
                     reason=str(sel.get("reason", "") or "Auto multicam selection"),

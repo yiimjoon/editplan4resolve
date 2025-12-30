@@ -15,6 +15,12 @@ class AngleSelector:
         self.max_repeat = int(Config.get("multicam_max_repeat", 3))
         self.closeup_weight = float(Config.get("multicam_closeup_weight", 0.3))
         self.wide_weight = float(Config.get("multicam_wide_weight", 0.2))
+        self.base_weights = {
+            "sharpness": float(Config.get("multicam_weight_sharpness", 0.4)),
+            "stability": float(Config.get("multicam_weight_stability", 0.3)),
+            "motion": float(Config.get("multicam_weight_motion", 0.2)),
+            "face_score": float(Config.get("multicam_weight_face", 0.1)),
+        }
 
     def select_angles(
         self,
@@ -100,12 +106,7 @@ class AngleSelector:
         scores: Dict[str, float],
         tag: Optional[str] = None,
     ) -> float:
-        weights = {
-            "sharpness": 0.4,
-            "stability": 0.3,
-            "motion": 0.2,
-            "face_score": 0.1,
-        }
+        weights = dict(self.base_weights)
 
         if tag == "speaking":
             weights["face_score"] += self.closeup_weight
