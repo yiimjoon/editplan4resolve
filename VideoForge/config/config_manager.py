@@ -130,6 +130,7 @@ class ConfigManager:
             "multicam_closeup_weight": 0.3,
             "multicam_wide_weight": 0.2,
             "multicam_face_detector": "opencv_dnn",
+            "multicam_face_model_dir": "",
             "multicam_boundary_mode": "hybrid",
         }
         changed = False

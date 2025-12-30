@@ -55,6 +55,7 @@ from VideoForge.ui.sections.agent_section import AgentSection
 from VideoForge.ui.sections.library_section import build_library_section
 from VideoForge.ui.sections.match_section import build_match_section
 from VideoForge.ui.sections.misc_section import build_misc_section
+from VideoForge.ui.sections.multicam_section import MulticamSection
 from VideoForge.ui.sections.settings_section import build_settings_section
 from VideoForge.ui.sections.sync_section import build_sync_section
 
@@ -411,7 +412,15 @@ class VideoForgePanel(QWidget):
         sync_layout.addStretch()
         self.tabs.addTab(sync_scroll, "Sync")
 
-        # Tab 4: Agent
+        # Tab 4: Multicam
+        multicam_scroll = QScrollArea()
+        multicam_scroll.setWidgetResizable(True)
+        multicam_scroll.setFrameShape(QFrame.NoFrame)
+        multicam_tab = MulticamSection(self.bridge.resolve_api)
+        multicam_scroll.setWidget(multicam_tab)
+        self.tabs.addTab(multicam_scroll, "Multicam")
+
+        # Tab 5: Agent
         agent_scroll = QScrollArea()
         agent_scroll.setWidgetResizable(True)
         agent_scroll.setFrameShape(QFrame.NoFrame)
@@ -419,7 +428,7 @@ class VideoForgePanel(QWidget):
         agent_scroll.setWidget(agent_tab)
         self.tabs.addTab(agent_scroll, "Agent")
 
-        # Tab 5: Settings
+        # Tab 6: Settings
         settings_scroll = QScrollArea()
         settings_scroll.setWidgetResizable(True)
         settings_scroll.setFrameShape(QFrame.NoFrame)
@@ -432,7 +441,7 @@ class VideoForgePanel(QWidget):
         settings_layout.addStretch()
         self.tabs.addTab(settings_scroll, "⚙️ Settings")
 
-        # Tab 6: Misc
+        # Tab 7: Misc
         misc_scroll = QScrollArea()
         misc_scroll.setWidgetResizable(True)
         misc_scroll.setFrameShape(QFrame.NoFrame)

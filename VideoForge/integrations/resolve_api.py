@@ -2,9 +2,12 @@ import os
 import subprocess
 import logging
 import random
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any, List, Optional, Iterable, Dict
+
+from VideoForge.agent.planner import EditPlan
 
 from VideoForge.integrations.resolve_python import _get_resolve
 
@@ -409,6 +412,175 @@ class ResolveAPI:
                     logger.info("Silence cut debug: %s failed: %s", name, exc)
         logger.info("Silence cut debug: no supported split method found")
         return False
+
+    def apply_multicam_cuts(self, plan: EditPlan) -> Dict[str, Any]:
+        """Apply multicam cut_and_switch_angle actions or export an EDL fallback."""
+        self._ensure_main_thread("apply_multicam_cuts")
+        timeline = self.get_current_timeline()
+        fps = self.get_timeline_fps()
+
+        actions = [a for a in plan.actions if a.action_type == "cut_and_switch_angle"]
+        if not actions:
+            return {"success": False, "error": "No multicam actions in plan."}
+
+        track_count = int(timeline.GetTrackCount("video") or 0)
+        if track_count <= 0:
+            return {"success": False, "error": "No video tracks available."}
+
+        split_available = callable(getattr(timeline, "SplitClip", None))
+        if not split_available:
+            split_available = self._resolve_split_method(timeline, track_count) is not None
+        disable_method = self._resolve_disable_method(timeline, track_count)
+        if not split_available or disable_method is None:
+            return self._export_multicam_edl(plan, fps)
+
+        actions_sorted = sorted(
+            actions,
+            key=lambda action: float(action.params.get("start_sec", 0.0)),
+        )
+
+        for action in actions_sorted:
+            params = action.params or {}
+            start_sec = float(params.get("start_sec", 0.0))
+            end_sec = float(params.get("end_sec", start_sec))
+            start_frame = int(params.get("cut_frame", int(start_sec * fps)))
+            end_frame = int(end_sec * fps)
+            if end_frame <= start_frame:
+                end_frame = start_frame + 1
+            target_track = int(params.get("target_angle_track", 0)) + 1
+
+            self._split_all_tracks(timeline, track_count, start_frame)
+            self._split_all_tracks(timeline, track_count, end_frame)
+
+            if disable_method is None:
+                return self._export_multicam_edl(plan, fps)
+
+            for track_index in range(1, track_count + 1):
+                if track_index == target_track:
+                    continue
+                items = timeline.GetItemListInTrack("video", track_index) or []
+                for item in items:
+                    s, e = self._get_item_range(item)
+                    if s is None or e is None:
+                        continue
+                    if e <= start_frame or s >= end_frame:
+                        continue
+                    if not self._set_clip_enabled(item, disable_method, False):
+                        return self._export_multicam_edl(plan, fps)
+
+        return {"success": True}
+
+    def _split_all_tracks(self, timeline: Any, track_count: int, frame: int) -> None:
+        for track_index in range(1, track_count + 1):
+            items = timeline.GetItemListInTrack("video", track_index) or []
+            for item in items:
+                s, e = self._get_item_range(item)
+                if s is None or e is None:
+                    continue
+                if s < frame < e:
+                    self._split_item_at_frame(timeline, item, frame)
+
+    @staticmethod
+    def _split_item_at_frame(timeline: Any, item: Any, frame: int) -> bool:
+        split_clip = getattr(timeline, "SplitClip", None)
+        if callable(split_clip):
+            try:
+                split_clip(item, int(frame))
+                return True
+            except Exception:
+                return False
+        split_item = getattr(item, "Split", None)
+        if callable(split_item):
+            try:
+                split_item(int(frame))
+                return True
+            except Exception:
+                return False
+        return False
+
+    def _resolve_disable_method(self, timeline: Any, track_count: int) -> Optional[str]:
+        for track_index in range(1, track_count + 1):
+            items = timeline.GetItemListInTrack("video", track_index) or []
+            for item in items:
+                for name in ("SetClipEnabled", "SetEnabled"):
+                    if callable(getattr(item, name, None)):
+                        return name
+        return None
+
+    def _resolve_split_method(self, timeline: Any, track_count: int) -> Optional[str]:
+        if callable(getattr(timeline, "SplitClip", None)):
+            return "SplitClip"
+        for track_index in range(1, track_count + 1):
+            items = timeline.GetItemListInTrack("video", track_index) or []
+            for item in items:
+                if callable(getattr(item, "Split", None)):
+                    return "Split"
+        return None
+
+    @staticmethod
+    def _set_clip_enabled(item: Any, method_name: str, enabled: bool) -> bool:
+        method = getattr(item, method_name, None)
+        if not callable(method):
+            return False
+        try:
+            method(bool(enabled))
+            return True
+        except Exception:
+            return False
+
+    def _export_multicam_edl(self, plan: EditPlan, fps: float) -> Dict[str, Any]:
+        output_dir = Path(tempfile.gettempdir())
+        output_path = output_dir / "videoforge_multicam.edl"
+        timeline_start = self.get_timeline_start_frame()
+        actions = [a for a in plan.actions if a.action_type == "cut_and_switch_angle"]
+        actions.sort(key=lambda action: float(action.params.get("start_sec", 0.0)))
+
+        lines = ["TITLE: VideoForge Multicam", "FCM: NON-DROP FRAME", ""]
+        event_num = 1
+        for action in actions:
+            params = action.params or {}
+            start_sec = float(params.get("start_sec", 0.0))
+            end_sec = float(params.get("end_sec", start_sec))
+            if end_sec <= start_sec:
+                continue
+            target_angle = int(params.get("target_angle_track", 0))
+            source_clips = params.get("source_clips")
+            clip_name = None
+            if isinstance(source_clips, list) and 0 <= target_angle < len(source_clips):
+                clip_name = str(source_clips[target_angle])
+            if not clip_name:
+                clip_name = f"Angle {target_angle + 1}"
+            clip_name = self._sanitize_edl_name(clip_name)
+
+            source_in = self._frames_to_timecode(int(start_sec * fps), fps)
+            source_out = self._frames_to_timecode(int(end_sec * fps), fps)
+            record_in = self._frames_to_timecode(int(timeline_start + start_sec * fps), fps)
+            record_out = self._frames_to_timecode(int(timeline_start + end_sec * fps), fps)
+            reel = f"AX{target_angle + 1:02d}"
+
+            lines.append(
+                f"{event_num:03d}  {reel:<8}V     C        "
+                f"{source_in} {source_out} {record_in} {record_out}"
+            )
+            lines.append(f"* FROM CLIP NAME: {clip_name}")
+            event_num += 1
+
+        output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        logger.warning(
+            "Resolve API multicam cut unsupported; exported EDL: %s",
+            output_path,
+        )
+        return {"success": False, "edl_path": str(output_path)}
+
+    @staticmethod
+    def _sanitize_edl_name(name: str) -> str:
+        safe = []
+        for ch in name:
+            if 32 <= ord(ch) < 127:
+                safe.append(ch)
+            else:
+                safe.append("_")
+        return "".join(safe)
 
     def replace_timeline_item(
         self,
