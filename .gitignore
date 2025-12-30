@@ -39,3 +39,6 @@ Thumbs.db
 %APPDATA%/
 
 # Personal notes
+
+# Legacy multicam EDL output
+videoforge_multicam.edl
