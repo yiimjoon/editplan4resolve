@@ -129,10 +129,19 @@ class ConfigManager:
             "multicam_max_repeat": 3,
             "multicam_closeup_weight": 0.3,
             "multicam_wide_weight": 0.2,
+            "multicam_weight_sharpness": 0.4,
+            "multicam_weight_stability": 0.3,
+            "multicam_weight_motion": 0.2,
+            "multicam_weight_face": 0.1,
             "multicam_face_detector": "opencv_dnn",
             "multicam_face_model_dir": "",
             "multicam_edl_output_dir": "",
             "multicam_boundary_mode": "hybrid",
+            "multicam_audio_mode": "per_cut",
+            "multicam_audio_track": 1,
+            "multicam_gaze_enabled": False,
+            "multicam_gaze_weight": 0.4,
+            "multicam_gaze_priority_threshold": 0.6,
         }
         changed = False
         for key, value in defaults.items():

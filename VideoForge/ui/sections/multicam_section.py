@@ -273,31 +273,54 @@ class MulticamWorker(QThread):
 
     def _attach_source_ranges(self, selections: List[Dict]) -> List[Dict]:
         updated: List[Dict] = []
+        video_tracks = int(self.timeline_info.get("video_tracks", 0))
         for sel in selections:
             angle_index = int(sel.get("angle_index", 0))
             track_index = angle_index + 1
             start_sec = float(sel.get("start_sec", 0.0))
             end_sec = float(sel.get("end_sec", start_sec))
-            item = self._find_track_item(track_index, start_sec)
-            if not item or not item.get("media_path"):
-                updated.append(sel)
-                continue
-
-            timeline_start = float(item.get("timeline_start", 0.0))
-            source_start = float(item.get("source_start", timeline_start))
-            source_end = float(item.get("source_end", source_start))
             abs_start_sec = start_sec + float(self.base_offset)
             abs_end_sec = end_sec + float(self.base_offset)
-            source_in = source_start + max(0.0, abs_start_sec - timeline_start)
-            source_out = source_start + max(0.0, abs_end_sec - timeline_start)
-            if source_out <= source_in:
-                source_out = source_in + 0.04
-            if source_end > source_start:
-                source_out = min(source_out, source_end)
 
-            sel["source_path"] = str(item.get("media_path"))
-            sel["source_in_sec"] = source_in
-            sel["source_out_sec"] = source_out
+            source_ranges: List[Dict[str, float | str | int]] = []
+            for candidate_track in range(1, video_tracks + 1):
+                item = self._find_track_item(candidate_track, start_sec)
+                if not item or not item.get("media_path"):
+                    continue
+                timeline_start = float(item.get("timeline_start", 0.0))
+                source_start = float(item.get("source_start", timeline_start))
+                source_end = float(item.get("source_end", source_start))
+                source_in = source_start + max(0.0, abs_start_sec - timeline_start)
+                source_out = source_start + max(0.0, abs_end_sec - timeline_start)
+                if source_out <= source_in:
+                    source_out = source_in + 0.04
+                if source_end > source_start:
+                    source_out = min(source_out, source_end)
+                source_ranges.append(
+                    {
+                        "track_index": int(candidate_track),
+                        "source_path": str(item.get("media_path")),
+                        "source_in_sec": float(source_in),
+                        "source_out_sec": float(source_out),
+                    }
+                )
+
+            sel_item = self._find_track_item(track_index, start_sec)
+            if sel_item and sel_item.get("media_path"):
+                timeline_start = float(sel_item.get("timeline_start", 0.0))
+                source_start = float(sel_item.get("source_start", timeline_start))
+                source_end = float(sel_item.get("source_end", source_start))
+                source_in = source_start + max(0.0, abs_start_sec - timeline_start)
+                source_out = source_start + max(0.0, abs_end_sec - timeline_start)
+                if source_out <= source_in:
+                    source_out = source_in + 0.04
+                if source_end > source_start:
+                    source_out = min(source_out, source_end)
+                sel["source_path"] = str(sel_item.get("media_path"))
+                sel["source_in_sec"] = source_in
+                sel["source_out_sec"] = source_out
+            if source_ranges:
+                sel["source_ranges"] = source_ranges
             updated.append(sel)
         return updated
 
@@ -465,11 +488,61 @@ class MulticamSection(QWidget):
         self.face_detection_check.setChecked(face_detector != "disabled")
         settings_layout.addRow("", self.face_detection_check)
 
+        self.gaze_enabled_check = QCheckBox("Enable Gaze Priority")
+        self.gaze_enabled_check.setChecked(bool(Config.get("multicam_gaze_enabled", False)))
+        self.gaze_enabled_check.toggled.connect(self._on_gaze_enabled_changed)
+        settings_layout.addRow("", self.gaze_enabled_check)
+
+        self.gaze_weight_slider = self._make_slider(
+            0, 100, int(float(Config.get("multicam_gaze_weight", 0.4)) * 100)
+        )
+        self.gaze_weight_label = QLabel(f"{self.gaze_weight_slider.value() / 100.0:.2f}")
+        self.gaze_weight_slider.valueChanged.connect(
+            lambda v: Config.set("multicam_gaze_weight", v / 100.0)
+        )
+        self.gaze_weight_slider.valueChanged.connect(
+            lambda v: self.gaze_weight_label.setText(f"{v / 100.0:.2f}")
+        )
+        settings_layout.addRow("Gaze Weight:", self.gaze_weight_slider)
+        settings_layout.addRow("", self.gaze_weight_label)
+
+        self.gaze_priority_slider = self._make_slider(
+            0,
+            100,
+            int(float(Config.get("multicam_gaze_priority_threshold", 0.6)) * 100),
+        )
+        self.gaze_priority_label = QLabel(f"{self.gaze_priority_slider.value() / 100.0:.2f}")
+        self.gaze_priority_slider.valueChanged.connect(
+            lambda v: Config.set("multicam_gaze_priority_threshold", v / 100.0)
+        )
+        self.gaze_priority_slider.valueChanged.connect(
+            lambda v: self.gaze_priority_label.setText(f"{v / 100.0:.2f}")
+        )
+        settings_layout.addRow("Gaze Priority Threshold:", self.gaze_priority_slider)
+        settings_layout.addRow("", self.gaze_priority_label)
+
         self.llm_tagging_check = QCheckBox("Enable LLM Tagging (Experimental)")
         llm_enabled = str(Config.get("llm_provider", "disabled")) != "disabled"
         self.llm_tagging_check.setEnabled(llm_enabled)
         self.llm_tagging_check.setChecked(False)
         settings_layout.addRow("", self.llm_tagging_check)
+
+        self.audio_mode_combo = QComboBox()
+        self.audio_mode_combo.addItems(["Per-Cut (Switching)", "Fixed Track"])
+        audio_mode_map = {
+            "per_cut": "Per-Cut (Switching)",
+            "fixed_track": "Fixed Track",
+        }
+        current_audio_mode = str(Config.get("multicam_audio_mode", "per_cut")).strip().lower()
+        self.audio_mode_combo.setCurrentText(
+            audio_mode_map.get(current_audio_mode, "Per-Cut (Switching)")
+        )
+        self.audio_mode_combo.currentTextChanged.connect(self._on_audio_mode_changed)
+        settings_layout.addRow("Audio Source:", self.audio_mode_combo)
+
+        self.audio_track_combo = QComboBox()
+        self.audio_track_combo.currentIndexChanged.connect(self._on_audio_track_changed)
+        settings_layout.addRow("Fixed Audio Track:", self.audio_track_combo)
 
         settings_group.setLayout(settings_layout)
         layout.addWidget(settings_group)
@@ -507,6 +580,8 @@ class MulticamSection(QWidget):
         self.setLayout(layout)
 
         self._on_mode_changed(self.mode_combo.currentText())
+        self._set_gaze_controls_enabled(self.gaze_enabled_check.isChecked())
+        self.audio_track_combo.setEnabled(current_audio_mode == "fixed_track")
 
     def _on_mode_changed(self, text: str) -> None:
         mode_map = {
@@ -515,6 +590,32 @@ class MulticamSection(QWidget):
             "Fixed Interval": "fixed",
         }
         Config.set("multicam_boundary_mode", mode_map.get(text, "hybrid"))
+
+    def _on_gaze_enabled_changed(self, checked: bool) -> None:
+        Config.set("multicam_gaze_enabled", bool(checked))
+        self._set_gaze_controls_enabled(bool(checked))
+
+    def _set_gaze_controls_enabled(self, enabled: bool) -> None:
+        self.gaze_weight_slider.setEnabled(enabled)
+        self.gaze_priority_slider.setEnabled(enabled)
+
+    def _on_audio_mode_changed(self, text: str) -> None:
+        mode_map = {
+            "Per-Cut (Switching)": "per_cut",
+            "Fixed Track": "fixed_track",
+        }
+        mode = mode_map.get(text, "per_cut")
+        Config.set("multicam_audio_mode", mode)
+        self.audio_track_combo.setEnabled(mode == "fixed_track")
+
+    def _on_audio_track_changed(self, _index: int) -> None:
+        data = self.audio_track_combo.currentData()
+        if data is None:
+            return
+        try:
+            Config.set("multicam_audio_track", int(data))
+        except Exception:
+            return
 
     def _on_generate_cuts(self) -> None:
         global _LOGGED_BUILD_MARKER
@@ -539,6 +640,10 @@ class MulticamSection(QWidget):
                 "<b>Error:</b> Need at least 2 video tracks for multicam"
             )
             return
+        self._update_audio_track_options(
+            track_items,
+            int(timeline_info.get("video_tracks", 0)),
+        )
 
         project_db = self._resolve_project_db()
         if not project_db:
@@ -768,6 +873,41 @@ class MulticamSection(QWidget):
             )
 
         return timeline_info, track_items
+
+    def _update_audio_track_options(self, track_items: List[Dict], video_tracks: int) -> None:
+        if video_tracks <= 0:
+            return
+        self.audio_track_combo.blockSignals(True)
+        self.audio_track_combo.clear()
+
+        for track_index in range(1, video_tracks + 1):
+            clip_label = None
+            for item in track_items:
+                if int(item.get("track_index", 0)) != track_index:
+                    continue
+                clip_label = item.get("clip_name")
+                media_path = item.get("media_path")
+                if not clip_label and media_path:
+                    clip_label = Path(str(media_path)).name
+                if clip_label:
+                    break
+            if not clip_label:
+                clip_label = f"Angle {track_index}"
+            self.audio_track_combo.addItem(f"V{track_index} - {clip_label}", track_index)
+
+        try:
+            desired_track = int(Config.get("multicam_audio_track", 1))
+        except Exception:
+            desired_track = 1
+        if desired_track < 1 or desired_track > video_tracks:
+            desired_track = 1
+            Config.set("multicam_audio_track", desired_track)
+
+        for idx in range(self.audio_track_combo.count()):
+            if int(self.audio_track_combo.itemData(idx)) == desired_track:
+                self.audio_track_combo.setCurrentIndex(idx)
+                break
+        self.audio_track_combo.blockSignals(False)
 
     @staticmethod
     def _make_slider(min_val: int, max_val: int, current: int):

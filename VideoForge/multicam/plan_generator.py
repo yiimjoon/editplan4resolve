@@ -42,6 +42,7 @@ class MulticamPlanGenerator:
                         "source_path": sel.get("source_path"),
                         "source_in_sec": sel.get("source_in_sec"),
                         "source_out_sec": sel.get("source_out_sec"),
+                        "source_ranges": sel.get("source_ranges", []),
                         "angle_score": float(sel.get("angle_score", 0.0)),
                     },
                     reason=str(sel.get("reason", "") or "Auto multicam selection"),

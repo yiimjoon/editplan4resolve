@@ -543,6 +543,12 @@ class ResolveAPI:
 
         timeline_start = self.get_timeline_start_frame()
         logger.info("Multicam timeline: start_frame=%s", timeline_start)
+        audio_mode, audio_track = self._get_multicam_audio_settings()
+        if audio_mode == "fixed_track":
+            logger.info(
+                "Multicam timeline: using fixed audio from V%s",
+                audio_track,
+            )
         base_offset_sec = 0.0
         if source_items:
             base_offset_sec = min(
@@ -642,6 +648,45 @@ class ResolveAPI:
             if source_out_sec <= source_in_sec:
                 source_out_sec = source_in_sec + 0.04
 
+            audio_source_path = source_path
+            audio_source_in_sec = source_in_sec
+            audio_source_out_sec = source_out_sec
+            audio_media_item = media_item
+            audio_clip_fps = clip_fps
+            if audio_mode == "fixed_track":
+                audio_params = self._resolve_multicam_source_range(params, audio_track)
+                if audio_params:
+                    audio_source_path = audio_params.get("source_path") or audio_source_path
+                    audio_source_in_sec = _safe_float(
+                        audio_params.get("source_in_sec", audio_source_in_sec),
+                        audio_source_in_sec,
+                    )
+                    audio_source_out_sec = _safe_float(
+                        audio_params.get("source_out_sec", audio_source_out_sec),
+                        audio_source_out_sec,
+                    )
+                else:
+                    logger.warning(
+                        "Multicam timeline: missing audio source for V%s at %.2fs",
+                        audio_track,
+                        start_sec,
+                    )
+            if audio_source_out_sec <= audio_source_in_sec:
+                audio_source_out_sec = audio_source_in_sec + 0.04
+            if audio_source_path != source_path:
+                audio_media_item = self.import_media_if_needed(str(audio_source_path))
+                if audio_media_item is None:
+                    logger.warning(
+                        "Multicam timeline: audio import failed for %s; using video audio",
+                        audio_source_path,
+                    )
+                    audio_media_item = media_item
+                    audio_source_path = source_path
+                    audio_source_in_sec = source_in_sec
+                    audio_source_out_sec = source_out_sec
+            if audio_media_item is not None:
+                audio_clip_fps = self._get_media_item_fps(audio_media_item, fps)
+
             duration_frames = max(1, int(round((end_sec - start_sec) * fps)))
             desired_frame = int(round(timeline_start + start_sec * fps))
             if cursor_frame == int(timeline_start):
@@ -696,14 +741,26 @@ class ResolveAPI:
                 source_out_frame,
             )
 
-            self.insert_clip_at_position_with_range(
-                "audio",
-                1,
-                media_item,
-                record_frame,
-                source_in_frame,
-                source_out_frame,
+            audio_source_in_frame = int(round(audio_source_in_sec * audio_clip_fps))
+            audio_source_duration_frames = max(
+                1, int(round((timeline_duration_frames / fps) * audio_clip_fps))
             )
+            audio_source_out_frame = audio_source_in_frame + audio_source_duration_frames
+            if audio_source_out_sec > audio_source_in_sec:
+                max_out_frame = int(round(audio_source_out_sec * audio_clip_fps))
+                if audio_source_out_frame > max_out_frame:
+                    audio_source_out_frame = max_out_frame
+                    if audio_source_out_frame <= audio_source_in_frame:
+                        audio_source_out_frame = audio_source_in_frame + 1
+            if audio_media_item is not None:
+                self.insert_clip_at_position_with_range(
+                    "audio",
+                    1,
+                    audio_media_item,
+                    record_frame,
+                    audio_source_in_frame,
+                    audio_source_out_frame,
+                )
 
         try:
             track_counts = []
@@ -807,6 +864,12 @@ class ResolveAPI:
         logger.info("Multicam program timeline created: %s", timeline_name)
 
         timeline_start = self.get_timeline_start_frame()
+        audio_mode, audio_track = self._get_multicam_audio_settings()
+        if audio_mode == "fixed_track":
+            logger.info(
+                "Multicam program timeline: using fixed audio from V%s",
+                audio_track,
+            )
         actions = [a for a in plan.actions if a.action_type == "cut_and_switch_angle"]
         actions.sort(key=lambda action: float(action.params.get("start_sec", 0.0)))
 
@@ -854,6 +917,45 @@ class ResolveAPI:
             if source_out_sec <= source_in_sec:
                 source_out_sec = source_in_sec + 0.04
 
+            audio_source_path = source_path
+            audio_source_in_sec = source_in_sec
+            audio_source_out_sec = source_out_sec
+            audio_media_item = media_item
+            audio_clip_fps = clip_fps
+            if audio_mode == "fixed_track":
+                audio_params = self._resolve_multicam_source_range(params, audio_track)
+                if audio_params:
+                    audio_source_path = audio_params.get("source_path") or audio_source_path
+                    audio_source_in_sec = _safe_float(
+                        audio_params.get("source_in_sec", audio_source_in_sec),
+                        audio_source_in_sec,
+                    )
+                    audio_source_out_sec = _safe_float(
+                        audio_params.get("source_out_sec", audio_source_out_sec),
+                        audio_source_out_sec,
+                    )
+                else:
+                    logger.warning(
+                        "Multicam program timeline: missing audio source for V%s at %.2fs",
+                        audio_track,
+                        start_sec,
+                    )
+            if audio_source_out_sec <= audio_source_in_sec:
+                audio_source_out_sec = audio_source_in_sec + 0.04
+            if audio_source_path != source_path:
+                audio_media_item = self.import_media_if_needed(str(audio_source_path))
+                if audio_media_item is None:
+                    logger.warning(
+                        "Multicam program timeline: audio import failed for %s; using video audio",
+                        audio_source_path,
+                    )
+                    audio_media_item = media_item
+                    audio_source_path = source_path
+                    audio_source_in_sec = source_in_sec
+                    audio_source_out_sec = source_out_sec
+            if audio_media_item is not None:
+                audio_clip_fps = self._get_media_item_fps(audio_media_item, fps)
+
             duration_frames = max(1, int(round((end_sec - start_sec) * fps)))
             desired_frame = int(round(timeline_start + start_sec * fps))
             if cursor_frame == int(timeline_start):
@@ -895,14 +997,26 @@ class ResolveAPI:
                 logger.warning("Multicam program timeline: %s", message)
                 errors.append(message)
                 continue
-            self.insert_clip_at_position_with_range(
-                "audio",
-                1,
-                media_item,
-                record_frame,
-                source_in_frame,
-                source_out_frame,
+            audio_source_in_frame = int(round(audio_source_in_sec * audio_clip_fps))
+            audio_source_duration_frames = max(
+                1, int(round((timeline_duration_frames / fps) * audio_clip_fps))
             )
+            audio_source_out_frame = audio_source_in_frame + audio_source_duration_frames
+            if audio_source_out_sec > audio_source_in_sec:
+                max_out_frame = int(round(audio_source_out_sec * audio_clip_fps))
+                if audio_source_out_frame > max_out_frame:
+                    audio_source_out_frame = max_out_frame
+                    if audio_source_out_frame <= audio_source_in_frame:
+                        audio_source_out_frame = audio_source_in_frame + 1
+            if audio_media_item is not None:
+                self.insert_clip_at_position_with_range(
+                    "audio",
+                    1,
+                    audio_media_item,
+                    record_frame,
+                    audio_source_in_frame,
+                    audio_source_out_frame,
+                )
 
         if errors:
             return {
@@ -939,6 +1053,41 @@ class ResolveAPI:
             if isinstance(candidate, str) and candidate:
                 return candidate
         return None
+
+    @staticmethod
+    def _resolve_multicam_source_range(
+        params: Dict[str, Any], track_index: int
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(params, dict):
+            return None
+        ranges = params.get("source_ranges")
+        if not isinstance(ranges, list):
+            return None
+        for entry in ranges:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                if int(entry.get("track_index", 0)) != int(track_index):
+                    continue
+            except Exception:
+                continue
+            path = entry.get("source_path")
+            if isinstance(path, str) and path:
+                return entry
+        return None
+
+    @staticmethod
+    def _get_multicam_audio_settings() -> tuple[str, int]:
+        mode = str(Config.get("multicam_audio_mode", "per_cut")).strip().lower()
+        if mode not in ("per_cut", "fixed_track"):
+            mode = "per_cut"
+        try:
+            track_index = int(Config.get("multicam_audio_track", 1))
+        except Exception:
+            track_index = 1
+        if track_index < 1:
+            track_index = 1
+        return mode, track_index
 
     @staticmethod
     def _unique_timeline_name(project: Any, base_name: str) -> str:

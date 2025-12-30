@@ -15,6 +15,11 @@ class AngleSelector:
         self.max_repeat = int(Config.get("multicam_max_repeat", 3))
         self.closeup_weight = float(Config.get("multicam_closeup_weight", 0.3))
         self.wide_weight = float(Config.get("multicam_wide_weight", 0.2))
+        self.gaze_enabled = bool(Config.get("multicam_gaze_enabled", False))
+        self.gaze_weight = float(Config.get("multicam_gaze_weight", 0.4))
+        self.gaze_priority_threshold = float(
+            Config.get("multicam_gaze_priority_threshold", 0.6)
+        )
         self.base_weights = {
             "sharpness": float(Config.get("multicam_weight_sharpness", 0.4)),
             "stability": float(Config.get("multicam_weight_stability", 0.3)),
@@ -73,9 +78,25 @@ class AngleSelector:
                         if (best_score - runner_up_score) <= 0.02:
                             best_angle = runner_up_angle
 
+            gaze_forced = False
+            if self.gaze_enabled:
+                gaze_scores: Dict[int, float] = {}
+                for angle_key, metrics in angle_metric_map.items():
+                    try:
+                        gaze_scores[angle_key] = float(metrics.get("gaze_score", 0.0) or 0.0)
+                    except Exception:
+                        gaze_scores[angle_key] = 0.0
+                if gaze_scores:
+                    gaze_angle, gaze_score = max(
+                        gaze_scores.items(), key=lambda item: item[1]
+                    )
+                    if gaze_score >= self.gaze_priority_threshold:
+                        best_angle = gaze_angle
+                        gaze_forced = True
+
             if best_angle == prev_angle:
                 repeat_count += 1
-                if repeat_count >= self.max_repeat:
+                if repeat_count >= self.max_repeat and not gaze_forced:
                     if len(sorted_angles) > 1:
                         best_angle = sorted_angles[1][0]
                         repeat_count = 1
@@ -107,6 +128,8 @@ class AngleSelector:
         tag: Optional[str] = None,
     ) -> float:
         weights = dict(self.base_weights)
+        if self.gaze_enabled and "gaze_score" in scores:
+            weights["gaze_score"] = self.gaze_weight
 
         if tag == "speaking":
             weights["face_score"] += self.closeup_weight
@@ -137,6 +160,8 @@ class AngleSelector:
             parts.append(f"[{tag}]")
         if float(scores.get("face_score", 0.0) or 0.0) > 0.7:
             parts.append("+ centered face")
+        if float(scores.get("gaze_score", 0.0) or 0.0) >= 0.7:
+            parts.append("+ gaze priority")
         return " ".join(parts)
 
     def _postprocess_short_segments(self, selections: List[Dict]) -> List[Dict]:
