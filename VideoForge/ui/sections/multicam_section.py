@@ -32,6 +32,10 @@ from VideoForge.ui.qt_compat import (
 )
 
 logger = logging.getLogger("VideoForge.ui.multicam")
+_LOGGED_BUILD_MARKER = False
+_LOGGED_ZERO_DEBUG: set[str] = set()
+_LOGGED_SCORE_DEBUG = False
+_BUILD_MARKER = "p11-debug-04"
 
 
 class MulticamWorker(QThread):
@@ -55,6 +59,8 @@ class MulticamWorker(QThread):
         self.mode = mode
         self.use_face = use_face
         self.use_llm = use_llm
+        self.base_offset = self._get_base_offset()
+        logger.info("Multicam scoring base_offset=%.2fs", self.base_offset)
 
     def run(self) -> None:
         try:
@@ -84,12 +90,14 @@ class MulticamWorker(QThread):
             selections = selector.select_angles(scored_segments, segment_tags)
             if not selections:
                 raise RuntimeError("Angle selection produced no cuts.")
+            selections = self._attach_source_ranges(selections)
 
             self.progress_updated.emit(90)
             generator = MulticamPlanGenerator()
             source_clips = self._get_source_clip_names()
+            source_paths = self._get_source_media_paths()
             plan = generator.generate_plan(
-                selections, self.timeline_info, source_clips
+                selections, self.timeline_info, source_clips, source_paths
             )
 
             self.progress_updated.emit(100)
@@ -125,6 +133,7 @@ class MulticamWorker(QThread):
         return segments
 
     def _score_segments(self, segments: List[Dict]) -> List[Dict]:
+        global _LOGGED_SCORE_DEBUG
         scorer = AngleScorer()
         video_tracks = int(self.timeline_info.get("video_tracks", 0))
         total = max(1, len(segments))
@@ -149,14 +158,27 @@ class MulticamWorker(QThread):
                 if not self.use_face:
                     metrics["face_score"] = 0.0
                 scores[angle_idx] = metrics
+            if scores and all(
+                all(float(value or 0.0) <= 0.0 for value in metrics.values())
+                for metrics in scores.values()
+            ):
+                logger.info("Multicam scoring: all-zero metrics at %.2fs", mid_sec)
+                if not _LOGGED_SCORE_DEBUG:
+                    logger.info(
+                        "Multicam scoring debug snapshot: last_error=%s last_debug=%s",
+                        getattr(scorer, "last_error", None),
+                        getattr(scorer, "last_debug", None),
+                    )
+                    _LOGGED_SCORE_DEBUG = True
             seg["scores"] = scores
         return segments
 
     def _score_item(self, item: Dict, mid_sec: float, scorer: AngleScorer) -> Dict[str, float]:
         timeline_start = float(item.get("timeline_start", 0.0))
+        abs_mid_sec = float(mid_sec) + float(self.base_offset)
         source_start = float(item.get("source_start", timeline_start))
         source_end = float(item.get("source_end", source_start))
-        source_time = source_start + max(0.0, mid_sec - timeline_start)
+        source_time = source_start + max(0.0, abs_mid_sec - timeline_start)
         if source_end > source_start:
             source_time = min(source_time, source_end)
         media_path = Path(item["media_path"])
@@ -165,8 +187,16 @@ class MulticamWorker(QThread):
 
             if should_use_subprocess():
                 try:
-                    return scorer.score_video_frame(media_path, source_time)
-                except Exception:
+                    metrics = scorer.score_video_frame(media_path, source_time)
+                    self._log_zero_metrics_debug(media_path, source_time, metrics, scorer)
+                    return metrics
+                except Exception as exc:
+                    logger.warning(
+                        "Multicam scoring: subprocess failed for %s at %.2fs: %s",
+                        media_path,
+                        source_time,
+                        exc,
+                    )
                     return {
                         "sharpness": 0.0,
                         "motion": 0.0,
@@ -185,7 +215,9 @@ class MulticamWorker(QThread):
                 "face_score": 0.0,
             }
         try:
-            return scorer.score_frame(frame)
+            metrics = scorer.score_frame(frame)
+            self._log_zero_metrics_debug(media_path, source_time, metrics, scorer)
+            return metrics
         except Exception:
             return {
                 "sharpness": 0.0,
@@ -194,15 +226,80 @@ class MulticamWorker(QThread):
                 "face_score": 0.0,
             }
 
+    @staticmethod
+    def _metrics_all_zero(metrics: Dict[str, float]) -> bool:
+        return all(float(value or 0.0) <= 0.0 for value in metrics.values())
+
+    @classmethod
+    def _log_zero_metrics_debug(
+        cls, media_path: Path, source_time: float, metrics: Dict[str, float], scorer: AngleScorer
+    ) -> None:
+        if not cls._metrics_all_zero(metrics):
+            return
+        debug = getattr(scorer, "last_debug", None)
+        error = getattr(scorer, "last_error", None)
+        key = str(media_path)
+        if debug or error:
+            logger.info(
+                "Multicam scoring debug: path=%s t=%.2fs metrics=%s error=%s debug=%s",
+                media_path,
+                source_time,
+                metrics,
+                error,
+                debug,
+            )
+            return
+        if key in _LOGGED_ZERO_DEBUG:
+            return
+        logger.info(
+            "Multicam scoring debug missing: path=%s t=%.2fs metrics=%s scorer=%s",
+            media_path,
+            source_time,
+            metrics,
+            type(scorer).__name__,
+        )
+        _LOGGED_ZERO_DEBUG.add(key)
+
     def _find_track_item(self, track_index: int, time_sec: float) -> Optional[Dict]:
+        abs_time = float(time_sec) + float(self.base_offset)
         for item in self.track_items:
             if int(item.get("track_index", 0)) != int(track_index):
                 continue
             start = float(item.get("timeline_start", 0.0))
             end = float(item.get("timeline_end", 0.0))
-            if start <= time_sec <= end:
+            if start <= abs_time <= end:
                 return item
         return None
+
+    def _attach_source_ranges(self, selections: List[Dict]) -> List[Dict]:
+        updated: List[Dict] = []
+        for sel in selections:
+            angle_index = int(sel.get("angle_index", 0))
+            track_index = angle_index + 1
+            start_sec = float(sel.get("start_sec", 0.0))
+            end_sec = float(sel.get("end_sec", start_sec))
+            item = self._find_track_item(track_index, start_sec)
+            if not item or not item.get("media_path"):
+                updated.append(sel)
+                continue
+
+            timeline_start = float(item.get("timeline_start", 0.0))
+            source_start = float(item.get("source_start", timeline_start))
+            source_end = float(item.get("source_end", source_start))
+            abs_start_sec = start_sec + float(self.base_offset)
+            abs_end_sec = end_sec + float(self.base_offset)
+            source_in = source_start + max(0.0, abs_start_sec - timeline_start)
+            source_out = source_start + max(0.0, abs_end_sec - timeline_start)
+            if source_out <= source_in:
+                source_out = source_in + 0.04
+            if source_end > source_start:
+                source_out = min(source_out, source_end)
+
+            sel["source_path"] = str(item.get("media_path"))
+            sel["source_in_sec"] = source_in
+            sel["source_out_sec"] = source_out
+            updated.append(sel)
+        return updated
 
     @staticmethod
     def _extract_frame_at(media_path: Path, timestamp_sec: float):
@@ -232,6 +329,29 @@ class MulticamWorker(QThread):
                 clip_name = f"Angle {track_index}"
             clip_names.append(clip_name)
         return clip_names
+
+    def _get_source_media_paths(self) -> List[str]:
+        video_tracks = int(self.timeline_info.get("video_tracks", 0))
+        media_paths: List[str] = []
+        for track_index in range(1, video_tracks + 1):
+            path = ""
+            for item in self.track_items:
+                if int(item.get("track_index", 0)) != track_index:
+                    continue
+                media_path = item.get("media_path")
+                if media_path:
+                    path = str(media_path)
+                    break
+            media_paths.append(path)
+        return media_paths
+
+    def _get_base_offset(self) -> float:
+        if not self.track_items:
+            return 0.0
+        try:
+            return min(float(item.get("timeline_start", 0.0)) for item in self.track_items)
+        except Exception:
+            return 0.0
 
 
 class MulticamSection(QWidget):
@@ -345,6 +465,17 @@ class MulticamSection(QWidget):
         Config.set("multicam_boundary_mode", mode_map.get(text, "hybrid"))
 
     def _on_generate_cuts(self) -> None:
+        global _LOGGED_BUILD_MARKER
+        if not _LOGGED_BUILD_MARKER:
+            try:
+                logger.info(
+                    "Multicam UI build %s: %s",
+                    _BUILD_MARKER,
+                    str(Path(__file__).resolve()),
+                )
+            except Exception:
+                logger.info("Multicam UI build %s: <path unavailable>", _BUILD_MARKER)
+            _LOGGED_BUILD_MARKER = True
         try:
             timeline_info, track_items = self._build_timeline_snapshot()
         except Exception as exc:
@@ -426,14 +557,33 @@ class MulticamSection(QWidget):
 
         try:
             result = self.resolve_api.apply_multicam_cuts(self.pending_plan)
-            if isinstance(result, dict) and result.get("status") == "edl_fallback":
-                path = result.get("edl_path")
-                message = str(result.get("message", "")).replace("\n", "<br>")
-                self.preview_text.setHtml(
-                    "<h3>EDL Export Complete</h3>"
-                    f"<p>{message}</p>"
-                    f"<p><b>File:</b> <code>{path}</code></p>"
-                )
+            if isinstance(result, dict):
+                status = result.get("status")
+                if status == "new_timeline":
+                    timeline_name = result.get("timeline_name", "Multicam Timeline")
+                    self.preview_text.setHtml(
+                        "<h3>Multicam Timeline Created</h3>"
+                        f"<p><b>Timeline:</b> {timeline_name}</p>"
+                        "<p>Review the new timeline for cut accuracy.</p>"
+                    )
+                elif status == "edl_fallback":
+                    path = result.get("edl_path")
+                    message = str(result.get("message", "")).replace("\n", "<br>")
+                    self.preview_text.setHtml(
+                        "<h3>EDL Export Complete</h3>"
+                        f"<p>{message}</p>"
+                        f"<p><b>File:</b> <code>{path}</code></p>"
+                    )
+                elif status == "new_timeline_failed":
+                    error = result.get("error", "Unknown error")
+                    self.preview_text.setHtml(
+                        "<b>Error:</b> Failed to build multicam timeline<br>"
+                        f"{error}"
+                    )
+                else:
+                    self.preview_text.setHtml(
+                        "<b>Success:</b> Multicam cuts applied to timeline"
+                    )
             else:
                 self.preview_text.setHtml(
                     "<b>Success:</b> Multicam cuts applied to timeline"
@@ -534,6 +684,36 @@ class MulticamSection(QWidget):
 
         if not track_items:
             raise RuntimeError("No clips found on video tracks.")
+
+        missing_tracks: List[int] = []
+        for track_index in range(1, video_tracks + 1):
+            first_item = next(
+                (item for item in track_items if int(item.get("track_index", 0)) == track_index),
+                None,
+            )
+            if first_item:
+                logger.info(
+                    "Multicam snapshot: track=%s clip=%s path=%s range=%.2f-%.2f",
+                    track_index,
+                    first_item.get("clip_name") or "",
+                    first_item.get("media_path") or "",
+                    float(first_item.get("timeline_start", 0.0)),
+                    float(first_item.get("timeline_end", 0.0)),
+                )
+            has_path = any(
+                item.get("media_path")
+                for item in track_items
+                if int(item.get("track_index", 0)) == track_index
+            )
+            if not has_path:
+                missing_tracks.append(track_index)
+
+        if missing_tracks:
+            missing = ", ".join(f"V{idx}" for idx in missing_tracks)
+            raise RuntimeError(
+                f"Missing media file path for tracks: {missing}. "
+                "Use original media (not compound), or render with file-backed clips."
+            )
 
         return timeline_info, track_items
 

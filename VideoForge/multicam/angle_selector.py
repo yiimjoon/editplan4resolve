@@ -24,6 +24,7 @@ class AngleSelector:
         selections: List[Dict] = []
         prev_angle = None
         repeat_count = 0
+        round_robin_index = 0
 
         for idx, segment in enumerate(segments):
             tag = None
@@ -49,14 +50,26 @@ class AngleSelector:
             if not angle_scores:
                 continue
 
-            best_angle = max(angle_scores, key=angle_scores.get)
+            sorted_angles = sorted(angle_scores.items(), key=lambda item: item[1], reverse=True)
+            best_angle, best_score = sorted_angles[0]
+
+            score_values = list(angle_scores.values())
+            all_equal = bool(score_values) and (max(score_values) - min(score_values)) <= 1e-4
+            if all_equal:
+                best_angle = sorted_angles[round_robin_index % len(sorted_angles)][0]
+                round_robin_index += 1
+            else:
+                if prev_angle is not None:
+                    runner_up_angle, runner_up_score = (
+                        sorted_angles[1] if len(sorted_angles) > 1 else (None, None)
+                    )
+                    if runner_up_angle is not None and best_angle == prev_angle:
+                        if (best_score - runner_up_score) <= 0.02:
+                            best_angle = runner_up_angle
 
             if best_angle == prev_angle:
                 repeat_count += 1
                 if repeat_count >= self.max_repeat:
-                    sorted_angles = sorted(
-                        angle_scores.items(), key=lambda item: item[1], reverse=True
-                    )
                     if len(sorted_angles) > 1:
                         best_angle = sorted_angles[1][0]
                         repeat_count = 1

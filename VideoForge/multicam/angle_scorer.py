@@ -20,6 +20,8 @@ class AngleScorer:
             .strip()
             .lower()
         )
+        self.last_debug = None
+        self.last_error = None
         self._prev_gray = None
         self._face_net = None
         self._face_proto: Optional[Path] = None
@@ -75,6 +77,8 @@ class AngleScorer:
         except Exception:
             pass
 
+        self.last_debug = None
+        self.last_error = None
         import cv2  # type: ignore
         import numpy as np  # type: ignore
 
@@ -94,17 +98,36 @@ class AngleScorer:
     def score_video_frame(self, video_path: Path, timestamp_sec: float) -> Dict[str, float]:
         """Score a frame from a video path at the given timestamp."""
         try:
-            from VideoForge.adapters.opencv_subprocess import run_angle_score, should_use_subprocess
+            from VideoForge.adapters.opencv_subprocess import (
+                run_angle_score,
+                run_angle_score_with_debug,
+                should_use_subprocess,
+            )
 
             if should_use_subprocess():
-                return run_angle_score(
-                    video_path=Path(video_path),
-                    timestamp_sec=float(timestamp_sec),
-                    face_detector=self.face_detector,
-                )
+                try:
+                    metrics, error, debug = run_angle_score_with_debug(
+                        video_path=Path(video_path),
+                        timestamp_sec=float(timestamp_sec),
+                        face_detector=self.face_detector,
+                    )
+                    self.last_error = error
+                    self.last_debug = debug
+                    return metrics
+                except Exception:
+                    metrics = run_angle_score(
+                        video_path=Path(video_path),
+                        timestamp_sec=float(timestamp_sec),
+                        face_detector=self.face_detector,
+                    )
+                    self.last_error = None
+                    self.last_debug = None
+                    return metrics
         except Exception as exc:
             logger.debug("OpenCV subprocess unavailable: %s", exc)
 
+        self.last_error = None
+        self.last_debug = None
         import cv2  # type: ignore
         import numpy as np  # type: ignore
 

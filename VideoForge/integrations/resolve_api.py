@@ -1,5 +1,6 @@
 import os
 import subprocess
+import math
 import logging
 import random
 import tempfile
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Iterable, Dict
 
 from VideoForge.agent.planner import EditPlan
+from VideoForge.config.config_manager import Config
 
 from VideoForge.integrations.resolve_python import _get_resolve
 
@@ -432,6 +434,19 @@ class ResolveAPI:
             split_available = self._resolve_split_method(timeline, track_count) is not None
         disable_method = self._resolve_disable_method(timeline, track_count)
         if not split_available or disable_method is None:
+            logger.info(
+                "Multicam cut: split_available=%s disable_method=%s; attempting new timeline build.",
+                split_available,
+                disable_method,
+            )
+            timeline_result = self._build_multicam_program_timeline(plan, fps)
+            if timeline_result.get("success"):
+                logger.info(
+                    "Multicam new timeline created: %s",
+                    timeline_result.get("timeline_name"),
+                )
+                return timeline_result
+            logger.warning("Multicam new timeline failed: %s", timeline_result)
             return self._export_multicam_edl(plan, fps)
 
         actions_sorted = sorted(
@@ -469,6 +484,494 @@ class ResolveAPI:
                         return self._export_multicam_edl(plan, fps)
 
         return {"success": True}
+
+    def _build_multicam_timeline(self, plan: EditPlan, fps: float) -> Dict[str, Any]:
+        project = self.get_current_project()
+        current_timeline = self.get_current_timeline()
+        current_name = "Timeline"
+        getter = getattr(current_timeline, "GetName", None)
+        if callable(getter):
+            try:
+                current_name = str(getter())
+            except Exception:
+                pass
+        base_name = f"{current_name} (Multicam)"
+        timeline_name = self._unique_timeline_name(project, base_name)
+
+        media_pool = self.get_media_pool()
+        source_items = self._snapshot_video_track_items(current_timeline)
+        program_track_index = self._resolve_program_track_index(source_items)
+        create_method = getattr(media_pool, "CreateEmptyTimeline", None)
+        create_context = "media_pool.CreateEmptyTimeline"
+        if not callable(create_method):
+            create_method = getattr(project, "CreateEmptyTimeline", None)
+            create_context = "project.CreateEmptyTimeline"
+        if not callable(create_method):
+            create_method = getattr(project, "CreateTimeline", None)
+            create_context = "project.CreateTimeline"
+        if not callable(create_method):
+            logger.warning(
+                "Multicam timeline creation not available (CreateEmptyTimeline/CreateTimeline missing)."
+            )
+            return {"success": False, "error": "CreateEmptyTimeline not available"}
+
+        try:
+            new_timeline = create_method(timeline_name)
+        except Exception as exc:
+            logger.warning("Multicam timeline creation failed (%s): %s", create_context, exc)
+            return {"success": False, "error": f"Failed to create timeline: {exc}"}
+        if not new_timeline:
+            logger.warning("Multicam timeline creation returned None for %s", timeline_name)
+            return {"success": False, "error": "Timeline creation returned None"}
+
+        set_current = getattr(project, "SetCurrentTimeline", None)
+        if callable(set_current):
+            try:
+                set_current(new_timeline)
+            except Exception:
+                pass
+        logger.info("Multicam timeline created: %s", timeline_name)
+        try:
+            current_name = ""
+            current_tl = self.get_current_timeline()
+            name_getter = getattr(current_tl, "GetName", None)
+            if callable(name_getter):
+                current_name = str(name_getter())
+            logger.info("Multicam timeline current: %s", current_name or "<unknown>")
+        except Exception as exc:
+            logger.info("Multicam timeline current read failed: %s", exc)
+
+        timeline_start = self.get_timeline_start_frame()
+        logger.info("Multicam timeline: start_frame=%s", timeline_start)
+        base_offset_sec = 0.0
+        if source_items:
+            base_offset_sec = min(
+                float(item.get("timeline_start", 0.0)) for item in source_items
+            )
+            logger.info(
+                "Multicam timeline: rebuilding %s source items (base_offset=%.2fs)",
+                len(source_items),
+                base_offset_sec,
+            )
+        for item in source_items:
+            media_path = item.get("media_path")
+            if not media_path:
+                logger.warning(
+                    "Multicam timeline: missing media path for track %s",
+                    item.get("track_index"),
+                )
+                continue
+            media_item = self.import_media_if_needed(str(media_path))
+            if media_item is None:
+                logger.warning("Multicam timeline: import failed for %s", media_path)
+                continue
+            clip_fps = self._get_media_item_fps(media_item, fps)
+            if abs(clip_fps - fps) > 0.01:
+                logger.info(
+                    "Multicam timeline: clip fps %.3f differs from timeline fps %.3f (%s)",
+                    clip_fps,
+                    fps,
+                    media_path,
+                )
+            relative_start = float(item.get("timeline_start", 0.0)) - base_offset_sec
+            record_frame = int(round(timeline_start + relative_start * fps))
+            source_in_frame = int(round(float(item["source_start"]) * clip_fps))
+            source_out_frame = int(round(float(item["source_end"]) * clip_fps))
+            inserted = self.insert_clip_at_position_with_range(
+                "video",
+                int(item["track_index"]),
+                media_item,
+                record_frame,
+                source_in_frame,
+                source_out_frame,
+            )
+            if inserted is None:
+                logger.warning(
+                    "Multicam timeline: base insert failed for %s on track %s",
+                    media_path,
+                    item.get("track_index"),
+                )
+        actions = [a for a in plan.actions if a.action_type == "cut_and_switch_angle"]
+        actions.sort(key=lambda action: float(action.params.get("start_sec", 0.0)))
+
+        errors: List[str] = []
+        cursor_frame = int(timeline_start)
+        def _safe_float(value: Any, fallback: float) -> float:
+            if value is None:
+                return float(fallback)
+            try:
+                return float(value)
+            except Exception:
+                return float(fallback)
+
+        for action in actions:
+            params = action.params or {}
+            start_sec = _safe_float(params.get("start_sec", 0.0), 0.0)
+            end_sec = _safe_float(params.get("end_sec", start_sec), start_sec)
+            if end_sec <= start_sec:
+                end_sec = start_sec + 0.04
+            source_path = self._resolve_multicam_source_path(params)
+            if not source_path:
+                message = f"Missing source path for segment {start_sec:.2f}-{end_sec:.2f}"
+                logger.warning("Multicam timeline: %s", message)
+                errors.append(message)
+                continue
+            logger.info(
+                "Multicam timeline: segment %.2f-%.2f source=%s",
+                start_sec,
+                end_sec,
+                source_path,
+            )
+            media_item = self.import_media_if_needed(str(source_path))
+            if media_item is None:
+                message = f"Import failed for {source_path}"
+                logger.warning("Multicam timeline: %s", message)
+                errors.append(message)
+                continue
+
+            clip_fps = self._get_media_item_fps(media_item, fps)
+            if abs(clip_fps - fps) > 0.01:
+                logger.info(
+                    "Multicam timeline: clip fps %.3f differs from timeline fps %.3f (%s)",
+                    clip_fps,
+                    fps,
+                    source_path,
+                )
+            source_in_sec = _safe_float(params.get("source_in_sec", start_sec), start_sec)
+            source_out_sec = _safe_float(params.get("source_out_sec", end_sec), end_sec)
+            if source_out_sec <= source_in_sec:
+                source_out_sec = source_in_sec + 0.04
+
+            duration_frames = max(1, int(round((end_sec - start_sec) * fps)))
+            desired_frame = int(round(timeline_start + start_sec * fps))
+            if cursor_frame == int(timeline_start):
+                cursor_frame = desired_frame
+            record_frame = cursor_frame
+            if record_frame != desired_frame:
+                logger.info(
+                    "Multicam timeline: drifted record_frame from %s to %s",
+                    desired_frame,
+                    record_frame,
+                )
+            source_in_frame = int(round(source_in_sec * clip_fps))
+            source_duration_frames = max(
+                1, int(round((duration_frames / fps) * clip_fps))
+            )
+            source_out_frame = source_in_frame + source_duration_frames
+            timeline_duration_frames = max(
+                1, int(math.floor(source_duration_frames * fps / clip_fps))
+            )
+            if timeline_duration_frames != duration_frames:
+                logger.info(
+                    "Multicam timeline: duration %s frames adjusted to %s for clip fps %.3f",
+                    duration_frames,
+                    timeline_duration_frames,
+                    clip_fps,
+                )
+            cursor_frame = record_frame + timeline_duration_frames
+            logger.info(
+                "Multicam timeline: record_frame=%s source_frames=%s-%s",
+                record_frame,
+                source_in_frame,
+                source_out_frame,
+            )
+
+            inserted_video = self.insert_clip_at_position_with_range(
+                "video",
+                program_track_index,
+                media_item,
+                record_frame,
+                source_in_frame,
+                source_out_frame,
+            )
+            if inserted_video is None:
+                message = f"Insert failed for {source_path} at {start_sec:.2f}s"
+                logger.warning("Multicam timeline: %s", message)
+                errors.append(message)
+                continue
+            logger.info(
+                "Multicam timeline: inserted video at %s (frames %s-%s)",
+                record_frame,
+                source_in_frame,
+                source_out_frame,
+            )
+
+            self.insert_clip_at_position_with_range(
+                "audio",
+                1,
+                media_item,
+                record_frame,
+                source_in_frame,
+                source_out_frame,
+            )
+
+        try:
+            track_counts = []
+            current_tl = self.get_current_timeline()
+            total_tracks = int(current_tl.GetTrackCount("video") or 0)
+            for track_index in range(1, total_tracks + 1):
+                items = current_tl.GetItemListInTrack("video", track_index) or []
+                track_counts.append(f"V{track_index}={len(items)}")
+            logger.info("Multicam timeline track counts: %s", ", ".join(track_counts))
+        except Exception as exc:
+            logger.info("Multicam timeline track count read failed: %s", exc)
+
+        try:
+            current_tl = self.get_current_timeline()
+            program_items = current_tl.GetItemListInTrack("video", program_track_index) or []
+        except Exception:
+            program_items = []
+
+        if not program_items:
+            logger.warning(
+                "Multicam timeline: program track empty; building program-only timeline."
+            )
+            return self._build_multicam_program_timeline(plan, fps)
+
+        if errors:
+            return {
+                "success": False,
+                "status": "new_timeline_failed",
+                "timeline_name": timeline_name,
+                "error": "; ".join(errors[:3]),
+                "details": errors,
+            }
+
+        return {"success": True, "status": "new_timeline", "timeline_name": timeline_name}
+
+    def _snapshot_video_track_items(self, timeline: Any) -> List[Dict[str, Any]]:
+        track_count = int(timeline.GetTrackCount("video") or 0)
+        items: List[Dict[str, Any]] = []
+        for track_index in range(1, track_count + 1):
+            for item in timeline.GetItemListInTrack("video", track_index) or []:
+                timeline_range = self.get_item_range_seconds(item)
+                if not timeline_range:
+                    continue
+                source_range = self.get_clip_source_range_seconds(item) or timeline_range
+                media_path = self.get_item_media_path(item)
+                items.append(
+                    {
+                        "track_index": int(track_index),
+                        "timeline_start": float(timeline_range[0]),
+                        "timeline_end": float(timeline_range[1]),
+                        "source_start": float(source_range[0]),
+                        "source_end": float(source_range[1]),
+                        "media_path": media_path,
+                    }
+                )
+        return items
+
+    def _build_multicam_program_timeline(self, plan: EditPlan, fps: float) -> Dict[str, Any]:
+        project = self.get_current_project()
+        current_timeline = self.get_current_timeline()
+        current_name = "Timeline"
+        getter = getattr(current_timeline, "GetName", None)
+        if callable(getter):
+            try:
+                current_name = str(getter())
+            except Exception:
+                pass
+        base_name = f"{current_name} (Multicam Program)"
+        timeline_name = self._unique_timeline_name(project, base_name)
+
+        media_pool = self.get_media_pool()
+        create_method = getattr(media_pool, "CreateEmptyTimeline", None)
+        create_context = "media_pool.CreateEmptyTimeline"
+        if not callable(create_method):
+            create_method = getattr(project, "CreateEmptyTimeline", None)
+            create_context = "project.CreateEmptyTimeline"
+        if not callable(create_method):
+            create_method = getattr(project, "CreateTimeline", None)
+            create_context = "project.CreateTimeline"
+        if not callable(create_method):
+            logger.warning(
+                "Program timeline creation not available (CreateEmptyTimeline/CreateTimeline missing)."
+            )
+            return {"success": False, "error": "CreateEmptyTimeline not available"}
+
+        try:
+            new_timeline = create_method(timeline_name)
+        except Exception as exc:
+            logger.warning("Program timeline creation failed (%s): %s", create_context, exc)
+            return {"success": False, "error": f"Failed to create timeline: {exc}"}
+        if not new_timeline:
+            logger.warning("Program timeline creation returned None for %s", timeline_name)
+            return {"success": False, "error": "Timeline creation returned None"}
+
+        set_current = getattr(project, "SetCurrentTimeline", None)
+        if callable(set_current):
+            try:
+                set_current(new_timeline)
+            except Exception:
+                pass
+        logger.info("Multicam program timeline created: %s", timeline_name)
+
+        timeline_start = self.get_timeline_start_frame()
+        actions = [a for a in plan.actions if a.action_type == "cut_and_switch_angle"]
+        actions.sort(key=lambda action: float(action.params.get("start_sec", 0.0)))
+
+        errors: List[str] = []
+        cursor_frame = int(timeline_start)
+
+        def _safe_float(value: Any, fallback: float) -> float:
+            if value is None:
+                return float(fallback)
+            try:
+                return float(value)
+            except Exception:
+                return float(fallback)
+
+        for action in actions:
+            params = action.params or {}
+            start_sec = _safe_float(params.get("start_sec", 0.0), 0.0)
+            end_sec = _safe_float(params.get("end_sec", start_sec), start_sec)
+            if end_sec <= start_sec:
+                end_sec = start_sec + 0.04
+            source_path = self._resolve_multicam_source_path(params)
+            if not source_path:
+                message = f"Missing source path for segment {start_sec:.2f}-{end_sec:.2f}"
+                logger.warning("Multicam program timeline: %s", message)
+                errors.append(message)
+                continue
+
+            media_item = self.import_media_if_needed(str(source_path))
+            if media_item is None:
+                message = f"Import failed for {source_path}"
+                logger.warning("Multicam program timeline: %s", message)
+                errors.append(message)
+                continue
+
+            clip_fps = self._get_media_item_fps(media_item, fps)
+            if abs(clip_fps - fps) > 0.01:
+                logger.info(
+                    "Multicam program timeline: clip fps %.3f differs from timeline fps %.3f (%s)",
+                    clip_fps,
+                    fps,
+                    source_path,
+                )
+            source_in_sec = _safe_float(params.get("source_in_sec", start_sec), start_sec)
+            source_out_sec = _safe_float(params.get("source_out_sec", end_sec), end_sec)
+            if source_out_sec <= source_in_sec:
+                source_out_sec = source_in_sec + 0.04
+
+            duration_frames = max(1, int(round((end_sec - start_sec) * fps)))
+            desired_frame = int(round(timeline_start + start_sec * fps))
+            if cursor_frame == int(timeline_start):
+                cursor_frame = desired_frame
+            record_frame = cursor_frame
+            if record_frame != desired_frame:
+                logger.info(
+                    "Multicam program timeline: drifted record_frame from %s to %s",
+                    desired_frame,
+                    record_frame,
+                )
+            source_in_frame = int(round(source_in_sec * clip_fps))
+            source_duration_frames = max(
+                1, int(round((duration_frames / fps) * clip_fps))
+            )
+            source_out_frame = source_in_frame + source_duration_frames
+            timeline_duration_frames = max(
+                1, int(math.floor(source_duration_frames * fps / clip_fps))
+            )
+            if timeline_duration_frames != duration_frames:
+                logger.info(
+                    "Multicam program timeline: duration %s frames adjusted to %s for clip fps %.3f",
+                    duration_frames,
+                    timeline_duration_frames,
+                    clip_fps,
+                )
+            cursor_frame = record_frame + timeline_duration_frames
+
+            inserted_video = self.insert_clip_at_position_with_range(
+                "video",
+                1,
+                media_item,
+                record_frame,
+                source_in_frame,
+                source_out_frame,
+            )
+            if inserted_video is None:
+                message = f"Insert failed for {source_path} at {start_sec:.2f}s"
+                logger.warning("Multicam program timeline: %s", message)
+                errors.append(message)
+                continue
+            self.insert_clip_at_position_with_range(
+                "audio",
+                1,
+                media_item,
+                record_frame,
+                source_in_frame,
+                source_out_frame,
+            )
+
+        if errors:
+            return {
+                "success": False,
+                "status": "program_timeline_failed",
+                "timeline_name": timeline_name,
+                "error": "; ".join(errors[:3]),
+                "details": errors,
+            }
+
+        return {"success": True, "status": "program_timeline", "timeline_name": timeline_name}
+
+    @staticmethod
+    def _resolve_program_track_index(items: List[Dict[str, Any]]) -> int:
+        if not items:
+            return 1
+        max_track = max(int(item.get("track_index", 1)) for item in items)
+        return max_track + 1
+
+    @staticmethod
+    def _resolve_multicam_source_path(params: Dict[str, Any]) -> Optional[str]:
+        if not isinstance(params, dict):
+            return None
+        direct_path = params.get("source_path")
+        if isinstance(direct_path, str) and direct_path:
+            return direct_path
+        source_paths = params.get("source_paths")
+        try:
+            target = int(params.get("target_angle_track", 0))
+        except Exception:
+            target = 0
+        if isinstance(source_paths, list) and 0 <= target < len(source_paths):
+            candidate = source_paths[target]
+            if isinstance(candidate, str) and candidate:
+                return candidate
+        return None
+
+    @staticmethod
+    def _unique_timeline_name(project: Any, base_name: str) -> str:
+        names = set()
+        count = 0
+        getter = getattr(project, "GetTimelineCount", None)
+        if callable(getter):
+            try:
+                count = int(getter() or 0)
+            except Exception:
+                count = 0
+        if count:
+            by_index = getattr(project, "GetTimelineByIndex", None)
+            if callable(by_index):
+                for idx in range(1, count + 1):
+                    try:
+                        timeline = by_index(idx)
+                    except Exception:
+                        timeline = None
+                    if timeline is None:
+                        continue
+                    name_getter = getattr(timeline, "GetName", None)
+                    if callable(name_getter):
+                        try:
+                            names.add(str(name_getter()))
+                        except Exception:
+                            continue
+        if base_name not in names:
+            return base_name
+        suffix = 2
+        while f"{base_name} {suffix}" in names:
+            suffix += 1
+        return f"{base_name} {suffix}"
 
     def _split_all_tracks(self, timeline: Any, track_count: int, frame: int) -> None:
         for track_index in range(1, track_count + 1):
@@ -529,8 +1032,29 @@ class ResolveAPI:
             return False
 
     def _export_multicam_edl(self, plan: EditPlan, fps: float) -> Dict[str, Any]:
-        output_dir = Path(tempfile.gettempdir())
-        output_path = output_dir / "videoforge_multicam.edl"
+        edl_setting = str(Config.get("multicam_edl_output_dir", "") or "").strip()
+        logger.info("Multicam EDL output setting: %s", edl_setting or "<default>")
+        if edl_setting:
+            candidate = Path(edl_setting).expanduser()
+            if candidate.suffix.lower() == ".edl":
+                output_path = candidate
+                output_dir = output_path.parent
+            else:
+                output_dir = candidate
+                output_path = output_dir / "videoforge_multicam.edl"
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                logger.warning(
+                    "Invalid multicam EDL output dir (%s); falling back to temp: %s",
+                    output_dir,
+                    exc,
+                )
+                output_dir = Path(tempfile.gettempdir())
+                output_path = output_dir / "videoforge_multicam.edl"
+        else:
+            output_dir = Path(tempfile.gettempdir())
+            output_path = output_dir / "videoforge_multicam.edl"
         timeline_start = self.get_timeline_start_frame()
         actions = [a for a in plan.actions if a.action_type == "cut_and_switch_angle"]
         actions.sort(key=lambda action: float(action.params.get("start_sec", 0.0)))
@@ -1380,10 +1904,19 @@ class ResolveAPI:
             }
             try:
                 append_method([payload])
-                logger.info("Insert clip range debug: AppendToTimeline payload succeeded: %s", payload)
-                return self._find_item_near_frame(
+                logger.info(
+                    "Insert clip range debug: AppendToTimeline payload succeeded: %s",
+                    payload,
+                )
+                inserted = self._find_item_near_frame(
                     track_type, track_index, int(record_frame)
                 )
+                if inserted is None:
+                    logger.info(
+                        "Insert clip range debug: append succeeded but timeline item not located"
+                    )
+                    return clip
+                return inserted
             except Exception as exc:
                 logger.info("Insert clip range debug: AppendToTimeline failed: %s", exc)
 
@@ -1589,6 +2122,46 @@ class ResolveAPI:
             if duration_sec:
                 return int(round(duration_sec * fps))
         return 0
+
+    @staticmethod
+    def _parse_fps_value(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except Exception:
+            pass
+        text = str(value).strip().lower()
+        if not text:
+            return None
+        for token in text.replace(",", ".").split():
+            try:
+                return float(token)
+            except Exception:
+                continue
+        return None
+
+    def _get_media_item_fps(self, clip: Any, fallback_fps: float) -> float:
+        props = {}
+        prop_method = getattr(clip, "GetClipProperty", None)
+        if callable(prop_method):
+            try:
+                props = prop_method() or {}
+            except Exception:
+                props = {}
+        for key in ("FPS", "FrameRate", "Frame Rate"):
+            value = None
+            if props:
+                value = props.get(key)
+            if value is None and callable(prop_method):
+                try:
+                    value = clip.GetClipProperty(key)
+                except Exception:
+                    value = None
+            fps = self._parse_fps_value(value)
+            if fps:
+                return float(fps)
+        return float(fallback_fps)
 
     @staticmethod
     def _ffprobe_duration_seconds(path: str) -> float | None:

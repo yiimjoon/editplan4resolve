@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import ctypes
+import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -225,22 +228,77 @@ def _face_score(frame: np.ndarray, face_detector: str) -> float:
     return _detect_face_haar(frame)
 
 
-def _angle_score(video_path: Path, timestamp: float, face_detector: str) -> Dict[str, float]:
+def _to_short_path(path: Path) -> Optional[Path]:
+    if os.name != "nt":
+        return None
+    try:
+        buffer_len = 512
+        buf = ctypes.create_unicode_buffer(buffer_len)
+        result = ctypes.windll.kernel32.GetShortPathNameW(str(path), buf, buffer_len)
+        if result == 0:
+            return None
+        return Path(buf.value)
+    except Exception:
+        return None
+
+
+def _angle_score(
+    video_path: Path, timestamp: float, face_detector: str
+) -> Tuple[Dict[str, float], Optional[str], Dict[str, Any]]:
+    debug: Dict[str, Any] = {}
+    try:
+        debug["worker_path"] = str(Path(__file__).resolve())
+    except Exception:
+        debug["worker_path"] = None
+    debug["worker_cwd"] = os.getcwd()
+    debug["worker_exe"] = sys.executable
+    debug["sys_path0"] = sys.path[0] if sys.path else None
+    used_path = video_path
+    used_short_path = False
+
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        return {"sharpness": 0.0, "motion": 0.0, "stability": 0.0, "face_score": 0.0}
+        short_path = _to_short_path(video_path)
+        if short_path and short_path != video_path:
+            used_path = short_path
+            used_short_path = True
+            cap = cv2.VideoCapture(str(short_path))
+        if not cap.isOpened():
+            debug["path_used"] = str(used_path)
+            debug["used_short_path"] = used_short_path
+            return (
+                {"sharpness": 0.0, "motion": 0.0, "stability": 0.0, "face_score": 0.0},
+                f"cap_open_failed: {video_path}",
+                debug,
+            )
 
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    debug["path_used"] = str(used_path)
+    debug["used_short_path"] = used_short_path
+    debug["fps"] = fps
     if fps <= 0:
         cap.release()
-        return {"sharpness": 0.0, "motion": 0.0, "stability": 0.0, "face_score": 0.0}
+        return (
+            {"sharpness": 0.0, "motion": 0.0, "stability": 0.0, "face_score": 0.0},
+            f"fps_missing: {video_path}",
+            debug,
+        )
 
     frame_idx = max(0, int(round(float(timestamp) * fps)))
+    debug["frame_idx"] = frame_idx
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
     ret, frame = cap.read()
     if not ret or frame is None:
         cap.release()
-        return {"sharpness": 0.0, "motion": 0.0, "stability": 0.0, "face_score": 0.0}
+        return (
+            {"sharpness": 0.0, "motion": 0.0, "stability": 0.0, "face_score": 0.0},
+            f"frame_read_failed: {video_path} @ {timestamp:.2f}s",
+            debug,
+        )
+
+    debug["frame_shape"] = list(frame.shape)
+    debug["frame_mean"] = float(frame.mean())
+    debug["frame_std"] = float(frame.std())
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     prev_gray = None
@@ -256,12 +314,16 @@ def _angle_score(video_path: Path, timestamp: float, face_detector: str) -> Dict
     stability = 1.0 - min(_edge_hist_variance(gray) / 10000.0, 1.0)
     face_score = min(max(_face_score(frame, face_detector), 0.0), 1.0)
 
-    return {
-        "sharpness": float(max(sharpness, 0.0)),
-        "motion": float(max(motion, 0.0)),
-        "stability": float(max(stability, 0.0)),
-        "face_score": float(face_score),
-    }
+    return (
+        {
+            "sharpness": float(max(sharpness, 0.0)),
+            "motion": float(max(motion, 0.0)),
+            "stability": float(max(stability, 0.0)),
+            "face_score": float(face_score),
+        },
+        None,
+        debug,
+    )
 
 
 def main() -> None:
@@ -294,8 +356,13 @@ def main() -> None:
         print(json.dumps({"metrics": metrics}))
         return
 
-    metrics = _angle_score(Path(args.video), float(args.timestamp), str(args.face_detector))
-    print(json.dumps({"metrics": metrics}))
+    metrics, error, debug = _angle_score(
+        Path(args.video), float(args.timestamp), str(args.face_detector)
+    )
+    payload = {"metrics": metrics, "debug": debug}
+    if error:
+        payload["error"] = error
+    print(json.dumps(payload))
 
 
 if __name__ == "__main__":
