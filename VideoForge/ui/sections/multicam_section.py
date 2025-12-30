@@ -11,6 +11,7 @@ from VideoForge.core.segment_store import SegmentStore
 from VideoForge.multicam.angle_scorer import AngleScorer
 from VideoForge.multicam.angle_selector import AngleSelector
 from VideoForge.multicam.boundary_detector import BoundaryDetector
+from VideoForge.multicam.camera_layout import get_track_yaw
 from VideoForge.multicam.llm_tagger import LLMTagger
 from VideoForge.multicam.plan_generator import MulticamPlanGenerator
 from VideoForge.ui.qt_compat import (
@@ -152,9 +153,11 @@ class MulticamWorker(QThread):
                     "motion": 0.0,
                     "stability": 0.0,
                     "face_score": 0.0,
+                    "gaze_score": 0.0,
                 }
                 if item and item.get("media_path"):
-                    metrics = self._score_item(item, mid_sec, scorer)
+                    camera_yaw = get_track_yaw(track_index, video_tracks)
+                    metrics = self._score_item(item, mid_sec, scorer, camera_yaw)
                 if not self.use_face:
                     metrics["face_score"] = 0.0
                 scores[angle_idx] = metrics
@@ -173,7 +176,13 @@ class MulticamWorker(QThread):
             seg["scores"] = scores
         return segments
 
-    def _score_item(self, item: Dict, mid_sec: float, scorer: AngleScorer) -> Dict[str, float]:
+    def _score_item(
+        self,
+        item: Dict,
+        mid_sec: float,
+        scorer: AngleScorer,
+        camera_yaw: Optional[float],
+    ) -> Dict[str, float]:
         timeline_start = float(item.get("timeline_start", 0.0))
         abs_mid_sec = float(mid_sec) + float(self.base_offset)
         source_start = float(item.get("source_start", timeline_start))
@@ -187,7 +196,11 @@ class MulticamWorker(QThread):
 
             if should_use_subprocess():
                 try:
-                    metrics = scorer.score_video_frame(media_path, source_time)
+                    metrics = scorer.score_video_frame(
+                        media_path,
+                        source_time,
+                        camera_yaw=camera_yaw,
+                    )
                     self._log_zero_metrics_debug(media_path, source_time, metrics, scorer)
                     return metrics
                 except Exception as exc:
@@ -213,9 +226,10 @@ class MulticamWorker(QThread):
                 "motion": 0.0,
                 "stability": 0.0,
                 "face_score": 0.0,
+                "gaze_score": 0.0,
             }
         try:
-            metrics = scorer.score_frame(frame)
+            metrics = scorer.score_frame(frame, camera_yaw=camera_yaw)
             self._log_zero_metrics_debug(media_path, source_time, metrics, scorer)
             return metrics
         except Exception:
@@ -224,6 +238,7 @@ class MulticamWorker(QThread):
                 "motion": 0.0,
                 "stability": 0.0,
                 "face_score": 0.0,
+                "gaze_score": 0.0,
             }
 
     @staticmethod

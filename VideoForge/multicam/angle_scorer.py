@@ -20,13 +20,17 @@ class AngleScorer:
             .strip()
             .lower()
         )
+        self.gaze_enabled = bool(Config.get("multicam_gaze_enabled", False))
         self.last_debug = None
         self.last_error = None
+        self.last_gaze_debug = None
+        self.last_gaze_error = None
         self._prev_gray = None
         self._face_net = None
         self._face_proto: Optional[Path] = None
         self._face_model: Optional[Path] = None
         self._face_detector_type = self.face_detector
+        self._gaze_scorer = None
         self._init_face_detector()
 
     def _init_face_detector(self) -> None:
@@ -67,7 +71,7 @@ class AngleScorer:
             return Path(configured).expanduser()
         return None
 
-    def score_frame(self, frame) -> Dict[str, float]:
+    def score_frame(self, frame, camera_yaw: Optional[float] = None) -> Dict[str, float]:
         """Score a single frame. Requires OpenCV in-process."""
         try:
             from VideoForge.adapters.opencv_subprocess import should_use_subprocess
@@ -79,6 +83,8 @@ class AngleScorer:
 
         self.last_debug = None
         self.last_error = None
+        self.last_gaze_debug = None
+        self.last_gaze_error = None
         import cv2  # type: ignore
         import numpy as np  # type: ignore
 
@@ -87,15 +93,22 @@ class AngleScorer:
         stability = self._normalize_stability(self._edge_hist_variance(gray, cv2))
         motion = self._normalize_motion(self._calc_motion(self._prev_gray, gray, cv2, np))
         face_score = self._normalize_face_score(self._detect_face_score(frame, cv2))
+        gaze_score = self._score_gaze_frame(frame, camera_yaw)
         self._prev_gray = gray
         return {
             "sharpness": sharpness,
             "motion": motion,
             "stability": stability,
             "face_score": face_score,
+            "gaze_score": gaze_score,
         }
 
-    def score_video_frame(self, video_path: Path, timestamp_sec: float) -> Dict[str, float]:
+    def score_video_frame(
+        self,
+        video_path: Path,
+        timestamp_sec: float,
+        camera_yaw: Optional[float] = None,
+    ) -> Dict[str, float]:
         """Score a frame from a video path at the given timestamp."""
         try:
             from VideoForge.adapters.opencv_subprocess import (
@@ -113,6 +126,8 @@ class AngleScorer:
                     )
                     self.last_error = error
                     self.last_debug = debug
+                    gaze_score = self._score_gaze_video(video_path, timestamp_sec, camera_yaw)
+                    metrics["gaze_score"] = gaze_score
                     return metrics
                 except Exception:
                     metrics = run_angle_score(
@@ -122,12 +137,17 @@ class AngleScorer:
                     )
                     self.last_error = None
                     self.last_debug = None
+                    metrics["gaze_score"] = self._score_gaze_video(
+                        video_path, timestamp_sec, camera_yaw
+                    )
                     return metrics
         except Exception as exc:
             logger.debug("OpenCV subprocess unavailable: %s", exc)
 
         self.last_error = None
         self.last_debug = None
+        self.last_gaze_debug = None
+        self.last_gaze_error = None
         import cv2  # type: ignore
         import numpy as np  # type: ignore
 
@@ -158,12 +178,63 @@ class AngleScorer:
         stability = self._normalize_stability(self._edge_hist_variance(gray, cv2))
         motion = self._normalize_motion(self._calc_motion(prev_gray, gray, cv2, np))
         face_score = self._normalize_face_score(self._detect_face_score(frame, cv2))
+        gaze_score = self._score_gaze_video(video_path, timestamp_sec, camera_yaw)
         return {
             "sharpness": sharpness,
             "motion": motion,
             "stability": stability,
             "face_score": face_score,
+            "gaze_score": gaze_score,
         }
+
+    def _score_gaze_video(
+        self, video_path: Path, timestamp_sec: float, camera_yaw: Optional[float]
+    ) -> float:
+        if not self.gaze_enabled or camera_yaw is None:
+            return 0.0
+        try:
+            from VideoForge.multicam.gaze_scorer import GazeScorer
+
+            if self._gaze_scorer is None:
+                self._gaze_scorer = GazeScorer()
+            score = self._gaze_scorer.score_video_frame(
+                Path(video_path), float(timestamp_sec), float(camera_yaw)
+            )
+            self.last_gaze_debug = self._gaze_scorer.last_debug
+            self.last_gaze_error = self._gaze_scorer.last_error
+            self._merge_gaze_debug(self._gaze_scorer.last_debug)
+            return float(score)
+        except Exception as exc:
+            self.last_gaze_error = str(exc)
+            return 0.0
+
+    def _score_gaze_frame(self, frame, camera_yaw: Optional[float]) -> float:
+        if not self.gaze_enabled or camera_yaw is None:
+            return 0.0
+        try:
+            from VideoForge.multicam.gaze_scorer import GazeScorer
+
+            if self._gaze_scorer is None:
+                self._gaze_scorer = GazeScorer()
+            score = self._gaze_scorer.score_frame(frame, float(camera_yaw))
+            self.last_gaze_debug = self._gaze_scorer.last_debug
+            self.last_gaze_error = self._gaze_scorer.last_error
+            self._merge_gaze_debug(self._gaze_scorer.last_debug)
+            return float(score)
+        except Exception as exc:
+            self.last_gaze_error = str(exc)
+            return 0.0
+
+    def _merge_gaze_debug(self, gaze_debug: Optional[dict]) -> None:
+        if not gaze_debug:
+            return
+        if self.last_debug is None:
+            self.last_debug = {"gaze": gaze_debug}
+            return
+        if isinstance(self.last_debug, dict):
+            merged = dict(self.last_debug)
+            merged["gaze"] = gaze_debug
+            self.last_debug = merged
 
     @staticmethod
     def _edge_hist_variance(gray, cv2) -> float:

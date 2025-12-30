@@ -142,6 +142,10 @@ class ConfigManager:
             "multicam_gaze_enabled": False,
             "multicam_gaze_weight": 0.4,
             "multicam_gaze_priority_threshold": 0.6,
+            "multicam_gaze_method": "head_pose",
+            "multicam_gaze_min_confidence": 0.7,
+            "multicam_gaze_yaw_span_deg": 35.0,
+            "multicam_camera_layout": [],
         }
         changed = False
         for key, value in defaults.items():
