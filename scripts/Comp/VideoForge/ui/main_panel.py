@@ -51,6 +51,7 @@ from VideoForge.ui.qt_compat import (
     Signal,
 )
 from VideoForge.ui.sections.analyze_section import build_analyze_section
+from VideoForge.ui.sections.agent_section import AgentSection
 from VideoForge.ui.sections.library_section import build_library_section
 from VideoForge.ui.sections.match_section import build_match_section
 from VideoForge.ui.sections.misc_section import build_misc_section
@@ -215,13 +216,13 @@ class Worker(QObject):
 DEFAULT_SETTINGS = {
     "silence": {
         "enable_removal": False,
-        "threshold_db": -34,
-        "min_keep_duration": 0.4,
-        "buffer_before": 0.2,
-        "buffer_after": 0.3,
-        "render_min_duration": 0.6,
-        "tail_min_duration": 0.8,
-        "tail_ratio": 0.2,
+        "threshold_db": -38,
+        "min_keep_duration": 0.3,
+        "buffer_before": 0.25,
+        "buffer_after": 0.35,
+        "render_min_duration": 0.5,
+        "tail_min_duration": 0.7,
+        "tail_ratio": 0.15,
     },
     "broll": {
         "matching_threshold": 0.65,
@@ -263,6 +264,10 @@ class VideoForgePanel(QWidget):
         whisper_silence_override = Config.get("whisper_silence_enabled")
         if whisper_silence_override is not None:
             self.settings["silence"]["enable_removal"] = bool(whisper_silence_override)
+        self._apply_silence_override("threshold_db")
+        self._apply_silence_override("min_keep_duration")
+        self._apply_silence_override("buffer_before")
+        self._apply_silence_override("buffer_after")
         self._apply_silence_override("render_min_duration")
         self._apply_silence_override("tail_min_duration")
         self._apply_silence_override("tail_ratio")
@@ -406,7 +411,15 @@ class VideoForgePanel(QWidget):
         sync_layout.addStretch()
         self.tabs.addTab(sync_scroll, "Sync")
 
-        # Tab 4: Settings
+        # Tab 4: Agent
+        agent_scroll = QScrollArea()
+        agent_scroll.setWidgetResizable(True)
+        agent_scroll.setFrameShape(QFrame.NoFrame)
+        agent_tab = AgentSection()
+        agent_scroll.setWidget(agent_tab)
+        self.tabs.addTab(agent_scroll, "Agent")
+
+        # Tab 5: Settings
         settings_scroll = QScrollArea()
         settings_scroll.setWidgetResizable(True)
         settings_scroll.setFrameShape(QFrame.NoFrame)
@@ -419,7 +432,7 @@ class VideoForgePanel(QWidget):
         settings_layout.addStretch()
         self.tabs.addTab(settings_scroll, "⚙️ Settings")
 
-        # Tab 5: Misc
+        # Tab 6: Misc
         misc_scroll = QScrollArea()
         misc_scroll.setWidgetResizable(True)
         misc_scroll.setFrameShape(QFrame.NoFrame)
@@ -789,6 +802,60 @@ class VideoForgePanel(QWidget):
         except Exception:
             return
 
+    def _on_silence_threshold_changed(self, value: str) -> None:
+        try:
+            threshold = float(str(value).strip())
+        except ValueError:
+            return
+        self.settings["silence"]["threshold_db"] = threshold
+        Config.set("silence_threshold_db", threshold)
+        try:
+            self.silence_preset_combo.setCurrentText("Custom")
+        except Exception:
+            pass
+
+    def _on_silence_min_keep_changed(self, value: str) -> None:
+        try:
+            duration = float(str(value).strip())
+        except ValueError:
+            return
+        if duration <= 0:
+            return
+        self.settings["silence"]["min_keep_duration"] = duration
+        Config.set("silence_min_keep_duration", duration)
+        try:
+            self.silence_preset_combo.setCurrentText("Custom")
+        except Exception:
+            pass
+
+    def _on_silence_buffer_before_changed(self, value: str) -> None:
+        try:
+            duration = float(str(value).strip())
+        except ValueError:
+            return
+        if duration < 0:
+            return
+        self.settings["silence"]["buffer_before"] = duration
+        Config.set("silence_buffer_before", duration)
+        try:
+            self.silence_preset_combo.setCurrentText("Custom")
+        except Exception:
+            pass
+
+    def _on_silence_buffer_after_changed(self, value: str) -> None:
+        try:
+            duration = float(str(value).strip())
+        except ValueError:
+            return
+        if duration < 0:
+            return
+        self.settings["silence"]["buffer_after"] = duration
+        Config.set("silence_buffer_after", duration)
+        try:
+            self.silence_preset_combo.setCurrentText("Custom")
+        except Exception:
+            pass
+
     def _on_render_min_duration_changed(self, value: str) -> None:
         try:
             duration = float(str(value).strip())
@@ -850,6 +917,16 @@ class VideoForgePanel(QWidget):
             self.llm_model_edit.setEnabled(enabled)
         if hasattr(self, "llm_key_edit"):
             self.llm_key_edit.setEnabled(enabled)
+        if hasattr(self, "llm_max_tokens_edit"):
+            self.llm_max_tokens_edit.setEnabled(enabled)
+        if hasattr(self, "agent_mode_combo"):
+            self.agent_mode_combo.setEnabled(enabled)
+        if hasattr(self, "agent_api_key_input"):
+            self.agent_api_key_input.setEnabled(enabled)
+        if hasattr(self, "agent_test_btn"):
+            self.agent_test_btn.setEnabled(enabled)
+        if hasattr(self, "agent_status_label") and not enabled:
+            self.agent_status_label.setText("Agent Status: Disabled (LLM off)")
         self._update_llm_buttons()
 
     def _on_llm_model_changed(self, value: str) -> None:
@@ -869,6 +946,50 @@ class VideoForgePanel(QWidget):
         Config.set("llm_api_key", str(value))
         write_llm_env(api_key=str(value))
         self._update_llm_buttons()
+
+    def _on_llm_max_tokens_changed(self, value: str) -> None:
+        try:
+            tokens = int(str(value).strip())
+        except ValueError:
+            return
+        if tokens <= 0:
+            return
+        Config.set("llm_max_tokens", tokens)
+        Config.set("agent_max_tokens", tokens)
+
+    def _on_agent_mode_changed(self, value: str) -> None:
+        mode = str(value).strip()
+        if mode not in {"recommend_only", "approve_required", "full_access"}:
+            mode = "approve_required"
+        Config.set("agent_mode", mode)
+
+    def _on_agent_api_key_changed(self, value: str) -> None:
+        Config.set("agent_api_key", str(value).strip())
+
+    def _on_agent_test_connection(self) -> None:
+        from VideoForge.ai.llm_hooks import get_llm_api_key, get_llm_model, is_llm_enabled
+
+        key = str(Config.get("agent_api_key", "")).strip() or (get_llm_api_key() or "")
+        model = str(Config.get("agent_model", "")).strip()
+        if model in {"", "gemini-2.0-flash-exp"}:
+            model = str(get_llm_model() or "").strip() or "gemini-2.0-flash-exp"
+        if not is_llm_enabled():
+            if hasattr(self, "agent_status_label"):
+                self.agent_status_label.setText("Agent Status: Disabled (LLM off)")
+            return
+        if not key:
+            if hasattr(self, "agent_status_label"):
+                self.agent_status_label.setText("Agent Status: Missing API key")
+            return
+        try:
+            from VideoForge.agent.executor import AgentExecutor
+
+            AgentExecutor.test_connection(key, model)
+            if hasattr(self, "agent_status_label"):
+                self.agent_status_label.setText("Agent Status: Connected")
+        except Exception as exc:
+            if hasattr(self, "agent_status_label"):
+                self.agent_status_label.setText(f"Agent Status: Error ({exc})")
 
     def _on_pexels_key_changed(self, value: str) -> None:
         Config.set("pexels_api_key", str(value).strip())
@@ -1179,9 +1300,33 @@ class VideoForgePanel(QWidget):
     def _on_silence_preset_changed(self, value: str) -> None:
         preset = str(value).strip()
         presets = {
-            "Balanced": {"render_min_duration": 0.6, "tail_min_duration": 0.8, "tail_ratio": 0.2},
-            "Aggressive": {"render_min_duration": 0.8, "tail_min_duration": 1.0, "tail_ratio": 0.25},
-            "Conservative": {"render_min_duration": 0.4, "tail_min_duration": 0.6, "tail_ratio": 0.15},
+            "Balanced": {
+                "threshold_db": -38.0,
+                "min_keep_duration": 0.3,
+                "buffer_before": 0.25,
+                "buffer_after": 0.35,
+                "render_min_duration": 0.5,
+                "tail_min_duration": 0.7,
+                "tail_ratio": 0.15,
+            },
+            "Aggressive": {
+                "threshold_db": -32.0,
+                "min_keep_duration": 0.45,
+                "buffer_before": 0.15,
+                "buffer_after": 0.25,
+                "render_min_duration": 0.7,
+                "tail_min_duration": 0.9,
+                "tail_ratio": 0.22,
+            },
+            "Conservative": {
+                "threshold_db": -42.0,
+                "min_keep_duration": 0.25,
+                "buffer_before": 0.3,
+                "buffer_after": 0.4,
+                "render_min_duration": 0.4,
+                "tail_min_duration": 0.6,
+                "tail_ratio": 0.1,
+            },
         }
         if preset not in presets and preset != "Custom":
             return
@@ -1190,10 +1335,13 @@ class VideoForgePanel(QWidget):
             return
         values = presets[preset]
         self.settings["silence"].update(values)
-        Config.set("silence_render_min_duration", values["render_min_duration"])
-        Config.set("silence_tail_min_duration", values["tail_min_duration"])
-        Config.set("silence_tail_ratio", values["tail_ratio"])
+        for key, val in values.items():
+            Config.set(f"silence_{key}", val)
         try:
+            self.silence_threshold_edit.setText(str(values["threshold_db"]))
+            self.silence_min_keep_edit.setText(str(values["min_keep_duration"]))
+            self.silence_buffer_before_edit.setText(str(values["buffer_before"]))
+            self.silence_buffer_after_edit.setText(str(values["buffer_after"]))
             self.render_min_duration_edit.setText(str(values["render_min_duration"]))
             self.tail_min_duration_edit.setText(str(values["tail_min_duration"]))
             self.tail_ratio_edit.setText(str(values["tail_ratio"]))
@@ -1258,6 +1406,37 @@ class VideoForgePanel(QWidget):
         except Exception:
             return
 
+    def _describe_clip_path_issue(self, clip) -> str:
+        clip_type = None
+        getter = getattr(clip, "GetClipProperty", None)
+        if callable(getter):
+            try:
+                props = getter()
+                if isinstance(props, dict):
+                    clip_type = (
+                        props.get("Clip Type")
+                        or props.get("Type")
+                        or props.get("ClipType")
+                        or props.get("Media Type")
+                    )
+            except Exception:
+                clip_type = None
+        clip_type_text = str(clip_type or "").strip().lower()
+        if "compound" in clip_type_text:
+            return (
+                "Selected clip has no file path (compound clip). "
+                "Use Decompose in Place or Render in Place."
+            )
+        if "fusion" in clip_type_text:
+            return (
+                "Selected clip has no file path (fusion clip). "
+                "Render in Place or choose a source clip."
+            )
+        return (
+            "Selected clip has no file path. Use a source clip "
+            "or render in place to create a file."
+        )
+
     def _on_whisper_silence_toggled(self, state: int) -> None:
         enabled = state == Qt.Checked
         self.settings["silence"]["enable_removal"] = enabled
@@ -1270,7 +1449,7 @@ class VideoForgePanel(QWidget):
             return
         video_path = self.bridge._get_clip_path(clip)
         if not video_path:
-            self._set_status("Selected clip has no file path.")
+            self._set_status(self._describe_clip_path_issue(clip))
             return
         self._set_status("Detecting silence... (ffmpeg)")
 
@@ -1305,7 +1484,7 @@ class VideoForgePanel(QWidget):
             return
         video_path = self.bridge._get_clip_path(clip)
         if not video_path:
-            self._set_status("Selected clip has no file path.")
+            self._set_status(self._describe_clip_path_issue(clip))
             return
         dry_run = self.silence_dry_run_checkbox.isChecked()
         self._set_status("Applying silence cuts... (debug)")
@@ -1339,7 +1518,7 @@ class VideoForgePanel(QWidget):
             return
         video_path = self.bridge._get_clip_path(clip)
         if not video_path:
-            self._set_status("Selected clip has no file path.")
+            self._set_status(self._describe_clip_path_issue(clip))
             return
         source_range = self.bridge.resolve_api.get_clip_source_range_seconds(clip)
         logging.getLogger("VideoForge.ui").info(
@@ -1690,7 +1869,7 @@ class VideoForgePanel(QWidget):
             self._set_status(f"Error: Failed to get clip info: {exc}")
             return
         if not video_path:
-            self._set_status("Error: Clip has no file path.")
+            self._set_status(self._describe_clip_path_issue(clip))
             return
         clip_range = self.bridge.resolve_api.get_item_range_seconds(clip)
         source_range = self.bridge.resolve_api.get_clip_source_range_seconds(clip)
@@ -2267,6 +2446,7 @@ class VideoForgePanel(QWidget):
             )
             return
         path_map: dict[str, int | None] = {}
+        missing_count = 0
         for item in selected_items:
             path = self.bridge.resolve_api.get_item_media_path(item)
             if not path:
@@ -2274,6 +2454,7 @@ class VideoForgePanel(QWidget):
                     "Sync selection: item missing path (type=%s)",
                     type(item).__name__,
                 )
+                missing_count += 1
                 continue
             start = self.bridge.resolve_api.get_item_start_frame(item)
             if path not in path_map or (
@@ -2282,7 +2463,10 @@ class VideoForgePanel(QWidget):
                 path_map[path] = start
         ui_logger.info("Sync selection: path_map entries=%d", len(path_map))
         if not path_map:
-            self._set_status("Selected clips have no file paths.")
+            self._set_status(
+                "Selected clips have no file paths (compound/fusion). "
+                "Decompose or Render in Place, then retry."
+            )
             return
         items = sorted(
             path_map.items(),
@@ -2303,16 +2487,19 @@ class VideoForgePanel(QWidget):
             targets = [path for path, _ in items if path != ref_path]
             added = self._add_sync_targets_from_paths(targets)
             if targets:
+                note = f" Skipped {missing_count} clip(s) without file path." if missing_count else ""
                 self._set_status(
-                    f"Reference set from {source}, added {added} target(s)."
+                    f"Reference set from {source}, added {added} target(s).{note}"
                 )
             else:
-                self._set_status("Reference set. Add target videos.")
+                note = f" Skipped {missing_count} clip(s) without file path." if missing_count else ""
+                self._set_status(f"Reference set. Add target videos.{note}")
         else:
             targets = [path for path, _ in items]
             added = self._add_sync_targets_from_paths(targets)
+            note = f" Skipped {missing_count} clip(s) without file path." if missing_count else ""
             self._set_status(
-                f"Added {added} target(s)." if added else "No new targets added."
+                f"Added {added} target(s).{note}" if added else f"No new targets added.{note}"
             )
 
     def _on_audio_sync_normalize_changed(self, state: int) -> None:

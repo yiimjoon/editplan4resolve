@@ -80,7 +80,10 @@ class ResolveBridge:
 
         video_path = self._get_clip_path(main_clip)
         if not video_path:
-            raise ValueError("Selected clip has no file path.")
+            raise ValueError(
+                "Selected clip has no file path (compound/fusion clip). "
+                "Decompose in Place or Render in Place, then retry."
+            )
         return self.analyze_from_path(
             video_path=video_path,
             whisper_model=whisper_model,

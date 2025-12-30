@@ -621,6 +621,40 @@ class ResolveAPI:
                 best_delta = delta
         return best
 
+    def _snapshot_track_items(self, track_type: str) -> Dict[int, set[int]]:
+        timeline = self.get_current_timeline()
+        snapshot: Dict[int, set[int]] = {}
+        track_count = int(timeline.GetTrackCount(track_type) or 0)
+        for track_index in range(1, track_count + 1):
+            items = timeline.GetItemListInTrack(track_type, track_index) or []
+            snapshot[track_index] = {id(item) for item in items}
+        return snapshot
+
+    def _find_new_item_by_snapshot(
+        self,
+        track_type: str,
+        snapshot: Dict[int, set[int]],
+        media_path: Optional[str],
+    ) -> Optional[tuple[int, Any]]:
+        timeline = self.get_current_timeline()
+        track_count = int(timeline.GetTrackCount(track_type) or 0)
+        candidates: List[tuple[int, Any]] = []
+        for track_index in range(1, track_count + 1):
+            items = timeline.GetItemListInTrack(track_type, track_index) or []
+            seen = snapshot.get(track_index, set())
+            for item in items:
+                if id(item) in seen:
+                    continue
+                candidates.append((track_index, item))
+        if not candidates:
+            return None
+        if media_path:
+            for track_index, item in candidates:
+                path = self._timeline_item_media_path(item)
+                if path and str(path).lower() == str(media_path).lower():
+                    return track_index, item
+        return candidates[0]
+
     def _timeline_item_media_path(self, item: Any) -> Optional[str]:
         prop = getattr(item, "GetClipProperty", None)
         if callable(prop):
@@ -939,6 +973,14 @@ class ResolveAPI:
         duration_frames = self._get_media_item_duration_frames(clip, fps)
         record_frame = int(timeline_position)
         end_frame = max(0, duration_frames - 1) if duration_frames else None
+        pre_snapshot = self._snapshot_track_items(track_type)
+        media_path = None
+        try:
+            props = clip.GetClipProperty()
+            if isinstance(props, dict):
+                media_path = props.get("File Path") or props.get("FilePath")
+        except Exception:
+            media_path = None
 
         logger.info(
             "Insert clip debug: track=%s index=%s frame=%s",
@@ -952,10 +994,15 @@ class ResolveAPI:
             try:
                 insert_method([clip], track_type, track_index, timeline_position)
                 logger.info("Insert clip debug: media_pool.InsertClips succeeded")
-                inserted = self._find_item_near_frame(
-                    track_type, track_index, int(timeline_position)
-                )
-                if inserted is not None:
+                found = self._find_new_item_by_snapshot(track_type, pre_snapshot, media_path)
+                if found:
+                    found_track, inserted = found
+                    if found_track != track_index:
+                        logger.info(
+                            "Insert clip debug: inserted on track %s (requested %s)",
+                            found_track,
+                            track_index,
+                        )
                     return inserted
                 return None
             except Exception as exc:
@@ -966,10 +1013,15 @@ class ResolveAPI:
             try:
                 insert_method([clip], track_index, timeline_position)
                 logger.info("Insert clip debug: timeline.InsertClips succeeded")
-                inserted = self._find_item_near_frame(
-                    track_type, track_index, int(timeline_position)
-                )
-                if inserted is not None:
+                found = self._find_new_item_by_snapshot(track_type, pre_snapshot, media_path)
+                if found:
+                    found_track, inserted = found
+                    if found_track != track_index:
+                        logger.info(
+                            "Insert clip debug: inserted on track %s (requested %s)",
+                            found_track,
+                            track_index,
+                        )
                     return inserted
                 return None
             except Exception as exc:
@@ -1012,10 +1064,15 @@ class ResolveAPI:
                 try:
                     append_method([payload])
                     logger.info("Insert clip debug: AppendToTimeline payload succeeded: %s", payload)
-                    inserted = self._find_item_near_frame(
-                        track_type, track_index, int(timeline_position)
-                    )
-                    if inserted is not None:
+                    found = self._find_new_item_by_snapshot(track_type, pre_snapshot, media_path)
+                    if found:
+                        found_track, inserted = found
+                        if found_track != track_index:
+                            logger.info(
+                                "Insert clip debug: inserted on track %s (requested %s)",
+                                found_track,
+                                track_index,
+                            )
                         return inserted
                     return None
                 except Exception as exc:
@@ -1050,22 +1107,24 @@ class ResolveAPI:
             try:
                 append_method([clip])
                 logger.info("Insert clip debug: media_pool.AppendToTimeline succeeded")
-                media_path = None
-                try:
-                    media_path = clip.GetClipProperty("File Path")
-                except Exception:
-                    media_path = None
-                if not media_path:
-                    return None
-                inserted = self._find_latest_item_by_media_path(track_type, track_index, str(media_path))
+                found = self._find_new_item_by_snapshot(track_type, pre_snapshot, media_path)
+                if found:
+                    found_track, inserted = found
+                else:
+                    inserted = None
+                    found_track = None
                 if inserted is None:
-                    logger.info("Insert clip debug: appended, but could not locate inserted item for reposition")
+                    logger.info("Insert clip debug: appended, but could not locate inserted item")
                     return None
                 if self._set_item_start_frame(inserted, int(timeline_position)):
                     logger.info("Insert clip debug: repositioned appended item to frame=%s", timeline_position)
-                    return self._find_item_near_frame(
-                        track_type, track_index, int(timeline_position)
-                    )
+                    if found_track and found_track != track_index:
+                        logger.info(
+                            "Insert clip debug: appended on track %s (requested %s)",
+                            found_track,
+                            track_index,
+                        )
+                    return inserted
                 logger.info("Insert clip debug: appended item could not be repositioned")
                 return None
             except Exception as exc:
@@ -1253,6 +1312,38 @@ class ResolveAPI:
         except Exception:
             fps = 24.0
         return fps
+
+    def get_timeline_start_frame(self) -> int:
+        """Return the timeline start frame offset (timecode-based) if available."""
+        timeline = self.get_current_timeline()
+        fps = self.get_timeline_fps()
+        start_frame = None
+        for getter in ("GetStartFrame", "GetStartTC", "GetStartTimecode", "GetStartTimeCode"):
+            method = getattr(timeline, getter, None)
+            if callable(method):
+                try:
+                    value = method()
+                except Exception:
+                    value = None
+                if isinstance(value, (int, float)):
+                    start_frame = int(value)
+                    break
+                if value:
+                    start_frame = self._timecode_to_frames(str(value), fps)
+                    if start_frame is not None:
+                        break
+        if start_frame is None:
+            project = self.get_current_project()
+            for key in ("timelineStartTimecode", "timelineStartTC"):
+                try:
+                    value = project.GetSetting(key)
+                except Exception:
+                    value = None
+                if value:
+                    start_frame = self._timecode_to_frames(str(value), fps)
+                    if start_frame is not None:
+                        break
+        return int(start_frame) if start_frame is not None else 0
 
     @staticmethod
     def _frames_to_timecode(frame: int, fps: float) -> str:

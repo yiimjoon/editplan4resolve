@@ -1,9 +1,9 @@
 silence:
   enable_removal: false
-  threshold_db: -34
-  min_keep_duration: 0.4
-  buffer_before: 0.2
-  buffer_after: 0.3
+  threshold_db: -38
+  min_keep_duration: 0.3
+  buffer_before: 0.25
+  buffer_after: 0.35
 broll:
   matching_threshold: 0.35
   max_overlay_duration: 3.0

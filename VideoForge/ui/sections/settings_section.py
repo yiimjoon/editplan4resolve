@@ -110,6 +110,12 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.llm_key_edit.textChanged.connect(panel._on_llm_key_changed)
     add_setting_row(left_col, "LLM API Key", panel.llm_key_edit)
 
+    panel.llm_max_tokens_edit = QLineEdit()
+    panel.llm_max_tokens_edit.setFixedWidth(80)
+    panel.llm_max_tokens_edit.setText(str(Config.get("llm_max_tokens", 4096)))
+    panel.llm_max_tokens_edit.textChanged.connect(panel._on_llm_max_tokens_changed)
+    add_setting_row(left_col, "LLM Max Tokens", panel.llm_max_tokens_edit)
+
     panel.llm_instructions_mode_combo = QComboBox()
     panel.llm_instructions_mode_combo.addItems(["shortform", "longform"])
     saved_mode = str(Config.get("llm_instructions_mode") or "shortform").strip().lower()
@@ -129,6 +135,30 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.silence_preset_combo.setCurrentText(str(Config.get("silence_preset") or "Balanced"))
     panel.silence_preset_combo.currentTextChanged.connect(panel._on_silence_preset_changed)
     add_setting_row(mid_col, "Silence Preset", panel.silence_preset_combo)
+
+    panel.silence_threshold_edit = QLineEdit()
+    panel.silence_threshold_edit.setFixedWidth(60)
+    panel.silence_threshold_edit.setText(str(panel.settings["silence"].get("threshold_db", -38.0)))
+    panel.silence_threshold_edit.textChanged.connect(panel._on_silence_threshold_changed)
+    add_setting_row(mid_col, "Detect Threshold (dB)", panel.silence_threshold_edit)
+
+    panel.silence_min_keep_edit = QLineEdit()
+    panel.silence_min_keep_edit.setFixedWidth(60)
+    panel.silence_min_keep_edit.setText(str(panel.settings["silence"].get("min_keep_duration", 0.3)))
+    panel.silence_min_keep_edit.textChanged.connect(panel._on_silence_min_keep_changed)
+    add_setting_row(mid_col, "Min Keep (s)", panel.silence_min_keep_edit)
+
+    panel.silence_buffer_before_edit = QLineEdit()
+    panel.silence_buffer_before_edit.setFixedWidth(60)
+    panel.silence_buffer_before_edit.setText(str(panel.settings["silence"].get("buffer_before", 0.25)))
+    panel.silence_buffer_before_edit.textChanged.connect(panel._on_silence_buffer_before_changed)
+    add_setting_row(mid_col, "Pad Before (s)", panel.silence_buffer_before_edit)
+
+    panel.silence_buffer_after_edit = QLineEdit()
+    panel.silence_buffer_after_edit.setFixedWidth(60)
+    panel.silence_buffer_after_edit.setText(str(panel.settings["silence"].get("buffer_after", 0.35)))
+    panel.silence_buffer_after_edit.textChanged.connect(panel._on_silence_buffer_after_changed)
+    add_setting_row(mid_col, "Pad After (s)", panel.silence_buffer_after_edit)
 
     panel.render_min_duration_edit = QLineEdit()
     panel.render_min_duration_edit.setFixedWidth(60)
@@ -435,7 +465,48 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     right_col.addWidget(panel.open_library_manager_btn)
 
     right_col.addSpacing(12)
-    right_col.addWidget(panel._create_section_title("G. Hybrid Search Weights"))
+    right_col.addWidget(panel._create_section_title("G. Agent Settings"))
+
+    agent_mode_label = QLabel("Agent Mode:")
+    agent_mode_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
+    right_col.addWidget(agent_mode_label)
+
+    panel.agent_mode_combo = QComboBox()
+    panel.agent_mode_combo.addItems(["recommend_only", "approve_required", "full_access"])
+    current_mode = str(Config.get("agent_mode", "approve_required")).strip()
+    if current_mode in {"recommend_only", "approve_required", "full_access"}:
+        panel.agent_mode_combo.setCurrentText(current_mode)
+    panel.agent_mode_combo.currentTextChanged.connect(panel._on_agent_mode_changed)
+    right_col.addWidget(panel.agent_mode_combo)
+
+    agent_key_label = QLabel("Agent API Key (Gemini):")
+    agent_key_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
+    right_col.addWidget(agent_key_label)
+
+    panel.agent_api_key_input = QLineEdit()
+    panel.agent_api_key_input.setEchoMode(QLineEdit.Password)
+    panel.agent_api_key_input.setPlaceholderText("Gemini API key (uses LLM key if empty)")
+    agent_key_value = str(Config.get("agent_api_key", "")).strip()
+    if not agent_key_value:
+        agent_key_value = str(Config.get("llm_api_key", "")).strip()
+    panel.agent_api_key_input.setText(agent_key_value)
+    panel.agent_api_key_input.textChanged.connect(panel._on_agent_api_key_changed)
+    right_col.addWidget(panel.agent_api_key_input)
+
+    panel.agent_test_btn = QPushButton("Test Agent Connection")
+    panel.agent_test_btn.clicked.connect(panel._on_agent_test_connection)
+    right_col.addWidget(panel.agent_test_btn)
+
+    panel.agent_status_label = QLabel("Agent Status: Not connected")
+    panel.agent_status_label.setStyleSheet(
+        f"color: {panel.colors['text_dim']}; font-size: 11px;"
+    )
+    if str(Config.get("agent_api_key", "")).strip() or str(Config.get("llm_api_key", "")).strip():
+        panel.agent_status_label.setText("Agent Status: Connected")
+    right_col.addWidget(panel.agent_status_label)
+
+    right_col.addSpacing(12)
+    right_col.addWidget(panel._create_section_title("H. Hybrid Search Weights"))
 
     def add_weight_slider(layout, label_attr, slider_attr, label_text, min_val, max_val, current_val, callback):
         lbl = QLabel(label_text)
@@ -465,6 +536,14 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     llm_enabled = panel.llm_provider_combo.currentText() != "disabled"
     panel.llm_model_edit.setEnabled(llm_enabled)
     panel.llm_key_edit.setEnabled(llm_enabled)
+    panel.llm_max_tokens_edit.setEnabled(llm_enabled)
+
+    agent_enabled = llm_enabled
+    panel.agent_mode_combo.setEnabled(agent_enabled)
+    panel.agent_api_key_input.setEnabled(agent_enabled)
+    panel.agent_test_btn.setEnabled(agent_enabled)
+    if not agent_enabled:
+        panel.agent_status_label.setText("Agent Status: Disabled (LLM off)")
 
     global_path = str(Config.get("global_library_db_path", "") or "").strip()
     panel._set_global_library_locked(bool(global_path))

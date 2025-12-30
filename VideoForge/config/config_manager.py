@@ -38,7 +38,9 @@ class ConfigManager:
                 logger.warning("Failed to migrate legacy config: %s", exc)
         self._load()
         self._migrate_library_config()
+        self._ensure_llm_defaults()
         self._ensure_audio_sync_defaults()
+        self._ensure_agent_defaults()
 
     @staticmethod
     def _resolve_config_path() -> Path:
@@ -98,6 +100,34 @@ class ConfigManager:
             "audio_sync_content_sample_rate": 22050,
             "audio_sync_content_hop_length": 512,
             "audio_sync_content_n_fft": 2048,
+        }
+        changed = False
+        for key, value in defaults.items():
+            if key not in self._config:
+                self._config[key] = value
+                changed = True
+        if changed:
+            self._save()
+
+    def _ensure_llm_defaults(self) -> None:
+        defaults = {
+            "llm_max_tokens": 4096,
+        }
+        changed = False
+        for key, value in defaults.items():
+            if key not in self._config:
+                self._config[key] = value
+                changed = True
+        if changed:
+            self._save()
+
+    def _ensure_agent_defaults(self) -> None:
+        defaults = {
+            "agent_api_key": "",
+            "agent_mode": "approve_required",
+            "agent_model": "gemini-2.0-flash-exp",
+            "agent_max_tokens": 4096,
+            "agent_max_auto_actions": 5,
         }
         changed = False
         for key, value in defaults.items():

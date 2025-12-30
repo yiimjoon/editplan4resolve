@@ -30,6 +30,11 @@ def transcribe_segments(
     logger.info("Video: %s", os.path.basename(video_path))
     logger.info("Model: %s, Task: %s, Language: %s", model_name, task, language or "auto")
     logger.info("=" * 60)
+    if not _has_audio_stream(video_path):
+        raise RuntimeError(
+            "No audio stream found in the source file. "
+            "Render in Place with audio enabled or select a clip with audio."
+        )
     try:
         from faster_whisper import WhisperModel  # type: ignore
 
@@ -170,6 +175,9 @@ def transcribe_segments(
             except Exception:
                 pass
         return sentences
+    except RuntimeError as exc:
+        logger.error("Whisper transcription failed: %s", exc, exc_info=True)
+        raise
     except Exception as exc:
         logger.error("Whisper transcription failed: %s", exc, exc_info=True)
         raise RuntimeError("Whisper transcription failed") from exc
@@ -177,6 +185,11 @@ def transcribe_segments(
 
 def _extract_audio_segment(video_path: str, start: float, end: float) -> str:
     """Extract a temporary WAV for the requested time range."""
+    if not _has_audio_stream(video_path):
+        raise RuntimeError(
+            "No audio stream found in the source file. "
+            "Render in Place with audio enabled or select a clip with audio."
+        )
     temp_fd, temp_path = tempfile.mkstemp(suffix=".wav", prefix="vf_trim_")
     os.close(temp_fd)
     cmd = [
@@ -239,6 +252,35 @@ def _get_media_duration(video_path: str) -> float | None:
         return float(proc.stdout.strip())
     except Exception:
         return None
+
+
+def _has_audio_stream(video_path: str) -> bool:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a",
+        "-show_entries",
+        "stream=codec_type",
+        "-of",
+        "csv=p=0",
+        video_path,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except Exception:
+        return True
+    if proc.returncode != 0:
+        return True
+    return bool(proc.stdout.strip())
 
 
 def _segment_for_time(segments: List[Dict[str, float]], t0: float) -> int | None:

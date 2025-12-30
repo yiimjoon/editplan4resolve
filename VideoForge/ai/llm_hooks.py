@@ -306,9 +306,16 @@ def _call_gemini(prompt: str) -> str:
     if model.startswith("models/"):
         model = model[len("models/"):]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    max_tokens = Config.get("llm_max_tokens", 4096)
+    try:
+        max_tokens = int(max_tokens)
+    except Exception:
+        max_tokens = 4096
+    if max_tokens <= 0:
+        max_tokens = 4096
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.3},
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": max_tokens},
     }
     data = json.dumps(payload).encode("utf-8")
     req = request.Request(url, data=data, headers={"Content-Type": "application/json"})
