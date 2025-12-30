@@ -47,7 +47,6 @@ class MulticamWorker(QThread):
         mode: str,
         use_face: bool,
         use_llm: bool,
-        source_clips: List[str],
     ) -> None:
         super().__init__()
         self.timeline_info = timeline_info
@@ -56,7 +55,6 @@ class MulticamWorker(QThread):
         self.mode = mode
         self.use_face = use_face
         self.use_llm = use_llm
-        self.source_clips = source_clips
 
     def run(self) -> None:
         try:
@@ -89,8 +87,9 @@ class MulticamWorker(QThread):
 
             self.progress_updated.emit(90)
             generator = MulticamPlanGenerator()
+            source_clips = self._get_source_clip_names()
             plan = generator.generate_plan(
-                selections, self.timeline_info, self.source_clips
+                selections, self.timeline_info, source_clips
             )
 
             self.progress_updated.emit(100)
@@ -128,7 +127,10 @@ class MulticamWorker(QThread):
     def _score_segments(self, segments: List[Dict]) -> List[Dict]:
         scorer = AngleScorer()
         video_tracks = int(self.timeline_info.get("video_tracks", 0))
-        for seg in segments:
+        total = max(1, len(segments))
+        for idx, seg in enumerate(segments):
+            progress = 30 + int(40 * (idx / total))
+            self.progress_updated.emit(progress)
             start_sec = float(seg.get("start_sec", 0.0))
             end_sec = float(seg.get("end_sec", 0.0))
             mid_sec = (start_sec + end_sec) / 2.0
@@ -157,7 +159,40 @@ class MulticamWorker(QThread):
         source_time = source_start + max(0.0, mid_sec - timeline_start)
         if source_end > source_start:
             source_time = min(source_time, source_end)
-        return scorer.score_video_frame(Path(item["media_path"]), source_time)
+        media_path = Path(item["media_path"])
+        try:
+            from VideoForge.adapters.opencv_subprocess import should_use_subprocess
+
+            if should_use_subprocess():
+                try:
+                    return scorer.score_video_frame(media_path, source_time)
+                except Exception:
+                    return {
+                        "sharpness": 0.0,
+                        "motion": 0.0,
+                        "stability": 0.0,
+                        "face_score": 0.0,
+                    }
+        except Exception:
+            pass
+
+        frame = self._extract_frame_at(media_path, source_time)
+        if frame is None:
+            return {
+                "sharpness": 0.0,
+                "motion": 0.0,
+                "stability": 0.0,
+                "face_score": 0.0,
+            }
+        try:
+            return scorer.score_frame(frame)
+        except Exception:
+            return {
+                "sharpness": 0.0,
+                "motion": 0.0,
+                "stability": 0.0,
+                "face_score": 0.0,
+            }
 
     def _find_track_item(self, track_index: int, time_sec: float) -> Optional[Dict]:
         for item in self.track_items:
@@ -168,6 +203,35 @@ class MulticamWorker(QThread):
             if start <= time_sec <= end:
                 return item
         return None
+
+    @staticmethod
+    def _extract_frame_at(media_path: Path, timestamp_sec: float):
+        try:
+            from VideoForge.adapters.video_analyzer import VideoAnalyzer
+
+            return VideoAnalyzer.extract_frame_at_time(media_path, timestamp_sec)
+        except Exception:
+            return None
+
+    def _get_source_clip_names(self) -> List[str]:
+        video_tracks = int(self.timeline_info.get("video_tracks", 0))
+        clip_names: List[str] = []
+        for track_index in range(1, video_tracks + 1):
+            clip_name = None
+            for item in self.track_items:
+                if int(item.get("track_index", 0)) != track_index:
+                    continue
+                media_path = item.get("media_path")
+                if media_path:
+                    clip_name = Path(media_path).name
+                    break
+                if item.get("clip_name"):
+                    clip_name = str(item["clip_name"])
+                    break
+            if not clip_name:
+                clip_name = f"Angle {track_index}"
+            clip_names.append(clip_name)
+        return clip_names
 
 
 class MulticamSection(QWidget):
@@ -282,7 +346,7 @@ class MulticamSection(QWidget):
 
     def _on_generate_cuts(self) -> None:
         try:
-            timeline_info, track_items, source_clips = self._build_timeline_snapshot()
+            timeline_info, track_items = self._build_timeline_snapshot()
         except Exception as exc:
             self.preview_text.setHtml(f"<b>Error:</b> {exc}")
             return
@@ -312,7 +376,6 @@ class MulticamSection(QWidget):
             mode=mode,
             use_face=self.face_detection_check.isChecked(),
             use_llm=self.llm_tagging_check.isChecked(),
-            source_clips=source_clips,
         )
         self.worker.progress_updated.connect(self.progress_bar.setValue)
         self.worker.plan_ready.connect(self._on_plan_ready)
@@ -363,11 +426,13 @@ class MulticamSection(QWidget):
 
         try:
             result = self.resolve_api.apply_multicam_cuts(self.pending_plan)
-            if isinstance(result, dict) and result.get("edl_path"):
+            if isinstance(result, dict) and result.get("status") == "edl_fallback":
                 path = result.get("edl_path")
+                message = str(result.get("message", "")).replace("\n", "<br>")
                 self.preview_text.setHtml(
-                    "<b>EDL Exported:</b> Resolve API cannot apply cuts directly.<br>"
-                    f"Import the EDL manually: <code>{path}</code>"
+                    "<h3>EDL Export Complete</h3>"
+                    f"<p>{message}</p>"
+                    f"<p><b>File:</b> <code>{path}</code></p>"
                 )
             else:
                 self.preview_text.setHtml(
@@ -410,7 +475,7 @@ class MulticamSection(QWidget):
             return str(project_db)
         return None
 
-    def _build_timeline_snapshot(self) -> tuple[Dict, List[Dict], List[str]]:
+    def _build_timeline_snapshot(self) -> tuple[Dict, List[Dict]]:
         timeline = self.resolve_api.get_current_timeline()
         name = "Timeline"
         getter = getattr(timeline, "GetName", None)
@@ -470,24 +535,7 @@ class MulticamSection(QWidget):
         if not track_items:
             raise RuntimeError("No clips found on video tracks.")
 
-        source_clips: List[str] = []
-        for track_index in range(1, video_tracks + 1):
-            clip_name = None
-            for item in track_items:
-                if int(item.get("track_index", 0)) != track_index:
-                    continue
-                media_path = item.get("media_path")
-                if media_path:
-                    clip_name = Path(media_path).name
-                    break
-                if item.get("clip_name"):
-                    clip_name = str(item["clip_name"])
-                    break
-            if not clip_name:
-                clip_name = f"Angle {track_index}"
-            source_clips.append(clip_name)
-
-        return timeline_info, track_items, source_clips
+        return timeline_info, track_items
 
     @staticmethod
     def _make_slider(min_val: int, max_val: int, current: int):

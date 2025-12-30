@@ -551,15 +551,15 @@ class ResolveAPI:
             if not clip_name:
                 clip_name = f"Angle {target_angle + 1}"
             clip_name = self._sanitize_edl_name(clip_name)
+            reel = self._format_edl_reel(clip_name, fallback=f"AX{target_angle + 1:02d}")
 
-            source_in = self._frames_to_timecode(int(start_sec * fps), fps)
-            source_out = self._frames_to_timecode(int(end_sec * fps), fps)
-            record_in = self._frames_to_timecode(int(timeline_start + start_sec * fps), fps)
-            record_out = self._frames_to_timecode(int(timeline_start + end_sec * fps), fps)
-            reel = f"AX{target_angle + 1:02d}"
+            source_in = self._format_timecode_seconds(start_sec, fps)
+            source_out = self._format_timecode_seconds(end_sec, fps)
+            record_in = self._format_timecode_frames(timeline_start + start_sec * fps, fps)
+            record_out = self._format_timecode_frames(timeline_start + end_sec * fps, fps)
 
             lines.append(
-                f"{event_num:03d}  {reel:<8}V     C        "
+                f"{event_num:03d}  {reel}V     C        "
                 f"{source_in} {source_out} {record_in} {record_out}"
             )
             lines.append(f"* FROM CLIP NAME: {clip_name}")
@@ -570,7 +570,16 @@ class ResolveAPI:
             "Resolve API multicam cut unsupported; exported EDL: %s",
             output_path,
         )
-        return {"success": False, "edl_path": str(output_path)}
+        message = (
+            "Resolve API does not support programmatic multicam switching.\n"
+            f"EDL file generated: {output_path}\n\n"
+            "To apply cuts:\n"
+            "1. File -> Import -> Timeline -> EDL\n"
+            "2. Select 'videoforge_multicam.edl'\n"
+            "3. Choose 'Replace existing timeline' or 'New timeline'\n"
+            "4. Verify cuts alignment"
+        )
+        return {"success": False, "status": "edl_fallback", "edl_path": str(output_path), "message": message}
 
     @staticmethod
     def _sanitize_edl_name(name: str) -> str:
@@ -581,6 +590,24 @@ class ResolveAPI:
             else:
                 safe.append("_")
         return "".join(safe)
+
+    @staticmethod
+    def _format_timecode_seconds(seconds: float, fps: float) -> str:
+        total_frames = int(round(seconds * fps))
+        return ResolveAPI._frames_to_timecode(total_frames, fps)
+
+    @staticmethod
+    def _format_timecode_frames(frames: float, fps: float) -> str:
+        total_frames = int(round(frames))
+        return ResolveAPI._frames_to_timecode(total_frames, fps)
+
+    @staticmethod
+    def _format_edl_reel(name: str, fallback: str) -> str:
+        raw = "".join(ch for ch in name if ch.isalnum() and ord(ch) < 128)
+        if not raw:
+            raw = fallback
+        raw = raw[:8]
+        return raw.ljust(8)
 
     def replace_timeline_item(
         self,
