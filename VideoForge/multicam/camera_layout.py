@@ -14,7 +14,7 @@ def _normalize_layout(value) -> List[str]:
             parts = [p.strip().upper() for p in raw.split(",") if p.strip()]
         else:
             parts = [c.upper() for c in raw if c.strip()]
-        return [p for p in parts if p in ("L", "C", "R")]
+        return [p for p in parts if p in ("L", "C", "R", "W")]
     if isinstance(value, list):
         parts = []
         for item in value:
@@ -53,10 +53,10 @@ def resolve_layout(track_count: int) -> List[str]:
 
 def _yaw_map(track_count: int) -> dict[str, float]:
     if track_count == 2:
-        return {"L": -30.0, "C": 0.0, "R": 30.0}
+        return {"L": -30.0, "C": 0.0, "R": 30.0, "W": 0.0}
     if track_count == 3:
-        return {"L": -35.0, "C": 0.0, "R": 35.0}
-    return {"L": -35.0, "C": 0.0, "R": 35.0}
+        return {"L": -35.0, "C": 0.0, "R": 35.0, "W": 0.0}
+    return {"L": -35.0, "C": 0.0, "R": 35.0, "W": 0.0}
 
 
 def get_track_yaw(track_index: int, track_count: int) -> float:

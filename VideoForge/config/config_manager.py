@@ -137,6 +137,7 @@ class ConfigManager:
             "multicam_face_model_dir": "",
             "multicam_edl_output_dir": "",
             "multicam_boundary_mode": "hybrid",
+            "multicam_cut_preset": "Custom",
             "multicam_audio_mode": "per_cut",
             "multicam_audio_track": 1,
             "multicam_gaze_enabled": False,
@@ -146,6 +147,7 @@ class ConfigManager:
             "multicam_gaze_min_confidence": 0.7,
             "multicam_gaze_yaw_span_deg": 35.0,
             "multicam_camera_layout": [],
+            "multicam_speaker_diarization_enabled": False,
         }
         changed = False
         for key, value in defaults.items():

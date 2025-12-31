@@ -11,7 +11,7 @@ from VideoForge.core.segment_store import SegmentStore
 from VideoForge.multicam.angle_scorer import AngleScorer
 from VideoForge.multicam.angle_selector import AngleSelector
 from VideoForge.multicam.boundary_detector import BoundaryDetector
-from VideoForge.multicam.camera_layout import get_track_yaw
+from VideoForge.multicam.camera_layout import get_track_yaw, resolve_layout
 from VideoForge.multicam.llm_tagger import LLMTagger
 from VideoForge.multicam.plan_generator import MulticamPlanGenerator
 from VideoForge.ui.qt_compat import (
@@ -37,6 +37,30 @@ _LOGGED_BUILD_MARKER = False
 _LOGGED_ZERO_DEBUG: set[str] = set()
 _LOGGED_SCORE_DEBUG = False
 _BUILD_MARKER = "p11-debug-04"
+_CUT_PRESETS: Dict[str, Optional[Dict[str, float | int | str]]] = {
+    "Custom": None,
+    "Ultra Fast": {
+        "max_segment_sec": 5.0,
+        "min_hold_sec": 1.0,
+        "max_repeat": 1,
+        "boundary_mode": "fixed",
+    },
+    "Fast Cuts": {
+        "max_segment_sec": 6.0,
+        "min_hold_sec": 1.2,
+        "max_repeat": 2,
+    },
+    "Balanced": {
+        "max_segment_sec": 10.0,
+        "min_hold_sec": 2.0,
+        "max_repeat": 3,
+    },
+    "Smooth": {
+        "max_segment_sec": 14.0,
+        "min_hold_sec": 3.0,
+        "max_repeat": 4,
+    },
+}
 
 
 class MulticamWorker(QThread):
@@ -402,6 +426,7 @@ class MulticamSection(QWidget):
         self.resolve_api = resolve_api
         self.worker: Optional[MulticamWorker] = None
         self.pending_plan = None
+        self._applying_preset = False
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -424,25 +449,24 @@ class MulticamSection(QWidget):
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         settings_layout.addRow("Cut Boundary Mode:", self.mode_combo)
 
+        self.cut_preset_combo = QComboBox()
+        self.cut_preset_combo.addItems(list(_CUT_PRESETS.keys()))
+        current_preset = str(Config.get("multicam_cut_preset", "Custom")).strip()
+        if current_preset not in _CUT_PRESETS:
+            current_preset = "Custom"
+        self.cut_preset_combo.setCurrentText(current_preset)
+        self.cut_preset_combo.currentTextChanged.connect(self._on_cut_preset_changed)
+        settings_layout.addRow("Cut Speed Preset:", self.cut_preset_combo)
+
         self.max_segment_slider = self._make_slider(5, 30, int(Config.get("multicam_max_segment_sec", 10)))
         self.max_segment_label = QLabel(f"{self.max_segment_slider.value()}s")
-        self.max_segment_slider.valueChanged.connect(
-            lambda v: Config.set("multicam_max_segment_sec", float(v))
-        )
-        self.max_segment_slider.valueChanged.connect(
-            lambda v: self.max_segment_label.setText(f"{v}s")
-        )
+        self.max_segment_slider.valueChanged.connect(self._on_max_segment_changed)
         settings_layout.addRow("Max Segment Length:", self.max_segment_slider)
         settings_layout.addRow("", self.max_segment_label)
 
         self.min_hold_slider = self._make_slider(10, 50, int(float(Config.get("multicam_min_hold_sec", 2.0)) * 10))
         self.min_hold_label = QLabel(f"{self.min_hold_slider.value() / 10.0}s")
-        self.min_hold_slider.valueChanged.connect(
-            lambda v: Config.set("multicam_min_hold_sec", v / 10.0)
-        )
-        self.min_hold_slider.valueChanged.connect(
-            lambda v: self.min_hold_label.setText(f"{v / 10.0}s")
-        )
+        self.min_hold_slider.valueChanged.connect(self._on_min_hold_changed)
         settings_layout.addRow("Min Hold Time:", self.min_hold_slider)
         settings_layout.addRow("", self.min_hold_label)
 
@@ -536,11 +560,31 @@ class MulticamSection(QWidget):
         settings_layout.addRow("Gaze Priority Threshold:", self.gaze_priority_slider)
         settings_layout.addRow("", self.gaze_priority_label)
 
+        self.camera_layout_group = QGroupBox("Camera Layout")
+        self.camera_layout_layout = QFormLayout()
+        self.camera_layout_group.setLayout(self.camera_layout_layout)
+        self.camera_layout_combos: List[QComboBox] = []
+        settings_layout.addRow(self.camera_layout_group)
+
         self.llm_tagging_check = QCheckBox("Enable LLM Tagging (Experimental)")
         llm_enabled = str(Config.get("llm_provider", "disabled")) != "disabled"
         self.llm_tagging_check.setEnabled(llm_enabled)
         self.llm_tagging_check.setChecked(False)
         settings_layout.addRow("", self.llm_tagging_check)
+
+        self.speaker_diarization_check = QCheckBox(
+            "Enable Speaker Diarization (Audio-only, Coming Soon)"
+        )
+        self.speaker_diarization_check.setChecked(
+            bool(Config.get("multicam_speaker_diarization_enabled", False))
+        )
+        self.speaker_diarization_check.setToolTip(
+            "Placeholder toggle only; diarization is not wired in yet."
+        )
+        self.speaker_diarization_check.toggled.connect(
+            lambda v: Config.set("multicam_speaker_diarization_enabled", bool(v))
+        )
+        settings_layout.addRow("", self.speaker_diarization_check)
 
         self.audio_mode_combo = QComboBox()
         self.audio_mode_combo.addItems(["Per-Cut (Switching)", "Fixed Track"])
@@ -597,6 +641,8 @@ class MulticamSection(QWidget):
         self._on_mode_changed(self.mode_combo.currentText())
         self._set_gaze_controls_enabled(self.gaze_enabled_check.isChecked())
         self.audio_track_combo.setEnabled(current_audio_mode == "fixed_track")
+        self._refresh_camera_layout_controls(self._get_video_track_count_safe())
+        self._apply_cut_preset_from_config()
 
     def _on_mode_changed(self, text: str) -> None:
         mode_map = {
@@ -605,6 +651,88 @@ class MulticamSection(QWidget):
             "Fixed Interval": "fixed",
         }
         Config.set("multicam_boundary_mode", mode_map.get(text, "hybrid"))
+        if not self._applying_preset:
+            self._set_cut_preset_custom()
+
+    def _on_cut_preset_changed(self, text: str) -> None:
+        preset_name = text if text in _CUT_PRESETS else "Custom"
+        Config.set("multicam_cut_preset", preset_name)
+        preset = _CUT_PRESETS.get(preset_name)
+        if not preset:
+            return
+        self._apply_cut_preset(preset)
+
+    def _apply_cut_preset_from_config(self) -> None:
+        preset_name = str(Config.get("multicam_cut_preset", "Custom")).strip()
+        preset = _CUT_PRESETS.get(preset_name)
+        if preset_name not in _CUT_PRESETS:
+            return
+        if self.cut_preset_combo.currentText() != preset_name:
+            self.cut_preset_combo.blockSignals(True)
+            self.cut_preset_combo.setCurrentText(preset_name)
+            self.cut_preset_combo.blockSignals(False)
+        if preset:
+            self._apply_cut_preset(preset)
+
+    def _apply_cut_preset(self, preset: Dict[str, float | int | str]) -> None:
+        self._applying_preset = True
+        try:
+            max_segment = float(preset.get("max_segment_sec", 10.0))
+            min_hold = float(preset.get("min_hold_sec", 2.0))
+            max_repeat = int(preset.get("max_repeat", 3))
+            boundary_mode = str(preset.get("boundary_mode", "") or "").strip().lower()
+
+            max_segment_value = int(round(max_segment))
+            max_segment_value = max(
+                self.max_segment_slider.minimum(),
+                min(self.max_segment_slider.maximum(), max_segment_value),
+            )
+            min_hold_value = int(round(min_hold * 10))
+            min_hold_value = max(
+                self.min_hold_slider.minimum(),
+                min(self.min_hold_slider.maximum(), min_hold_value),
+            )
+
+            self.max_segment_slider.setValue(max_segment_value)
+            self.min_hold_slider.setValue(min_hold_value)
+            Config.set("multicam_max_segment_sec", float(max_segment_value))
+            Config.set("multicam_min_hold_sec", min_hold_value / 10.0)
+            Config.set("multicam_max_repeat", max_repeat)
+            if boundary_mode in ("hybrid", "sentence", "fixed"):
+                Config.set("multicam_boundary_mode", boundary_mode)
+                mode_labels = {
+                    "hybrid": "Hybrid (Recommended)",
+                    "sentence": "Sentence Only",
+                    "fixed": "Fixed Interval",
+                }
+                desired_label = mode_labels.get(boundary_mode)
+                if desired_label and self.mode_combo.currentText() != desired_label:
+                    self.mode_combo.blockSignals(True)
+                    self.mode_combo.setCurrentText(desired_label)
+                    self.mode_combo.blockSignals(False)
+        finally:
+            self._applying_preset = False
+
+    def _set_cut_preset_custom(self) -> None:
+        if self.cut_preset_combo.currentText() == "Custom":
+            return
+        self.cut_preset_combo.blockSignals(True)
+        self.cut_preset_combo.setCurrentText("Custom")
+        self.cut_preset_combo.blockSignals(False)
+        Config.set("multicam_cut_preset", "Custom")
+
+    def _on_max_segment_changed(self, value: int) -> None:
+        Config.set("multicam_max_segment_sec", float(value))
+        self.max_segment_label.setText(f"{value}s")
+        if not self._applying_preset:
+            self._set_cut_preset_custom()
+
+    def _on_min_hold_changed(self, value: int) -> None:
+        hold = value / 10.0
+        Config.set("multicam_min_hold_sec", hold)
+        self.min_hold_label.setText(f"{hold}s")
+        if not self._applying_preset:
+            self._set_cut_preset_custom()
 
     def _on_gaze_enabled_changed(self, checked: bool) -> None:
         Config.set("multicam_gaze_enabled", bool(checked))
@@ -659,6 +787,7 @@ class MulticamSection(QWidget):
             track_items,
             int(timeline_info.get("video_tracks", 0)),
         )
+        self._refresh_camera_layout_controls(int(timeline_info.get("video_tracks", 0)))
 
         project_db = self._resolve_project_db()
         if not project_db:
@@ -923,6 +1052,52 @@ class MulticamSection(QWidget):
                 self.audio_track_combo.setCurrentIndex(idx)
                 break
         self.audio_track_combo.blockSignals(False)
+
+    def _get_video_track_count_safe(self) -> int:
+        try:
+            timeline = self.resolve_api.get_current_timeline()
+            return int(timeline.GetTrackCount("video") or 0)
+        except Exception:
+            return 0
+
+    def _refresh_camera_layout_controls(self, video_tracks: int) -> None:
+        while self.camera_layout_layout.rowCount():
+            self.camera_layout_layout.removeRow(0)
+        self.camera_layout_combos = []
+
+        if video_tracks <= 0:
+            self.camera_layout_layout.addRow(QLabel("No video tracks detected."))
+            return
+
+        layout = resolve_layout(video_tracks)
+        for track_index in range(1, video_tracks + 1):
+            combo = QComboBox()
+            combo.addItem("Left", "L")
+            combo.addItem("Center", "C")
+            combo.addItem("Right", "R")
+            if video_tracks >= 4:
+                combo.addItem("Wide", "W")
+            desired = layout[track_index - 1] if track_index - 1 < len(layout) else "C"
+            idx = combo.findData(desired)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+            combo.currentIndexChanged.connect(self._on_camera_layout_changed)
+            self.camera_layout_layout.addRow(f"V{track_index}:", combo)
+            self.camera_layout_combos.append(combo)
+
+        self._persist_camera_layout()
+
+    def _on_camera_layout_changed(self, _index: int) -> None:
+        self._persist_camera_layout()
+
+    def _persist_camera_layout(self) -> None:
+        layout: List[str] = []
+        for combo in self.camera_layout_combos:
+            value = combo.currentData()
+            if value in ("L", "C", "R", "W"):
+                layout.append(value)
+        if layout:
+            Config.set("multicam_camera_layout", layout)
 
     @staticmethod
     def _make_slider(min_val: int, max_val: int, current: int):
