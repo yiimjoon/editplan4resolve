@@ -14,6 +14,7 @@ ActionType = Literal[
     "sync_clips",
     "match_broll",
     "apply_transition",
+    "cut_and_switch_angle",
 ]
 
 RiskLevel = Literal["safe", "moderate", "destructive"]
@@ -185,6 +186,7 @@ def _action_type_values() -> List[str]:
         "sync_clips",
         "match_broll",
         "apply_transition",
+        "cut_and_switch_angle",
     ]
 
 

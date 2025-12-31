@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +13,11 @@ logger = logging.getLogger(__name__)
 
 _LOGGED_SUBPROCESS_MODE = False
 _LOGGED_WORKER_MISSING = False
+_LOGGED_ZERO_METRICS: set[str] = set()
+_LOGGED_BUILD_MARKER = False
+_LOGGED_DEBUG_SAMPLE: set[str] = set()
+_LOGGED_WORKER_ENV = False
+_BUILD_MARKER = "p11-debug-03"
 
 
 def _log_worker_missing() -> None:
@@ -62,6 +68,17 @@ def _run_worker(args: List[str], timeout_sec: float) -> Dict[str, Any]:
     if not python_exe:
         raise RuntimeError("opencv worker python executable not found")
 
+    env = os.environ.copy()
+    worker_root = _get_worker_root()
+    if worker_root:
+        existing = env.get("PYTHONPATH", "")
+        entries = [p for p in existing.split(os.pathsep) if p]
+        root_str = str(worker_root)
+        if root_str not in entries:
+            entries.insert(0, root_str)
+        env["PYTHONPATH"] = os.pathsep.join(entries)
+    _log_worker_env(python_exe, worker_root, env)
+
     cmd = [str(python_exe), "-m", "VideoForge.adapters.opencv_worker", *args]
     proc = subprocess.run(
         cmd,
@@ -70,6 +87,8 @@ def _run_worker(args: List[str], timeout_sec: float) -> Dict[str, Any]:
         timeout=timeout_sec,
         encoding="utf-8",
         errors="ignore",
+        cwd=str(worker_root) if worker_root else None,
+        env=env,
     )
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "opencv worker failed")
@@ -77,6 +96,58 @@ def _run_worker(args: List[str], timeout_sec: float) -> Dict[str, Any]:
     if not payload:
         return {}
     return json.loads(payload)
+
+
+def _format_debug(debug: Any) -> str:
+    if not isinstance(debug, dict):
+        return ""
+    try:
+        return json.dumps(debug, ensure_ascii=False)
+    except Exception:
+        return str(debug)
+
+
+def _metrics_all_zero(metrics: Dict[str, float]) -> bool:
+    for key in ("sharpness", "motion", "stability", "face_score"):
+        if float(metrics.get(key, 0.0) or 0.0) > 0.0:
+            return False
+    return True
+
+
+def _log_build_marker() -> None:
+    global _LOGGED_BUILD_MARKER
+    if _LOGGED_BUILD_MARKER:
+        return
+    try:
+        logger.info(
+            "OpenCV subprocess build %s: %s",
+            _BUILD_MARKER,
+            str(Path(__file__).resolve()),
+        )
+    except Exception:
+        logger.info("OpenCV subprocess build %s: <path unavailable>", _BUILD_MARKER)
+    _LOGGED_BUILD_MARKER = True
+
+
+def _get_worker_root() -> Optional[Path]:
+    try:
+        # ...\VideoForge\adapters\opencv_subprocess.py -> parents[2] == ...\Scripts\Comp\VideoForge
+        return Path(__file__).resolve().parents[2]
+    except Exception:
+        return None
+
+
+def _log_worker_env(python_exe: Path, worker_root: Optional[Path], env: Dict[str, str]) -> None:
+    global _LOGGED_WORKER_ENV
+    if _LOGGED_WORKER_ENV:
+        return
+    logger.info(
+        "OpenCV worker env: python=%s root=%s PYTHONPATH=%s",
+        str(python_exe),
+        str(worker_root) if worker_root else "<none>",
+        env.get("PYTHONPATH", ""),
+    )
+    _LOGGED_WORKER_ENV = True
 
 
 def should_use_subprocess() -> bool:
@@ -105,6 +176,7 @@ def should_use_subprocess() -> bool:
             enabled = bool(value)
 
         if enabled:
+            _log_build_marker()
             python_exe = _get_worker_python_exe()
             if not python_exe:
                 _log_worker_missing()
@@ -118,6 +190,7 @@ def should_use_subprocess() -> bool:
 
         return enabled
     except Exception:
+        _log_build_marker()
         python_exe = _get_worker_python_exe()
         if not python_exe:
             _log_worker_missing()
@@ -179,3 +252,75 @@ def run_quality_check(
         "noise_level": float(metrics.get("noise_level", 0.0) or 0.0),
         "quality_score": float(metrics.get("quality_score", 0.0) or 0.0),
     }
+
+
+def run_angle_score(
+    video_path: Path,
+    timestamp_sec: float,
+    face_detector: str = "opencv_dnn",
+    timeout_sec: float = 120.0,
+) -> Dict[str, float]:
+    metrics, error, debug = run_angle_score_with_debug(
+        video_path=video_path,
+        timestamp_sec=timestamp_sec,
+        face_detector=face_detector,
+        timeout_sec=timeout_sec,
+    )
+    if error:
+        logger.warning(
+            "OpenCV angle_score worker error: %s (debug=%s)",
+            error,
+            _format_debug(debug),
+        )
+    if not error and _metrics_all_zero(metrics):
+        key = str(video_path)
+        if key not in _LOGGED_ZERO_METRICS:
+            logger.warning(
+                "OpenCV angle_score returned all-zero metrics for %s at %.2fs (debug=%s)",
+                key,
+                float(timestamp_sec),
+                _format_debug(debug),
+            )
+            _LOGGED_ZERO_METRICS.add(key)
+    return metrics
+
+
+def run_angle_score_with_debug(
+    video_path: Path,
+    timestamp_sec: float,
+    face_detector: str = "opencv_dnn",
+    timeout_sec: float = 120.0,
+) -> tuple[Dict[str, float], Optional[str], Dict[str, Any]]:
+    result = _run_worker(
+        [
+            "angle_score",
+            "--video",
+            str(video_path),
+            "--timestamp",
+            str(float(timestamp_sec)),
+            "--face-detector",
+            str(face_detector),
+        ],
+        timeout_sec=timeout_sec,
+    )
+    error = result.get("error")
+    debug = result.get("debug")
+    metrics = result.get("metrics")
+    if not isinstance(metrics, dict):
+        return {"sharpness": 0.0, "motion": 0.0, "stability": 0.0, "face_score": 0.0}, error, debug
+    normalized = {
+        "sharpness": float(metrics.get("sharpness", 0.0) or 0.0),
+        "motion": float(metrics.get("motion", 0.0) or 0.0),
+        "stability": float(metrics.get("stability", 0.0) or 0.0),
+        "face_score": float(metrics.get("face_score", 0.0) or 0.0),
+    }
+    if debug:
+        key = str(video_path)
+        if key not in _LOGGED_DEBUG_SAMPLE:
+            logger.info(
+                "OpenCV angle_score debug sample for %s: %s",
+                key,
+                _format_debug(debug),
+            )
+            _LOGGED_DEBUG_SAMPLE.add(key)
+    return normalized, error, debug

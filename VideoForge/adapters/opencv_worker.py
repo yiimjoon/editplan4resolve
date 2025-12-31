@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import ctypes
+import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+
+from VideoForge.config.config_manager import Config
 
 
 def _scene_detect(video_path: Path, threshold: float, sample_rate: int) -> List[float]:
@@ -110,6 +115,217 @@ def _quality_check(video_path: Path, sample_frames: int) -> Dict[str, float]:
     }
 
 
+def _edge_hist_variance(gray: np.ndarray) -> float:
+    edges = cv2.Canny(gray, 100, 200)
+    hist = cv2.calcHist([edges], [0], None, [256], [0, 256])
+    return float(np.var(hist))
+
+
+def _calc_motion(prev_gray: Optional[np.ndarray], gray: np.ndarray) -> float:
+    if prev_gray is None:
+        return 0.0
+    prev_pts = cv2.goodFeaturesToTrack(prev_gray, maxCorners=120, qualityLevel=0.01, minDistance=7)
+    if prev_pts is None:
+        return 0.0
+    next_pts, status, _err = cv2.calcOpticalFlowPyrLK(prev_gray, gray, prev_pts, None)
+    if next_pts is None or status is None:
+        return 0.0
+    valid = status.flatten() == 1
+    if not valid.any():
+        return 0.0
+    displacements = next_pts[valid] - prev_pts[valid]
+    magnitudes = np.linalg.norm(displacements, axis=2)
+    return float(np.mean(magnitudes))
+
+
+def _face_box_score(x: float, y: float, w: float, h: float) -> float:
+    center_x = x + w / 2.0
+    center_y = y + h / 2.0
+    distance = ((center_x - 0.5) ** 2 + (center_y - 0.5) ** 2) ** 0.5
+    center_score = max(0.0, 1.0 - min(distance / 0.5, 1.0))
+    size_score = min((w * h) / 0.2, 1.0)
+    return center_score * size_score
+
+
+def _detect_face_dnn(frame: np.ndarray) -> Optional[float]:
+    model_dir = str(Config.get("multicam_face_model_dir") or "").strip()
+    if not model_dir:
+        model_dir = str(Path(__file__).resolve().parents[1] / "models" / "face_detection")
+    model_dir_path = Path(model_dir)
+    prototxt = model_dir_path / "deploy.prototxt"
+    caffemodel = model_dir_path / "res10_300x300_ssd_iter_140000.caffemodel"
+    if not (prototxt.exists() and caffemodel.exists()):
+        return None
+    try:
+        net = cv2.dnn.readNetFromCaffe(str(prototxt), str(caffemodel))
+    except Exception:
+        return None
+    blob = cv2.dnn.blobFromImage(frame, 1.0, (300, 300), (104, 177, 123))
+    net.setInput(blob)
+    detections = net.forward()
+    if detections is None or detections.shape[2] == 0:
+        return None
+    best = None
+    for i in range(detections.shape[2]):
+        confidence = detections[0, 0, i, 2]
+        if confidence < 0.5:
+            continue
+        box = detections[0, 0, i, 3:7]
+        x0, y0, x1, y1 = box.tolist()
+        score = _face_box_score(x0, y0, x1 - x0, y1 - y0)
+        if best is None or score > best:
+            best = score
+    return best
+
+
+def _detect_face_haar(frame: np.ndarray) -> float:
+    try:
+        cascade_path = Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml"
+        detector = cv2.CascadeClassifier(str(cascade_path))
+    except Exception:
+        return 0.0
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(40, 40))
+    if faces is None or len(faces) == 0:
+        return 0.0
+    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+    h_frame, w_frame = gray.shape[:2]
+    return _face_box_score(
+        float(x) / float(w_frame),
+        float(y) / float(h_frame),
+        float(w) / float(w_frame),
+        float(h) / float(h_frame),
+    )
+
+
+def _face_score(frame: np.ndarray, face_detector: str) -> float:
+    detector = str(face_detector or "opencv_dnn").strip().lower()
+    if detector == "mediapipe":
+        try:
+            import mediapipe as mp  # type: ignore
+
+            mp_face = mp.solutions.face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.5)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = mp_face.process(rgb)
+            if not results or not results.detections:
+                return 0.0
+            detection = results.detections[0]
+            box = detection.location_data.relative_bounding_box
+            return _face_box_score(
+                float(box.xmin),
+                float(box.ymin),
+                float(box.width),
+                float(box.height),
+            )
+        except Exception:
+            detector = "opencv_dnn"
+
+    if detector == "opencv_dnn":
+        score = _detect_face_dnn(frame)
+        if score is not None:
+            return score
+
+    return _detect_face_haar(frame)
+
+
+def _to_short_path(path: Path) -> Optional[Path]:
+    if os.name != "nt":
+        return None
+    try:
+        buffer_len = 512
+        buf = ctypes.create_unicode_buffer(buffer_len)
+        result = ctypes.windll.kernel32.GetShortPathNameW(str(path), buf, buffer_len)
+        if result == 0:
+            return None
+        return Path(buf.value)
+    except Exception:
+        return None
+
+
+def _angle_score(
+    video_path: Path, timestamp: float, face_detector: str
+) -> Tuple[Dict[str, float], Optional[str], Dict[str, Any]]:
+    debug: Dict[str, Any] = {}
+    try:
+        debug["worker_path"] = str(Path(__file__).resolve())
+    except Exception:
+        debug["worker_path"] = None
+    debug["worker_cwd"] = os.getcwd()
+    debug["worker_exe"] = sys.executable
+    debug["sys_path0"] = sys.path[0] if sys.path else None
+    used_path = video_path
+    used_short_path = False
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        short_path = _to_short_path(video_path)
+        if short_path and short_path != video_path:
+            used_path = short_path
+            used_short_path = True
+            cap = cv2.VideoCapture(str(short_path))
+        if not cap.isOpened():
+            debug["path_used"] = str(used_path)
+            debug["used_short_path"] = used_short_path
+            return (
+                {"sharpness": 0.0, "motion": 0.0, "stability": 0.0, "face_score": 0.0},
+                f"cap_open_failed: {video_path}",
+                debug,
+            )
+
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    debug["path_used"] = str(used_path)
+    debug["used_short_path"] = used_short_path
+    debug["fps"] = fps
+    if fps <= 0:
+        cap.release()
+        return (
+            {"sharpness": 0.0, "motion": 0.0, "stability": 0.0, "face_score": 0.0},
+            f"fps_missing: {video_path}",
+            debug,
+        )
+
+    frame_idx = max(0, int(round(float(timestamp) * fps)))
+    debug["frame_idx"] = frame_idx
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ret, frame = cap.read()
+    if not ret or frame is None:
+        cap.release()
+        return (
+            {"sharpness": 0.0, "motion": 0.0, "stability": 0.0, "face_score": 0.0},
+            f"frame_read_failed: {video_path} @ {timestamp:.2f}s",
+            debug,
+        )
+
+    debug["frame_shape"] = list(frame.shape)
+    debug["frame_mean"] = float(frame.mean())
+    debug["frame_std"] = float(frame.std())
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    prev_gray = None
+    if frame_idx > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_idx - 1))
+        prev_ret, prev_frame = cap.read()
+        if prev_ret and prev_frame is not None:
+            prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+    cap.release()
+
+    sharpness = min(float(cv2.Laplacian(gray, cv2.CV_64F).var()) / 1000.0, 1.0)
+    motion = min(_calc_motion(prev_gray, gray) / 10.0, 1.0)
+    stability = 1.0 - min(_edge_hist_variance(gray) / 10000.0, 1.0)
+    face_score = min(max(_face_score(frame, face_detector), 0.0), 1.0)
+
+    return (
+        {
+            "sharpness": float(max(sharpness, 0.0)),
+            "motion": float(max(motion, 0.0)),
+            "stability": float(max(stability, 0.0)),
+            "face_score": float(face_score),
+        },
+        None,
+        debug,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -123,6 +339,11 @@ def main() -> None:
     quality.add_argument("--video", required=True)
     quality.add_argument("--sample-frames", type=int, default=5)
 
+    angle = sub.add_parser("angle_score")
+    angle.add_argument("--video", required=True)
+    angle.add_argument("--timestamp", type=float, default=0.0)
+    angle.add_argument("--face-detector", default="opencv_dnn")
+
     args = parser.parse_args()
 
     if args.cmd == "scene_detect":
@@ -130,8 +351,18 @@ def main() -> None:
         print(json.dumps({"scenes": scenes}))
         return
 
-    metrics = _quality_check(Path(args.video), int(args.sample_frames))
-    print(json.dumps({"metrics": metrics}))
+    if args.cmd == "quality_check":
+        metrics = _quality_check(Path(args.video), int(args.sample_frames))
+        print(json.dumps({"metrics": metrics}))
+        return
+
+    metrics, error, debug = _angle_score(
+        Path(args.video), float(args.timestamp), str(args.face_detector)
+    )
+    payload = {"metrics": metrics, "debug": debug}
+    if error:
+        payload["error"] = error
+    print(json.dumps(payload))
 
 
 if __name__ == "__main__":

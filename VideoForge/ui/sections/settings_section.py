@@ -531,6 +531,25 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     add_weight_slider(right_col, "visual_threshold_label", "visual_threshold_slider", "Visual Threshold", 70, 95, 
                       panel.settings["broll"]["visual_similarity_threshold"] * 100, panel._on_visual_threshold_changed)
 
+    right_col.addSpacing(12)
+    right_col.addWidget(panel._create_section_title("I. Multicam Settings"))
+
+    panel.face_model_dir_input = QLineEdit()
+    panel.face_model_dir_input.setPlaceholderText("Optional face model directory")
+    panel.face_model_dir_input.setText(str(Config.get("multicam_face_model_dir", "")))
+    panel.face_model_dir_input.textChanged.connect(
+        lambda value: Config.set("multicam_face_model_dir", value)
+    )
+    add_setting_row(right_col, "Face Model Dir (Optional)", panel.face_model_dir_input)
+
+    panel.multicam_edl_dir_input = QLineEdit()
+    panel.multicam_edl_dir_input.setPlaceholderText("Optional EDL output dir or .edl path")
+    panel.multicam_edl_dir_input.setText(str(Config.get("multicam_edl_output_dir", "")))
+    panel.multicam_edl_dir_input.textChanged.connect(
+        lambda value: Config.set("multicam_edl_output_dir", value)
+    )
+    add_setting_row(right_col, "EDL Output Path (Optional)", panel.multicam_edl_dir_input)
+
     # Final logic
     panel._update_transcript_option_visibility(panel.engine_combo.currentText())
     llm_enabled = panel.llm_provider_combo.currentText() != "disabled"

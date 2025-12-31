@@ -40,6 +40,7 @@ class ConfigManager:
         self._migrate_library_config()
         self._ensure_llm_defaults()
         self._ensure_audio_sync_defaults()
+        self._ensure_multicam_defaults()
         self._ensure_agent_defaults()
 
     @staticmethod
@@ -112,6 +113,41 @@ class ConfigManager:
     def _ensure_llm_defaults(self) -> None:
         defaults = {
             "llm_max_tokens": 4096,
+        }
+        changed = False
+        for key, value in defaults.items():
+            if key not in self._config:
+                self._config[key] = value
+                changed = True
+        if changed:
+            self._save()
+
+    def _ensure_multicam_defaults(self) -> None:
+        defaults = {
+            "multicam_max_segment_sec": 10.0,
+            "multicam_min_hold_sec": 2.0,
+            "multicam_max_repeat": 3,
+            "multicam_closeup_weight": 0.3,
+            "multicam_wide_weight": 0.2,
+            "multicam_weight_sharpness": 0.4,
+            "multicam_weight_stability": 0.3,
+            "multicam_weight_motion": 0.2,
+            "multicam_weight_face": 0.1,
+            "multicam_face_detector": "opencv_dnn",
+            "multicam_face_model_dir": "",
+            "multicam_edl_output_dir": "",
+            "multicam_boundary_mode": "hybrid",
+            "multicam_cut_preset": "Custom",
+            "multicam_audio_mode": "per_cut",
+            "multicam_audio_track": 1,
+            "multicam_gaze_enabled": False,
+            "multicam_gaze_weight": 0.4,
+            "multicam_gaze_priority_threshold": 0.6,
+            "multicam_gaze_method": "head_pose",
+            "multicam_gaze_min_confidence": 0.7,
+            "multicam_gaze_yaw_span_deg": 35.0,
+            "multicam_camera_layout": [],
+            "multicam_speaker_diarization_enabled": False,
         }
         changed = False
         for key, value in defaults.items():
