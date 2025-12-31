@@ -1,4 +1,4 @@
-# VideoForge Agent Architecture
+﻿# VideoForge Agent Architecture
 
 ## Overview
 
@@ -367,7 +367,10 @@ VideoForge는 DaVinci Resolve용 AI 자동 편집 플러그인으로, 음성 인
 - **기능**:
   - Generate preview + approve flow
   - Boundary mode: sentence/fixed/hybrid
-  - Min-hold, max-repeat 설정
+  - Cut speed preset (Ultra/Fast/Balanced/Smooth)
+  - Min-hold, max-repeat, Fixed Audio Track 설정
+  - Gaze priority + Camera layout (L/C/R/W)
+  - Speaker diarization 토글 (placeholder)
 
 #### SettingsSection (`settings_section.py`)
 **Role**: E. Video Analysis, F. Library (Phase 4-5)
@@ -450,6 +453,7 @@ Config.get("audio_sync_content_n_fft", 2048)
 
 ### Multicam (Phase 11)
 ```python
+Config.get("multicam_cut_preset", "Custom")  # Cut speed preset
 Config.get("multicam_max_segment_sec", 10.0)    # Max segment length
 Config.get("multicam_min_hold_sec", 2.0)        # Minimum hold time
 Config.get("multicam_max_repeat", 3)            # Max same-angle repeats
@@ -460,6 +464,14 @@ Config.get("multicam_face_model_dir", "")       # Optional model dir override
 Config.get("multicam_boundary_mode", "hybrid")  # sentence/fixed/hybrid
 Config.get("multicam_audio_mode", "per_cut")     # "per_cut" | "fixed_track"
 Config.get("multicam_audio_track", 1)           # Fixed audio track index
+Config.get("multicam_gaze_enabled", False)      # Gaze priority toggle
+Config.get("multicam_gaze_weight", 0.4)         # Gaze score weight
+Config.get("multicam_gaze_priority_threshold", 0.6)  # Force gaze above threshold
+Config.get("multicam_gaze_method", "head_pose")  # "head_pose" | "disabled"
+Config.get("multicam_gaze_min_confidence", 0.7)  # Min face confidence for gaze
+Config.get("multicam_gaze_yaw_span_deg", 35.0)   # Yaw span for gaze score
+Config.get("multicam_camera_layout", [])        # ["L","C","R","W"] per track
+Config.get("multicam_speaker_diarization_enabled", False)  # placeholder
 Config.get("multicam_edl_output_dir", "")       # EDL output directory
 ```
 
