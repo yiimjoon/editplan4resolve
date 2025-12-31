@@ -30,6 +30,7 @@ def _estimate_yaw_from_frame(frame) -> Tuple[float, float, Dict[str, Any], Optio
         import mediapipe as mp  # type: ignore
         import numpy as np  # type: ignore
     except Exception as exc:
+        debug["error"] = f"mediapipe_import_failed: {exc}"
         return 0.0, 0.0, debug, f"mediapipe_import_failed: {exc}"
 
     mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
@@ -43,9 +44,11 @@ def _estimate_yaw_from_frame(frame) -> Tuple[float, float, Dict[str, Any], Optio
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = mp_face_mesh.process(rgb)
     if not results or not results.multi_face_landmarks:
+        debug["no_face"] = True
         return 0.0, 0.0, debug, "no_face"
 
     landmarks = results.multi_face_landmarks[0].landmark
+    debug["landmark_count"] = len(landmarks)
     h, w = frame.shape[:2]
     debug["frame_shape"] = [int(h), int(w), int(frame.shape[2]) if frame.ndim > 2 else 1]
 
@@ -89,6 +92,7 @@ def _estimate_yaw_from_frame(frame) -> Tuple[float, float, Dict[str, Any], Optio
         model_points, image_points, camera_matrix, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE
     )
     if not success:
+        debug["solvepnp_failed"] = True
         return 0.0, 0.0, debug, "solvepnp_failed"
 
     rotation_mat, _ = cv2.Rodrigues(rotation_vec)
@@ -113,6 +117,7 @@ def _estimate_yaw_from_frame(frame) -> Tuple[float, float, Dict[str, Any], Optio
     debug["confidence"] = confidence
 
     yaw = max(-90.0, min(90.0, yaw))
+    debug["yaw_deg"] = float(yaw)
     return float(yaw), float(confidence), debug, None
 
 
@@ -123,7 +128,12 @@ def estimate_yaw_from_frame(frame) -> Tuple[float, float, Dict[str, Any], Option
 def estimate_yaw_from_video(
     video_path: Path, timestamp_sec: float
 ) -> Tuple[float, float, Dict[str, Any], Optional[str]]:
-    debug: Dict[str, Any] = {}
+    debug: Dict[str, Any] = {
+        "worker_path": str(Path(__file__).resolve()),
+        "worker_cwd": os.getcwd(),
+        "worker_exe": sys.executable,
+        "sys_path0": sys.path[0] if sys.path else None,
+    }
     try:
         import cv2  # type: ignore
     except Exception as exc:

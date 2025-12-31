@@ -15,6 +15,7 @@ _LOGGED_WORKER_MISSING = False
 _LOGGED_BUILD_MARKER = False
 _LOGGED_DEBUG_SAMPLE: set[str] = set()
 _LOGGED_WORKER_ENV = False
+_LOGGED_ERROR_SAMPLE: set[str] = set()
 _BUILD_MARKER = "p12-gaze-01"
 
 
@@ -170,6 +171,20 @@ def run_gaze_score_with_debug(
     debug = result.get("debug")
     yaw = float(result.get("yaw_deg", 0.0) or 0.0)
     confidence = float(result.get("confidence", 0.0) or 0.0)
+    if isinstance(debug, dict):
+        debug.setdefault("yaw_deg", yaw)
+        debug.setdefault("confidence", confidence)
+        if error:
+            debug.setdefault("error", error)
+    if error:
+        key = str(video_path)
+        if key not in _LOGGED_ERROR_SAMPLE:
+            logger.warning(
+                "Mediapipe gaze_score worker error: %s (debug=%s)",
+                error,
+                json.dumps(debug, ensure_ascii=False),
+            )
+            _LOGGED_ERROR_SAMPLE.add(key)
     if debug:
         key = str(video_path)
         if key not in _LOGGED_DEBUG_SAMPLE:
