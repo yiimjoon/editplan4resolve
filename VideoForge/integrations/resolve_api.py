@@ -2315,6 +2315,115 @@ class ResolveAPI:
             fps = 24.0
         return fps
 
+    def get_timeline_markers(self) -> Dict[int, Dict[str, Any]]:
+        """Return timeline markers keyed by frame (best effort)."""
+        self._ensure_main_thread("get_timeline_markers")
+        timeline = self.get_current_timeline()
+        getter = getattr(timeline, "GetMarkers", None)
+        if callable(getter):
+            try:
+                markers = getter()
+                if isinstance(markers, dict):
+                    result = markers
+                    timeline_start = int(self.get_timeline_start_frame() or 0)
+                    if result and timeline_start > 0:
+                        try:
+                            max_frame = max(int(key) for key in result.keys())
+                            min_frame = min(int(key) for key in result.keys())
+                        except Exception:
+                            max_frame = None
+                            min_frame = None
+                        if max_frame is not None and max_frame < timeline_start:
+                            logger.info(
+                                "Beat markers appear relative; offsetting by timeline_start=%s (min=%s max=%s).",
+                                timeline_start,
+                                min_frame,
+                                max_frame,
+                            )
+                            result = {int(frame) + timeline_start: meta for frame, meta in result.items()}
+                    return result
+                if isinstance(markers, (list, tuple)):
+                    result: Dict[int, Dict[str, Any]] = {}
+                    for item in markers:
+                        frame = self._extract_marker_frame(item)
+                        if frame is None:
+                            continue
+                        meta: Dict[str, Any] = {}
+                        if isinstance(item, dict):
+                            meta = item
+                        else:
+                            for key in ("name", "Name", "color", "Color", "note", "Note"):
+                                value = getattr(item, key, None)
+                                if value is not None:
+                                    meta[key] = value
+                        result[int(frame)] = meta
+                    timeline_start = int(self.get_timeline_start_frame() or 0)
+                    if result and timeline_start > 0:
+                        try:
+                            max_frame = max(int(key) for key in result.keys())
+                            min_frame = min(int(key) for key in result.keys())
+                        except Exception:
+                            max_frame = None
+                            min_frame = None
+                        if max_frame is not None and max_frame < timeline_start:
+                            logger.info(
+                                "Beat markers appear relative; offsetting by timeline_start=%s (min=%s max=%s).",
+                                timeline_start,
+                                min_frame,
+                                max_frame,
+                            )
+                            result = {int(frame) + timeline_start: meta for frame, meta in result.items()}
+                    return result
+            except Exception:
+                return {}
+        return {}
+
+    def get_first_marker_frame(self) -> Optional[int]:
+        """Return the earliest marker frame on the timeline (best effort)."""
+        self._ensure_main_thread("get_first_marker_frame")
+        markers = self.get_timeline_markers()
+        if not markers:
+            return None
+        frames: List[int] = []
+        for key in markers.keys():
+            try:
+                frames.append(int(key))
+            except Exception:
+                continue
+        if not frames:
+            return None
+        return int(min(frames))
+
+    @staticmethod
+    def _extract_marker_frame(item: Any) -> Optional[int]:
+        if item is None:
+            return None
+        if isinstance(item, dict):
+            for key in ("frameId", "frame", "FrameId", "Frame", "frame_id"):
+                if key in item:
+                    try:
+                        return int(item[key])
+                    except Exception:
+                        continue
+        if isinstance(item, (list, tuple)) and item:
+            try:
+                return int(item[0])
+            except Exception:
+                pass
+        for name in ("GetFrameId", "GetFrame", "frame", "frameId"):
+            value = getattr(item, name, None)
+            if callable(value):
+                try:
+                    return int(value())
+                except Exception:
+                    continue
+            if value is not None:
+                try:
+                    return int(value)
+                except Exception:
+                    continue
+        return None
+
     def get_timeline_start_frame(self) -> int:
         """Return the timeline start frame offset (timecode-based) if available."""
         timeline = self.get_current_timeline()

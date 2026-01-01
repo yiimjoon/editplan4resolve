@@ -176,9 +176,15 @@ class ConfigManager:
             "beat_downbeat_marker_color": "red",
             "beat_marker_name": "Beat",
             "beat_downbeat_marker_name": "Downbeat",
+            "beat_marker_min_frames": 3,
+            "beat_marker_max_count": 0,
             "beat_python_exe": "",
             "beat_broll_mode": "simple_random",
             "beat_broll_fill_ratio": 1.0,
+            "beat_broll_source_mode": "selected",
+            "beat_broll_source_track": 1,
+            "beat_broll_target_track": 0,
+            "beat_auto_edit_target_track": 0,
         }
         changed = False
         for key, value in defaults.items():
