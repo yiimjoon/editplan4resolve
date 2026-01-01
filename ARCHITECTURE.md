@@ -74,6 +74,9 @@ VideoForge는 DaVinci Resolve용 AI 자동 편집 플러그인으로, 음성 인
   - `get_clips_at_playhead(track_types)`: 플레이헤드 위치 클립 반환
   - `sync_clips_from_timeline(reference_path, target_paths, mode)`: 오디오 동기화
   - `match_broll_for_segment(query, duration, limit)`: B-roll 매칭
+  - `detect_beats(audio_path, mode)`: 오디오 비트 감지
+  - `add_beat_markers(beat_data, marker_color)`: 비트 마커 추가
+  - `place_clips_on_beat(clips, beat_data, placement_mode)`: 비트 기반 클립 배치
 
 - **스레드 가드**: `_require_main_thread()`로 Resolve API 호출 시 Main Thread 확인
 
@@ -164,6 +167,12 @@ VideoForge는 DaVinci Resolve용 AI 자동 편집 플러그인으로, 음성 인
   - `chroma`: 화음 진행
   - `onset`: 비트/리듬
 
+#### BeatPlacer (`beat_placer.py`)
+**Role**: 비트 타임스탬프 기반 클립 배치 (Phase 12)
+
+- **모드**: `on_beat`, `on_downbeat`, `on_segment`, `fill_gaps`
+- **출력**: start/end/transition 정보를 포함한 배치 리스트
+
 ---
 
 ### 3. B-roll System (`VideoForge/broll/`)
@@ -192,6 +201,13 @@ VideoForge는 DaVinci Resolve용 AI 자동 편집 플러그인으로, 음성 인
   - CLIP 임베딩 코사인 유사도
   - `threshold`: 0.85 (기본)
   - 최근 N개 클립의 임베딩 저장
+
+#### BeatBrollMatcher (`beat_matcher.py`)
+**Role**: 비트 포인트를 포함한 B-roll 매칭 확장 (Phase 12)
+
+- **추가 필드**:
+  - `beat_points`: 문장 구간 내 비트 타임스탬프
+  - `downbeats`: 문장 구간 내 다운비트 타임스탬프
 
 #### Placer (`placer.py`)
 **Role**: B-roll 클립 타임라인 배치
@@ -272,6 +288,12 @@ VideoForge는 DaVinci Resolve용 AI 자동 편집 플러그인으로, 음성 인
 - **모델**: faster-whisper (large-v3, GPU)
 - **출력**: SRT, JSON
 
+#### BeatDetector (`beat_detector.py`)
+**Role**: 오디오 비트/온셋 감지 (Phase 12)
+
+- **백엔드**: librosa (우선) + RMS fallback
+- **Subprocess**: `beat_subprocess.py` + `beat_worker.py`
+
 #### AudioSync (`audio_sync.py`)
 **Role**: 무음 구간 감지 (Phase 8-A)
 
@@ -307,6 +329,8 @@ VideoForge는 DaVinci Resolve용 AI 자동 편집 플러그인으로, 음성 인
   - `insert_clip_at_position()`: 클립 삽입
   - `replace_timeline_item()`: 클립 교체
   - `export_clip_audio()`: 오디오 추출
+  - `add_beat_markers()`: 비트 마커 추가
+  - `add_downbeat_markers()`: 다운비트 마커 추가
   - `import_subtitles_into_timeline()`: 자막 가져오기
 
 - **스레드 가드**: `_ensure_main_thread()`로 Main Thread 확인
@@ -360,6 +384,14 @@ VideoForge는 DaVinci Resolve용 AI 자동 편집 플러그인으로, 음성 인
   - Sync Mode: Same Pattern / Inverse Pattern
   - Auto Sync & Place 버튼
   - 신뢰도 경고 표시
+
+#### BeatSection (`beat_section.py`)
+**Role**: Audio Beat Engine UI (Phase 12)
+
+- **기능**:
+  - Timeline/파일 기반 비트 감지
+  - BPM 범위/온셋 임계값 설정
+  - 비트/다운비트 마커 추가
 
 #### MulticamSection (`multicam_section.py`)
 **Role**: Auto Multicam Cutter UI (Phase 11)
@@ -449,6 +481,27 @@ Config.get("audio_sync_content_feature", "chroma")  # "chroma" | "onset"
 Config.get("audio_sync_content_sample_rate", 22050)
 Config.get("audio_sync_content_hop_length", 512)
 Config.get("audio_sync_content_n_fft", 2048)
+```
+
+### Beat Engine (Phase 12)
+```python
+Config.get("beat_detector_mode", "onset")           # onset|beat|downbeat|segment
+Config.get("beat_detector_hop_length", 512)
+Config.get("beat_detector_onset_threshold", 0.5)
+Config.get("beat_detector_min_bpm", 60)
+Config.get("beat_detector_max_bpm", 180)
+Config.get("beat_detector_downbeat_weight", 0.3)
+Config.get("beat_placement_mode", "on_beat")        # on_beat|on_downbeat|on_segment|fill_gaps
+Config.get("beat_placement_min_clip_sec", 0.25)
+Config.get("beat_placement_max_clip_sec", 2.0)
+Config.get("beat_placement_transition_type", "cut") # cut|fade|j-cut|l-cut
+Config.get("beat_placement_crossfade_sec", 0.1)
+Config.get("beat_placement_j_l_cut_sec", 0.15)
+Config.get("beat_marker_color", "blue")
+Config.get("beat_downbeat_marker_color", "red")
+Config.get("beat_marker_name", "Beat")
+Config.get("beat_downbeat_marker_name", "Downbeat")
+Config.get("beat_python_exe", "")                   # Optional worker python
 ```
 
 ### Multicam (Phase 11)

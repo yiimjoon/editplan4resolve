@@ -40,6 +40,7 @@ class ConfigManager:
         self._migrate_library_config()
         self._ensure_llm_defaults()
         self._ensure_audio_sync_defaults()
+        self._ensure_beat_defaults()
         self._ensure_multicam_defaults()
         self._ensure_agent_defaults()
 
@@ -148,6 +149,34 @@ class ConfigManager:
             "multicam_gaze_yaw_span_deg": 35.0,
             "multicam_camera_layout": [],
             "multicam_speaker_diarization_enabled": False,
+        }
+        changed = False
+        for key, value in defaults.items():
+            if key not in self._config:
+                self._config[key] = value
+                changed = True
+        if changed:
+            self._save()
+
+    def _ensure_beat_defaults(self) -> None:
+        defaults = {
+            "beat_detector_mode": "onset",
+            "beat_detector_hop_length": 512,
+            "beat_detector_onset_threshold": 0.5,
+            "beat_detector_min_bpm": 60,
+            "beat_detector_max_bpm": 180,
+            "beat_detector_downbeat_weight": 0.3,
+            "beat_placement_mode": "on_beat",
+            "beat_placement_min_clip_sec": 0.25,
+            "beat_placement_max_clip_sec": 2.0,
+            "beat_placement_transition_type": "cut",
+            "beat_placement_crossfade_sec": 0.1,
+            "beat_placement_j_l_cut_sec": 0.15,
+            "beat_marker_color": "blue",
+            "beat_downbeat_marker_color": "red",
+            "beat_marker_name": "Beat",
+            "beat_downbeat_marker_name": "Downbeat",
+            "beat_python_exe": "",
         }
         changed = False
         for key, value in defaults.items():

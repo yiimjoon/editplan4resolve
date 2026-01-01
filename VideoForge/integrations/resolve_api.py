@@ -1834,6 +1834,79 @@ class ResolveAPI:
             raise RuntimeError(f"ffmpeg failed: {proc.stderr.strip()}")
         return output
 
+    def add_beat_markers(
+        self,
+        beat_times: List[float],
+        marker_color: str = "blue",
+        marker_name: str = "Beat",
+    ) -> bool:
+        """Add beat markers to the current timeline."""
+        self._ensure_main_thread("add_beat_markers")
+        if not beat_times:
+            return False
+        timeline = self.get_current_timeline()
+        fps = float(self.get_timeline_fps())
+        start_frame = int(self.get_timeline_start_frame())
+        added = 0
+        for beat in beat_times:
+            try:
+                frame = int(round(float(beat) * fps)) + start_frame
+            except Exception:
+                continue
+            if self._add_timeline_marker(timeline, frame, marker_color, marker_name, ""):
+                added += 1
+        logger.info("Beat markers added: %s", added)
+        return added > 0
+
+    def add_downbeat_markers(
+        self,
+        downbeat_times: List[float],
+        marker_color: str = "red",
+        marker_name: str = "Downbeat",
+    ) -> bool:
+        """Add downbeat markers to the current timeline."""
+        self._ensure_main_thread("add_downbeat_markers")
+        if not downbeat_times:
+            return False
+        timeline = self.get_current_timeline()
+        fps = float(self.get_timeline_fps())
+        start_frame = int(self.get_timeline_start_frame())
+        added = 0
+        for beat in downbeat_times:
+            try:
+                frame = int(round(float(beat) * fps)) + start_frame
+            except Exception:
+                continue
+            if self._add_timeline_marker(timeline, frame, marker_color, marker_name, ""):
+                added += 1
+        logger.info("Downbeat markers added: %s", added)
+        return added > 0
+
+    @staticmethod
+    def _add_timeline_marker(
+        timeline: Any,
+        frame: int,
+        color: str,
+        name: str,
+        note: str,
+        duration: int = 1,
+    ) -> bool:
+        add_marker = getattr(timeline, "AddMarker", None)
+        if not callable(add_marker):
+            return False
+        try:
+            result = add_marker(
+                int(frame),
+                str(color),
+                str(name),
+                str(note),
+                int(duration),
+                {},
+            )
+            return bool(result) or result is None
+        except Exception:
+            return False
+
     def insert_clip_at_position(
         self, track_type: str, track_index: int, clip: Any, timeline_position: int
     ) -> Optional[Any]:

@@ -17,6 +17,7 @@ dependencies = [
 whisper = ["faster-whisper>=1.0.3"]
 clip = ["open-clip-torch>=2.24.0"]
 faiss = ["faiss-cpu>=1.8.0"]
+beat = ["librosa>=0.10.1", "soundfile>=0.12.1"]
 resolve = []
 
 [project.scripts]

@@ -9,6 +9,8 @@ from functools import wraps
 from typing import Any, Callable, Dict, Optional
 
 from VideoForge.integrations.resolve_api import ResolveAPI
+from VideoForge.adapters.beat_detector import BeatDetector
+from VideoForge.core.beat_placer import BeatPlacer
 from VideoForge.core.sync_matcher import SyncMatcher
 from VideoForge.broll.matcher import BrollMatcher
 from VideoForge.cli.main import load_settings
@@ -356,4 +358,83 @@ def match_broll_for_segment(query: str, duration: float = 3.0, limit: int = 5) -
     matches = matcher.match([sentence])
     limited = matches[: max(1, int(limit))]
     return {"success": True, "matches": limited}
+
+
+@videoforge_tool(
+    name="detect_beats",
+    description="Detect beats in an audio file and return timestamps.",
+    parameters={
+        "audio_path": {"type": "string"},
+        "mode": {"type": "string"},
+    },
+)
+def detect_beats(audio_path: str, mode: str = "onset") -> Dict[str, Any]:
+    path = Path(str(audio_path))
+    if not path.exists():
+        return {"success": False, "error": "Audio file not found."}
+    detector = BeatDetector(mode=mode)
+    beat_data = detector.detect(path, mode=mode)
+    return {
+        "success": True,
+        "beat_data": beat_data,
+        "debug": detector.last_debug,
+        "error": detector.last_error,
+    }
+
+
+@videoforge_tool(
+    name="add_beat_markers",
+    description="Add beat markers to the current timeline.",
+    parameters={
+        "beat_data": {"type": "object"},
+        "marker_color": {"type": "string"},
+    },
+)
+def add_beat_markers(
+    beat_data: Dict[str, Any],
+    marker_color: str = "blue",
+) -> Dict[str, Any]:
+    error = _require_main_thread("add_beat_markers")
+    if error:
+        return error
+    if not isinstance(beat_data, dict):
+        return {"success": False, "error": "beat_data must be an object."}
+    beats = beat_data.get("beats") or []
+    downbeats = beat_data.get("downbeats") or []
+    api = ResolveAPI()
+    ok = api.add_beat_markers(beats, marker_color, str(beat_data.get("marker_name", "Beat")))
+    downbeat_ok = api.add_downbeat_markers(
+        downbeats,
+        str(beat_data.get("downbeat_marker_color", "red")),
+        str(beat_data.get("downbeat_marker_name", "Downbeat")),
+    )
+    return {"success": bool(ok), "downbeats_added": bool(downbeat_ok)}
+
+
+@videoforge_tool(
+    name="place_clips_on_beat",
+    description="Arrange clips to match beat pattern.",
+    parameters={
+        "clips": {"type": "array", "items": {"type": "string"}},
+        "beat_data": {"type": "object"},
+        "placement_mode": {"type": "string"},
+    },
+)
+def place_clips_on_beat(
+    clips: list[str],
+    beat_data: Dict[str, Any],
+    placement_mode: str = "on_beat",
+) -> Dict[str, Any]:
+    if not clips:
+        return {"success": False, "error": "No clips provided."}
+    if not isinstance(beat_data, dict):
+        return {"success": False, "error": "beat_data must be an object."}
+    clip_payloads = [{"path": str(path)} for path in clips]
+    placer = BeatPlacer()
+    placements = placer.place_clips_on_beat(
+        clips=clip_payloads,
+        beat_data=beat_data,
+        placement_mode=placement_mode,
+    )
+    return {"success": True, "placements": placements}
 

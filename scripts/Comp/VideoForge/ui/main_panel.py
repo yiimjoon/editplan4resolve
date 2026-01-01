@@ -52,6 +52,7 @@ from VideoForge.ui.qt_compat import (
 )
 from VideoForge.ui.sections.analyze_section import build_analyze_section
 from VideoForge.ui.sections.agent_section import AgentSection
+from VideoForge.ui.sections.beat_section import BeatSection
 from VideoForge.ui.sections.library_section import build_library_section
 from VideoForge.ui.sections.match_section import build_match_section
 from VideoForge.ui.sections.misc_section import build_misc_section
@@ -412,7 +413,15 @@ class VideoForgePanel(QWidget):
         sync_layout.addStretch()
         self.tabs.addTab(sync_scroll, "Sync")
 
-        # Tab 4: Multicam
+        # Tab 4: Beat
+        beat_scroll = QScrollArea()
+        beat_scroll.setWidgetResizable(True)
+        beat_scroll.setFrameShape(QFrame.NoFrame)
+        beat_tab = BeatSection(self.bridge.resolve_api)
+        beat_scroll.setWidget(beat_tab)
+        self.tabs.addTab(beat_scroll, "Beat")
+
+        # Tab 5: Multicam
         multicam_scroll = QScrollArea()
         multicam_scroll.setWidgetResizable(True)
         multicam_scroll.setFrameShape(QFrame.NoFrame)
@@ -420,7 +429,7 @@ class VideoForgePanel(QWidget):
         multicam_scroll.setWidget(multicam_tab)
         self.tabs.addTab(multicam_scroll, "Multicam")
 
-        # Tab 5: Agent
+        # Tab 6: Agent
         agent_scroll = QScrollArea()
         agent_scroll.setWidgetResizable(True)
         agent_scroll.setFrameShape(QFrame.NoFrame)
@@ -428,7 +437,7 @@ class VideoForgePanel(QWidget):
         agent_scroll.setWidget(agent_tab)
         self.tabs.addTab(agent_scroll, "Agent")
 
-        # Tab 6: Settings
+        # Tab 7: Settings
         settings_scroll = QScrollArea()
         settings_scroll.setWidgetResizable(True)
         settings_scroll.setFrameShape(QFrame.NoFrame)
@@ -441,7 +450,7 @@ class VideoForgePanel(QWidget):
         settings_layout.addStretch()
         self.tabs.addTab(settings_scroll, "⚙️ Settings")
 
-        # Tab 7: Misc
+        # Tab 8: Misc
         misc_scroll = QScrollArea()
         misc_scroll.setWidgetResizable(True)
         misc_scroll.setFrameShape(QFrame.NoFrame)
