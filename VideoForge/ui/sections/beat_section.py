@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import random
+import zlib
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from VideoForge.config.config_manager import Config
 from VideoForge.integrations.resolve_api import ResolveAPI
@@ -101,6 +103,7 @@ class BeatSection(QWidget):
         self.resolve_api = resolve_api
         self.worker: Optional[BeatWorker] = None
         self.beat_data: Optional[Dict[str, Any]] = None
+        self.beat_base_frame: Optional[int] = None
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -145,18 +148,6 @@ class BeatSection(QWidget):
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         settings_layout.addRow("Detection Mode:", self.mode_combo)
 
-        self.min_bpm_slider = self._make_slider(40, 240, int(Config.get("beat_detector_min_bpm", 60)))
-        self.min_bpm_label = QLabel(f"{self.min_bpm_slider.value()} BPM")
-        self.min_bpm_slider.valueChanged.connect(self._on_min_bpm_changed)
-        settings_layout.addRow("Min BPM:", self.min_bpm_slider)
-        settings_layout.addRow("", self.min_bpm_label)
-
-        self.max_bpm_slider = self._make_slider(60, 300, int(Config.get("beat_detector_max_bpm", 180)))
-        self.max_bpm_label = QLabel(f"{self.max_bpm_slider.value()} BPM")
-        self.max_bpm_slider.valueChanged.connect(self._on_max_bpm_changed)
-        settings_layout.addRow("Max BPM:", self.max_bpm_slider)
-        settings_layout.addRow("", self.max_bpm_label)
-
         self.onset_threshold_slider = self._make_slider(
             0, 100, int(float(Config.get("beat_detector_onset_threshold", 0.5)) * 100)
         )
@@ -180,6 +171,35 @@ class BeatSection(QWidget):
         self.use_downbeat_markers = QCheckBox("Add Downbeat Markers (Red)")
         self.use_downbeat_markers.setChecked(True)
         settings_layout.addRow("", self.use_downbeat_markers)
+
+        self.broll_mode_combo = QComboBox()
+        self.broll_mode_combo.addItems(
+            [
+                "Simple Random (Selected Clips)",
+                "Transcript-Aware (Planned)",
+            ]
+        )
+        current_broll_mode = str(Config.get("beat_broll_mode", "simple_random"))
+        if current_broll_mode.strip().lower() == "transcript":
+            self.broll_mode_combo.setCurrentText("Transcript-Aware (Planned)")
+        else:
+            self.broll_mode_combo.setCurrentText("Simple Random (Selected Clips)")
+        self.broll_mode_combo.currentTextChanged.connect(self._on_broll_mode_changed)
+        settings_layout.addRow("B-roll Mode:", self.broll_mode_combo)
+
+        self.broll_fill_slider = self._make_slider(
+            5, 100, int(float(Config.get("beat_broll_fill_ratio", 1.0)) * 100)
+        )
+        self.broll_fill_label = QLabel(
+            f"{self.broll_fill_slider.value() / 100.0:.2f}"
+        )
+        self.broll_fill_slider.valueChanged.connect(self._on_broll_fill_changed)
+        settings_layout.addRow("B-roll Fill %:", self.broll_fill_slider)
+        settings_layout.addRow("", self.broll_fill_label)
+
+        self.broll_seed_edit = QLineEdit()
+        self.broll_seed_edit.setPlaceholderText("Random each run")
+        settings_layout.addRow("B-roll Seed:", self.broll_seed_edit)
 
         settings_group.setLayout(settings_layout)
         layout.addWidget(settings_group)
@@ -236,26 +256,6 @@ class BeatSection(QWidget):
         }
         Config.set("beat_detector_mode", mode_map.get(text, "onset"))
 
-    def _on_min_bpm_changed(self, value: int) -> None:
-        max_val = self.max_bpm_slider.value()
-        if value >= max_val:
-            value = max(40, max_val - 1)
-            self.min_bpm_slider.blockSignals(True)
-            self.min_bpm_slider.setValue(value)
-            self.min_bpm_slider.blockSignals(False)
-        Config.set("beat_detector_min_bpm", int(value))
-        self.min_bpm_label.setText(f"{value} BPM")
-
-    def _on_max_bpm_changed(self, value: int) -> None:
-        min_val = self.min_bpm_slider.value()
-        if value <= min_val:
-            value = min(300, min_val + 1)
-            self.max_bpm_slider.blockSignals(True)
-            self.max_bpm_slider.setValue(value)
-            self.max_bpm_slider.blockSignals(False)
-        Config.set("beat_detector_max_bpm", int(value))
-        self.max_bpm_label.setText(f"{value} BPM")
-
     def _on_onset_threshold_changed(self, value: int) -> None:
         threshold = value / 100.0
         Config.set("beat_detector_onset_threshold", float(threshold))
@@ -265,6 +265,17 @@ class BeatSection(QWidget):
         weight = value / 100.0
         Config.set("beat_detector_downbeat_weight", float(weight))
         self.downbeat_weight_label.setText(f"{weight:.2f}")
+
+    def _on_broll_mode_changed(self, text: str) -> None:
+        if text.lower().startswith("transcript"):
+            Config.set("beat_broll_mode", "transcript")
+        else:
+            Config.set("beat_broll_mode", "simple_random")
+
+    def _on_broll_fill_changed(self, value: int) -> None:
+        ratio = max(0.0, min(1.0, value / 100.0))
+        Config.set("beat_broll_fill_ratio", float(ratio))
+        self.broll_fill_label.setText(f"{ratio:.2f}")
 
     def _on_detect_beats(self) -> None:
         try:
@@ -328,37 +339,315 @@ class BeatSection(QWidget):
             self.results.setHtml("<b>Error:</b> Run Detect Beats first.")
             return
         beats = self.beat_data.get("beats") or []
+        onsets = self.beat_data.get("onsets") or []
         downbeats = self.beat_data.get("downbeats") or []
+        beat_source = "beats"
+        downbeat_source = "downbeats"
+        if not beats and onsets:
+            beats = onsets
+            beat_source = "onsets"
+        if self.use_downbeat_markers.isChecked() and not downbeats and beats:
+            downbeats = [beats[idx] for idx in range(0, len(beats), 4)]
+            downbeat_source = "derived"
+        if not beats:
+            self.results.setHtml("<b>Error:</b> No beats/onsets detected.")
+            return
+        logger.info(
+            "Beat marker source: beats=%s (%s) downbeats=%s (%s)",
+            len(beats),
+            beat_source,
+            len(downbeats),
+            downbeat_source,
+        )
         marker_color = str(Config.get("beat_marker_color", "blue"))
         marker_name = str(Config.get("beat_marker_name", "Beat"))
-        ok = self.resolve_api.add_beat_markers(beats, marker_color, marker_name)
+        filtered_beats = list(beats)
         downbeat_ok = True
         if self.use_downbeat_markers.isChecked():
             downbeat_color = str(Config.get("beat_downbeat_marker_color", "red"))
             downbeat_name = str(Config.get("beat_downbeat_marker_name", "Downbeat"))
+            fps = float(self.resolve_api.get_timeline_fps() or 0.0)
+            if fps > 0 and downbeats:
+                downbeat_frames = {int(round(float(t) * fps)) for t in downbeats}
+                filtered_beats = [
+                    t
+                    for t in beats
+                    if int(round(float(t) * fps)) not in downbeat_frames
+                ]
             downbeat_ok = self.resolve_api.add_downbeat_markers(
                 downbeats,
                 downbeat_color,
                 downbeat_name,
+                base_frame=self.beat_base_frame,
             )
-        status = "Added beat markers." if ok else "No beat markers added."
+        ok = self.resolve_api.add_beat_markers(
+            filtered_beats,
+            marker_color,
+            marker_name,
+            base_frame=self.beat_base_frame,
+        )
+        status = (
+            f"Beat markers: {len(beats)} ({beat_source})."
+            if ok
+            else f"No beat markers added. ({len(beats)} {beat_source})"
+        )
         if self.use_downbeat_markers.isChecked():
-            status += " Downbeats added." if downbeat_ok else " Downbeats not added."
+            status += (
+                f" Downbeats: {len(downbeats)} ({downbeat_source})."
+                if downbeat_ok
+                else f" Downbeats not added. ({len(downbeats)} {downbeat_source})"
+            )
         self.results.setHtml(f"<b>{status}</b>")
 
     def _on_generate_broll(self) -> None:
-        self.results.setHtml(
-            "<b>Placeholder:</b> Beat-based B-roll generation will be wired in Phase 12-C."
+        if not self.beat_data:
+            self.results.setHtml("<b>Error:</b> Run Detect Beats first.")
+            return
+        if self.broll_mode_combo.currentText().lower().startswith("transcript"):
+            self.results.setHtml(
+                "<b>Placeholder:</b> Transcript-aware B-roll will be wired in Phase 12-C."
+            )
+            return
+
+        intervals, source_label = self._get_beat_intervals()
+        if not intervals:
+            self.results.setHtml("<b>Error:</b> No beat intervals available.")
+            return
+        intervals_total = len(intervals)
+
+        pool = self._build_selected_clip_pool()
+        if not pool:
+            self.results.setHtml("<b>Error:</b> Select timeline video clips to use as B-roll.")
+            return
+
+        fps = float(self.resolve_api.get_timeline_fps() or 0.0)
+        if fps <= 0:
+            self.results.setHtml("<b>Error:</b> Invalid timeline FPS.")
+            return
+
+        timeline = self.resolve_api.get_current_timeline()
+        track_count = int(timeline.GetTrackCount("video") or 0)
+        target_track = max(1, track_count + 1)
+
+        fill_ratio = float(Config.get("beat_broll_fill_ratio", 1.0) or 0.0)
+        fill_ratio = max(0.0, min(1.0, fill_ratio))
+        target_count = int(round(intervals_total * fill_ratio))
+        if target_count <= 0:
+            self.results.setHtml("<b>Error:</b> B-roll fill ratio yields no intervals.")
+            return
+
+        seed = self._resolve_broll_seed()
+        rng = random.Random(seed)
+        pool_selected = list(pool)
+        max_count = min(len(pool_selected), target_count)
+        if max_count <= 0:
+            self.results.setHtml("<b>Error:</b> No usable B-roll clips in selection.")
+            return
+
+        intervals_selected = intervals
+        if max_count < intervals_total:
+            indices = rng.sample(range(intervals_total), max_count)
+            intervals_selected = [intervals[i] for i in sorted(indices)]
+        if len(pool_selected) > max_count:
+            pool_selected = [pool_selected[i] for i in rng.sample(range(len(pool_selected)), max_count)]
+        rng.shuffle(pool_selected)
+
+        if max_count < intervals_total or max_count < len(pool):
+            logger.info(
+                "Beat B-roll fill: ratio=%.2f total=%s target=%s pool=%s selected=%s",
+                fill_ratio,
+                intervals_total,
+                target_count,
+                len(pool),
+                max_count,
+            )
+
+        inserted = self._place_clips_on_intervals(
+            pool_selected,
+            intervals_selected,
+            fps,
+            target_track,
+            rng=None,
+            randomize=False,
         )
 
-    def _on_auto_edit(self) -> None:
-        self.results.setHtml(
-            "<b>Placeholder:</b> Auto-edit to beat will be wired in Phase 12-C."
+        status = (
+            f"Beat B-roll placed on V{target_track}: {inserted}/{len(intervals_selected)} intervals "
+            f"({source_label}, seed={seed}, fill={fill_ratio:.2f}"
         )
+        if len(intervals_selected) != intervals_total:
+            status += f", total={intervals_total}"
+        status += ")."
+        self.results.setHtml(f"<b>{status}</b>")
+
+    def _on_auto_edit(self) -> None:
+        if not self.beat_data:
+            self.results.setHtml("<b>Error:</b> Run Detect Beats first.")
+            return
+
+        intervals, source_label = self._get_beat_intervals()
+        if not intervals:
+            self.results.setHtml("<b>Error:</b> No beat intervals available.")
+            return
+
+        pool = self._build_selected_clip_pool()
+        if not pool:
+            self.results.setHtml("<b>Error:</b> Select timeline video clips to auto-edit.")
+            return
+
+        fps = float(self.resolve_api.get_timeline_fps() or 0.0)
+        if fps <= 0:
+            self.results.setHtml("<b>Error:</b> Invalid timeline FPS.")
+            return
+
+        timeline = self.resolve_api.get_current_timeline()
+        track_count = int(timeline.GetTrackCount("video") or 0)
+        target_track = max(1, track_count + 1)
+
+        inserted = self._place_clips_on_intervals(
+            pool,
+            intervals,
+            fps,
+            target_track,
+            rng=None,
+            randomize=False,
+        )
+
+        status = (
+            f"Auto-edit placed on V{target_track}: {inserted}/{len(intervals)} intervals "
+            f"({source_label})."
+        )
+        self.results.setHtml(f"<b>{status}</b>")
+
+    def _get_beat_intervals(self) -> Tuple[List[Tuple[float, float]], str]:
+        if not self.beat_data:
+            return [], "beats"
+        beats = self.beat_data.get("beats") or []
+        onsets = self.beat_data.get("onsets") or []
+        downbeats = self.beat_data.get("downbeats") or []
+        duration = float(self.beat_data.get("duration", 0.0) or 0.0)
+
+        mode = str(Config.get("beat_detector_mode", "onset")).strip().lower()
+        source_label = "beats"
+        if mode == "downbeat" and downbeats:
+            beats = downbeats
+            source_label = "downbeats"
+        elif not beats and onsets:
+            beats = onsets
+            source_label = "onsets"
+
+        beat_times = sorted(float(x) for x in beats if x is not None)
+        if not beat_times:
+            return [], source_label
+
+        intervals: List[Tuple[float, float]] = []
+        for idx, start in enumerate(beat_times):
+            end = beat_times[idx + 1] if idx + 1 < len(beat_times) else duration
+            if end <= start:
+                continue
+            intervals.append((float(start), float(end)))
+        return intervals, source_label
+
+    def _resolve_broll_seed(self) -> int:
+        text = self.broll_seed_edit.text().strip()
+        if text:
+            try:
+                return int(text)
+            except Exception:
+                return int(zlib.adler32(text.encode("utf-8")) & 0x7FFFFFFF)
+        return int(random.SystemRandom().randint(0, 2**31 - 1))
+
+    def _build_selected_clip_pool(self) -> List[Dict[str, Any]]:
+        selected = self.resolve_api.get_selected_items(["video"])
+        if not selected:
+            return []
+        fps = float(self.resolve_api.get_timeline_fps() or 0.0)
+        pool: List[Dict[str, Any]] = []
+        for item in selected:
+            media_path = self.resolve_api.get_item_media_path(item)
+            if not media_path:
+                continue
+            media_item = self.resolve_api.import_media_if_needed(str(media_path))
+            if media_item is None:
+                continue
+            source_range = self.resolve_api.get_clip_source_range_seconds(item)
+            if not source_range:
+                source_range = self.resolve_api.get_item_range_seconds(item)
+            if not source_range:
+                continue
+            source_in_sec, source_out_sec = source_range
+            if source_out_sec <= source_in_sec:
+                continue
+            clip_fps = float(
+                self.resolve_api._get_media_item_fps(media_item, fps)  # pylint: disable=protected-access
+            )
+            source_in_frame = int(round(source_in_sec * clip_fps))
+            source_out_frame = int(round(source_out_sec * clip_fps))
+            if source_out_frame <= source_in_frame:
+                continue
+            total_frames = int(
+                self.resolve_api._get_media_item_duration_frames(media_item, clip_fps)  # pylint: disable=protected-access
+            )
+            if total_frames and source_out_frame > total_frames:
+                source_out_frame = total_frames
+                if source_out_frame <= source_in_frame:
+                    continue
+            pool.append(
+                {
+                    "media_item": media_item,
+                    "clip_fps": clip_fps,
+                    "source_in_frame": source_in_frame,
+                    "source_out_frame": source_out_frame,
+                    "media_path": str(media_path),
+                }
+            )
+        return pool
+
+    def _place_clips_on_intervals(
+        self,
+        pool: List[Dict[str, Any]],
+        intervals: List[Tuple[float, float]],
+        fps: float,
+        target_track: int,
+        rng: random.Random | None,
+        randomize: bool,
+    ) -> int:
+        if not pool or not intervals:
+            return 0
+        base_frame = int(self.beat_base_frame or 0)
+        inserted = 0
+        for idx, (start, end) in enumerate(intervals):
+            clip = rng.choice(pool) if (randomize and rng) else pool[idx % len(pool)]
+            clip_fps = float(clip["clip_fps"])
+            source_in = int(clip["source_in_frame"])
+            source_out = int(clip["source_out_frame"])
+            available_frames = max(0, source_out - source_in)
+            if available_frames <= 0:
+                continue
+            interval_sec = max(0.0, float(end) - float(start))
+            desired_frames = int(round(interval_sec * clip_fps))
+            if desired_frames <= 0:
+                continue
+            use_frames = min(available_frames, desired_frames)
+            if use_frames <= 0:
+                continue
+            record_frame = base_frame + int(round(float(start) * fps))
+            inserted_item = self.resolve_api.insert_clip_at_position_with_range(
+                "video",
+                int(target_track),
+                clip["media_item"],
+                int(record_frame),
+                int(source_in),
+                int(source_in + use_frames),
+            )
+            if inserted_item is not None:
+                inserted += 1
+        return inserted
 
     def _resolve_audio_source(self) -> Path:
         source = self.source_combo.currentText().lower()
         if source.startswith("reference"):
+            self.beat_base_frame = None
             path = Path(self.source_path_edit.text().strip())
             if not path.exists():
                 raise RuntimeError("Reference audio file not found.")
@@ -370,11 +659,51 @@ class BeatSection(QWidget):
         if not selected:
             selected = self.resolve_api.get_selected_items(["video"])
         if not selected:
+            selected = self.resolve_api.get_items_at_playhead(["video"])
+        if not selected:
             raise RuntimeError("No audio clip selected or under playhead.")
 
         clip = selected[0]
+        self.beat_base_frame = None
+        timeline_start = int(self.resolve_api.get_timeline_start_frame() or 0)
+        clip_start = self.resolve_api.get_item_start_frame(clip)
+        if clip_start is not None:
+            base_frame = int(clip_start)
+            if timeline_start and base_frame >= timeline_start:
+                base_frame -= timeline_start
+            if base_frame < 0:
+                base_frame = 0
+            self.beat_base_frame = base_frame
+            logger.info(
+                "Beat marker base frame: %s (timeline_start=%s)",
+                base_frame,
+                timeline_start,
+            )
         temp_path = Path(tempfile.gettempdir()) / "videoforge_timeline_audio.wav"
-        return Path(self.resolve_api.export_clip_audio(clip, str(temp_path)))
+        start_sec = None
+        end_sec = None
+        source_range = self.resolve_api.get_clip_source_range_seconds(clip)
+        if source_range:
+            start_sec, end_sec = source_range
+        elif self.resolve_api.get_item_range_seconds(clip):
+            start_sec, end_sec = self.resolve_api.get_item_range_seconds(clip)
+        if start_sec is not None and end_sec is not None and end_sec <= start_sec:
+            start_sec, end_sec = None, None
+        if start_sec is not None and end_sec is not None:
+            logger.info(
+                "Beat source range: %.2fs-%.2fs (%s)",
+                float(start_sec),
+                float(end_sec),
+                temp_path,
+            )
+        return Path(
+            self.resolve_api.export_clip_audio(
+                clip,
+                str(temp_path),
+                start_sec=start_sec,
+                end_sec=end_sec,
+            )
+        )
 
     @staticmethod
     def _make_slider(min_val: int, max_val: int, current: int) -> QSlider:

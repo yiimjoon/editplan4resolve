@@ -146,7 +146,10 @@ class BeatDetector:
         onsets = (onset_frames * hop) / float(sr)
 
         bpm = self._estimate_bpm_from_onsets(onsets)
-        beat_times = self._grid_from_bpm(bpm, duration, onsets)
+        if mode == "onset":
+            beat_times = list(onsets)
+        else:
+            beat_times = self._grid_from_bpm(bpm, duration, onsets)
         downbeats = self._derive_downbeats(beat_times)
         segments = self._segment_from_beats(beat_times, duration)
         return (
@@ -285,4 +288,3 @@ class BeatDetector:
             "duration": 0.0,
             "mode": self.mode,
         }
-

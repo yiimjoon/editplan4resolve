@@ -14,6 +14,8 @@ from VideoForge.config.config_manager import Config
 from VideoForge.integrations.resolve_python import _get_resolve
 
 logger = logging.getLogger(__name__)
+_LOGGED_MARKER_MISSING = False
+_LOGGED_MARKER_FAILED = False
 
 
 class ResolveAPI:
@@ -1801,24 +1803,30 @@ class ResolveAPI:
         project = self.get_current_project()
         return project.GetMediaPool()
 
-    def export_clip_audio(self, clip: Any, output_path: str) -> str:
+    def export_clip_audio(
+        self,
+        clip: Any,
+        output_path: str,
+        start_sec: float | None = None,
+        end_sec: float | None = None,
+    ) -> str:
         """Export clip audio to a WAV file using ffmpeg."""
-        source = clip.GetClipProperty("File Path")
+        if clip is None:
+            raise RuntimeError("Selected clip is missing.")
+        source = self._timeline_item_media_path(clip)
         if not source:
             raise RuntimeError("Selected clip has no file path.")
         output = str(Path(output_path))
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i",
-            source,
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "48000",
-            output,
-        ]
+        cmd = ["ffmpeg", "-y", "-i", source]
+        if start_sec is not None:
+            cmd.extend(["-ss", f"{float(start_sec):.3f}"])
+        if end_sec is not None and start_sec is not None:
+            duration = float(end_sec) - float(start_sec)
+            if duration > 0:
+                cmd.extend(["-t", f"{duration:.3f}"])
+        elif end_sec is not None:
+            cmd.extend(["-to", f"{float(end_sec):.3f}"])
+        cmd.extend(["-vn", "-ac", "1", "-ar", "48000", output])
         try:
             proc = subprocess.run(
                 cmd,
@@ -1839,6 +1847,7 @@ class ResolveAPI:
         beat_times: List[float],
         marker_color: str = "blue",
         marker_name: str = "Beat",
+        base_frame: Optional[int] = None,
     ) -> bool:
         """Add beat markers to the current timeline."""
         self._ensure_main_thread("add_beat_markers")
@@ -1846,7 +1855,7 @@ class ResolveAPI:
             return False
         timeline = self.get_current_timeline()
         fps = float(self.get_timeline_fps())
-        start_frame = int(self.get_timeline_start_frame())
+        start_frame = int(base_frame) if base_frame is not None else int(self.get_timeline_start_frame())
         added = 0
         for beat in beat_times:
             try:
@@ -1863,6 +1872,7 @@ class ResolveAPI:
         downbeat_times: List[float],
         marker_color: str = "red",
         marker_name: str = "Downbeat",
+        base_frame: Optional[int] = None,
     ) -> bool:
         """Add downbeat markers to the current timeline."""
         self._ensure_main_thread("add_downbeat_markers")
@@ -1870,7 +1880,7 @@ class ResolveAPI:
             return False
         timeline = self.get_current_timeline()
         fps = float(self.get_timeline_fps())
-        start_frame = int(self.get_timeline_start_frame())
+        start_frame = int(base_frame) if base_frame is not None else int(self.get_timeline_start_frame())
         added = 0
         for beat in downbeat_times:
             try:
@@ -1891,21 +1901,59 @@ class ResolveAPI:
         note: str,
         duration: int = 1,
     ) -> bool:
+        global _LOGGED_MARKER_MISSING
+        global _LOGGED_MARKER_FAILED
         add_marker = getattr(timeline, "AddMarker", None)
         if not callable(add_marker):
+            if not _LOGGED_MARKER_MISSING:
+                logger.warning("Timeline AddMarker not available; beat markers disabled.")
+                _LOGGED_MARKER_MISSING = True
             return False
+        color_name = ResolveAPI._normalize_marker_color(color)
         try:
             result = add_marker(
                 int(frame),
-                str(color),
+                str(color_name),
                 str(name),
                 str(note),
                 int(duration),
                 {},
             )
-            return bool(result) or result is None
+            if bool(result) or result is None:
+                return True
+            if not _LOGGED_MARKER_FAILED:
+                logger.warning(
+                    "Timeline AddMarker returned False (color=%s frame=%s).",
+                    color_name,
+                    frame,
+                )
+                _LOGGED_MARKER_FAILED = True
+            return False
         except Exception:
             return False
+
+    @staticmethod
+    def _normalize_marker_color(color: str) -> str:
+        value = str(color or "").strip().lower()
+        palette = {
+            "blue": "Blue",
+            "cyan": "Cyan",
+            "green": "Green",
+            "yellow": "Yellow",
+            "red": "Red",
+            "pink": "Pink",
+            "purple": "Purple",
+            "fuchsia": "Fuchsia",
+            "rose": "Rose",
+            "lavender": "Lavender",
+            "sky": "Sky",
+            "mint": "Mint",
+            "lime": "Lime",
+            "sand": "Sand",
+            "cocoa": "Cocoa",
+            "cream": "Cream",
+        }
+        return palette.get(value, "Blue")
 
     def insert_clip_at_position(
         self, track_type: str, track_index: int, clip: Any, timeline_position: int

@@ -23,6 +23,10 @@ resolve = []
 [project.scripts]
 videoforge = "VideoForge.cli.main:main"
 
+[tool.setuptools.packages.find]
+include = ["VideoForge*"]
+exclude = ["test_media*"]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = "-q"

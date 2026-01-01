@@ -177,6 +177,8 @@ class ConfigManager:
             "beat_marker_name": "Beat",
             "beat_downbeat_marker_name": "Downbeat",
             "beat_python_exe": "",
+            "beat_broll_mode": "simple_random",
+            "beat_broll_fill_ratio": 1.0,
         }
         changed = False
         for key, value in defaults.items():
