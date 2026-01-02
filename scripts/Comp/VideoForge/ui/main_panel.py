@@ -35,6 +35,7 @@ from VideoForge.ui.qt_compat import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QIcon,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -43,8 +44,10 @@ from VideoForge.ui.qt_compat import (
     QPushButton,
     QScrollArea,
     QSlider,
-    QTabWidget,
+    QSize,
+    QStackedWidget,
     QThread,
+    QToolButton,
     Qt,
     QTimer,
     QVBoxLayout,
@@ -52,31 +55,35 @@ from VideoForge.ui.qt_compat import (
     Signal,
 )
 from VideoForge.ui.sections.analyze_section import build_analyze_section
-from VideoForge.ui.sections.agent_section import AgentSection
 from VideoForge.ui.sections.beat_section import BeatSection
+from VideoForge.ui.sections.edit_section import build_edit_section
 from VideoForge.ui.sections.library_section import build_library_section
 from VideoForge.ui.sections.match_section import build_match_section
-from VideoForge.ui.sections.misc_section import build_misc_section
 from VideoForge.ui.sections.multicam_section import MulticamSection
 from VideoForge.ui.sections.settings_section import build_settings_section
 from VideoForge.ui.sections.sync_section import build_sync_section
 
 
-# --- Color Palette (Parchment & Mist) ---
+# --- Color Palette (DaVinci Neutral Dark) ---
 COLORS = {
-    "bg_window": "#e9e5de",
-    "bg_card": "#fdfbf7",
-    "text_main": "#1a1a1a",
-    "text_dim": "rgba(26, 26, 26, 0.6)",
-    "accent": "#d4cfc3",
-    "accent_hover": "#c9c4b8",
-    "button_bg": "rgba(255, 255, 255, 0.5)",
-    "button_hover": "rgba(255, 255, 255, 0.8)",
-    "border": "rgba(0, 0, 0, 0.05)",
-    "highlight": "rgba(0, 0, 0, 0.02)",
-    "success": "#4caf50",
-    "error": "#d32f2f",
+    "bg_window": "#1F1F1F",
+    "bg_panel": "#292929",
+    "bg_card": "#252525",
+    "bg_timeline": "#131313",
+    "text_main": "#CCCCCC",
+    "text_dim": "#999999",
+    "accent": "#4C8BF5",
+    "accent_hover": "#3D7BE0",
+    "button_bg": "#2A2A2A",
+    "button_hover": "#333333",
+    "border": "#333333",
+    "highlight": "#222222",
+    "success": "#6E9C76",
+    "error": "#F54E4E",
     "warning": "#FFA500",
+    "sidebar_bg": "#181818",
+    "sidebar_active": "#2A2A2A",
+    "sidebar_hover": "#222222",
 }
 
 VERSION = "v1.10.0"
@@ -85,29 +92,45 @@ VERSION = "v1.10.0"
 STYLESHEET = f"""
     QWidget {{
         background-color: {COLORS['bg_window']};
-        font-family: 'Inter', 'Segoe UI', sans-serif;
-        font-size: 13px;
+        font-family: 'SF Pro Display', 'Segoe UI', 'Helvetica Neue', sans-serif;
+        font-size: 12px;
         color: {COLORS['text_main']};
     }}
 
     /* Section Cards */
     QFrame#SectionCard {{
         background-color: {COLORS['bg_card']};
-        border-radius: 4px;
+        border-radius: 6px;
         border: 1px solid {COLORS['border']};
         padding: 16px;
     }}
 
     /* Section Titles */
     QLabel#SectionTitle {{
-        font-family: 'Space Mono', monospace;
-        font-size: 11px;
+        font-family: 'JetBrains Mono', 'Consolas', monospace;
+        font-size: 10px;
         font-weight: bold;
-        color: {COLORS['text_main']};
-        letter-spacing: 0.15em;
+        color: {COLORS['text_dim']};
+        letter-spacing: 0.18em;
         text-transform: uppercase;
         padding-bottom: 8px;
-        opacity: 0.8;
+    }}
+
+    /* Collapsible Card Headers */
+    QPushButton#CollapsibleHeader {{
+        background: transparent;
+        border: none;
+        text-align: left;
+        padding: 0;
+        font-family: 'JetBrains Mono', 'Consolas', monospace;
+        font-size: 10px;
+        font-weight: bold;
+        color: {COLORS['text_dim']};
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+    }}
+    QPushButton#CollapsibleHeader:hover {{
+        color: {COLORS['text_main']};
     }}
 
     /* Description Labels */
@@ -121,10 +144,10 @@ STYLESHEET = f"""
     QPushButton {{
         background-color: {COLORS['button_bg']};
         border: 1px solid {COLORS['border']};
-        border-radius: 2px;
+        border-radius: 4px;
         padding: 6px 12px;
         color: {COLORS['text_main']};
-        font-family: 'Space Mono', monospace;
+        font-family: 'JetBrains Mono', 'Consolas', monospace;
         font-size: 11px;
         text-transform: lowercase;
     }}
@@ -134,7 +157,8 @@ STYLESHEET = f"""
     }}
     QPushButton#PrimaryButton {{
         background-color: {COLORS['accent']};
-        border: none;
+        border: 1px solid {COLORS['accent']};
+        color: #FFFFFF;
     }}
     QPushButton#PrimaryButton:hover {{
         background-color: {COLORS['accent_hover']};
@@ -142,9 +166,9 @@ STYLESHEET = f"""
 
     /* Text Inputs & Combos */
     QLineEdit, QComboBox {{
-        background-color: white;
+        background-color: {COLORS['bg_panel']};
         border: 1px solid {COLORS['border']};
-        border-radius: 2px;
+        border-radius: 4px;
         padding: 4px 8px;
         color: {COLORS['text_main']};
     }}
@@ -152,29 +176,37 @@ STYLESHEET = f"""
         border: 1px solid {COLORS['accent']};
     }}
 
-    /* Tabs */
-    QTabWidget::pane {{
-        border: none;
-        background: transparent;
-    }}
-    QTabBar::tab {{
-        background: transparent;
-        padding: 8px 16px;
-        font-family: 'Space Mono', monospace;
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        color: {COLORS['text_dim']};
-    }}
-    QTabBar::tab:selected {{
-        color: {COLORS['text_main']};
-        border-bottom: 2px solid {COLORS['text_main']};
-    }}
-
     /* Scroll Area */
     QScrollArea {{
         border: none;
         background: transparent;
+    }}
+
+    /* Sidebar */
+    QFrame#Sidebar {{
+        background-color: {COLORS['sidebar_bg']};
+        border-right: 1px solid {COLORS['border']};
+    }}
+    QToolButton#SidebarButton {{
+        background-color: {COLORS['sidebar_bg']};
+        border: none;
+        border-radius: 8px;
+        color: {COLORS['text_dim']};
+        width: 48px;
+        height: 48px;
+        padding: 0;
+    }}
+    QToolButton#SidebarButton:hover {{
+        background-color: {COLORS['sidebar_hover']};
+        color: {COLORS['text_main']};
+    }}
+    QToolButton#SidebarButton:checked {{
+        background-color: {COLORS['sidebar_active']};
+        color: {COLORS['accent']};
+    }}
+
+    QFrame#Separator {{
+        background-color: {COLORS['border']};
     }}
     
     /* Sliders */
@@ -358,111 +390,108 @@ class VideoForgePanel(QWidget):
         # --- Header (Always Visible) ---
         self._setup_header(layout)
 
-        # --- Tabs ---
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs)
+        body_layout = QHBoxLayout()
+        body_layout.setSpacing(0)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(body_layout, 1)
 
-        # Tab 1: Analyze
-        analyze_scroll = QScrollArea()
-        analyze_scroll.setWidgetResizable(True)
-        analyze_scroll.setFrameShape(QFrame.NoFrame)
-        analyze_tab = QWidget()
-        analyze_scroll.setWidget(analyze_tab)
-        
-        analyze_layout = QHBoxLayout(analyze_tab)
-        analyze_layout.setContentsMargins(8, 8, 8, 8)
-        analyze_layout.setSpacing(12)
-        
-        # Left side: Analyze Main Clip
-        analyze_left_col = QVBoxLayout()
-        build_analyze_section(self, analyze_left_col)
-        analyze_left_col.addStretch()
-        
-        # Right side: B-roll Library
-        analyze_right_col = QVBoxLayout()
-        build_library_section(self, analyze_right_col)
-        analyze_right_col.addStretch()
-        
-        analyze_layout.addLayout(analyze_left_col, 1)
-        analyze_layout.addLayout(analyze_right_col, 1)
-        
-        self.tabs.addTab(analyze_scroll, "📝 Analyze")
+        self.sidebar = QFrame()
+        self.sidebar.setObjectName("Sidebar")
+        self.sidebar.setFixedWidth(64)
+        sidebar_layout = QVBoxLayout(self.sidebar)
+        sidebar_layout.setContentsMargins(8, 8, 8, 8)
+        sidebar_layout.setSpacing(8)
 
-        # Tab 2: Match
-        match_scroll = QScrollArea()
-        match_scroll.setWidgetResizable(True)
-        match_scroll.setFrameShape(QFrame.NoFrame)
-        match_tab = QWidget()
-        match_scroll.setWidget(match_tab)
-        
-        match_layout = QVBoxLayout(match_tab)
-        match_layout.setContentsMargins(8, 8, 8, 8)
-        build_match_section(self, match_layout)
-        match_layout.addStretch()
-        self.tabs.addTab(match_scroll, "🎬 Match")
+        self.page_stack = QStackedWidget()
 
-        # Tab 3: Sync
-        sync_scroll = QScrollArea()
-        sync_scroll.setWidgetResizable(True)
-        sync_scroll.setFrameShape(QFrame.NoFrame)
-        sync_tab = QWidget()
-        sync_scroll.setWidget(sync_tab)
+        def _build_scroll_page() -> tuple[QScrollArea, QVBoxLayout]:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            container = QWidget()
+            scroll.setWidget(container)
+            page_layout = QVBoxLayout(container)
+            page_layout.setContentsMargins(12, 12, 12, 12)
+            page_layout.setSpacing(12)
+            return scroll, page_layout
 
-        sync_layout = QVBoxLayout(sync_tab)
-        sync_layout.setContentsMargins(8, 8, 8, 8)
-        build_sync_section(self, sync_layout)
-        sync_layout.addStretch()
-        self.tabs.addTab(sync_scroll, "Sync")
+        # Page 0: Transcribe
+        transcribe_scroll, transcribe_layout = _build_scroll_page()
+        build_analyze_section(self, transcribe_layout)
+        transcribe_layout.addStretch()
+        self.page_stack.addWidget(transcribe_scroll)
 
-        # Tab 4: Beat
+        # Page 1: Edit
+        edit_scroll, edit_layout = _build_scroll_page()
+        build_edit_section(self, edit_layout)
+        edit_layout.addStretch()
+        self.page_stack.addWidget(edit_scroll)
+
+        # Page 2: Multicam
+        multicam_scroll, multicam_layout = _build_scroll_page()
+        build_sync_section(self, multicam_layout)
+        multicam_layout.addSpacing(12)
+        multicam_tab = MulticamSection(self.bridge.resolve_api)
+        multicam_layout.addWidget(multicam_tab)
+        multicam_layout.addStretch()
+        self.page_stack.addWidget(multicam_scroll)
+
+        # Page 3: B-roll
+        broll_scroll, broll_layout = _build_scroll_page()
+        build_library_section(self, broll_layout)
+        broll_layout.addSpacing(12)
+        build_match_section(self, broll_layout)
+        broll_layout.addStretch()
+        self.page_stack.addWidget(broll_scroll)
+
+        # Page 4: Beat
         beat_scroll = QScrollArea()
         beat_scroll.setWidgetResizable(True)
         beat_scroll.setFrameShape(QFrame.NoFrame)
         beat_tab = BeatSection(self.bridge.resolve_api)
         beat_scroll.setWidget(beat_tab)
-        self.tabs.addTab(beat_scroll, "Beat")
+        self.page_stack.addWidget(beat_scroll)
 
-        # Tab 5: Multicam
-        multicam_scroll = QScrollArea()
-        multicam_scroll.setWidgetResizable(True)
-        multicam_scroll.setFrameShape(QFrame.NoFrame)
-        multicam_tab = MulticamSection(self.bridge.resolve_api)
-        multicam_scroll.setWidget(multicam_tab)
-        self.tabs.addTab(multicam_scroll, "Multicam")
-
-        # Tab 6: Agent
-        agent_scroll = QScrollArea()
-        agent_scroll.setWidgetResizable(True)
-        agent_scroll.setFrameShape(QFrame.NoFrame)
-        agent_tab = AgentSection()
-        agent_scroll.setWidget(agent_tab)
-        self.tabs.addTab(agent_scroll, "Agent")
-
-        # Tab 7: Settings
-        settings_scroll = QScrollArea()
-        settings_scroll.setWidgetResizable(True)
-        settings_scroll.setFrameShape(QFrame.NoFrame)
-        settings_tab = QWidget()
-        settings_scroll.setWidget(settings_tab)
-        
-        settings_layout = QVBoxLayout(settings_tab)
-        settings_layout.setContentsMargins(8, 8, 8, 8)
+        # Page 5: Settings
+        settings_scroll, settings_layout = _build_scroll_page()
         build_settings_section(self, settings_layout)
         settings_layout.addStretch()
-        self.tabs.addTab(settings_scroll, "⚙️ Settings")
+        self.page_stack.addWidget(settings_scroll)
 
-        # Tab 8: Misc
-        misc_scroll = QScrollArea()
-        misc_scroll.setWidgetResizable(True)
-        misc_scroll.setFrameShape(QFrame.NoFrame)
-        misc_tab = QWidget()
-        misc_scroll.setWidget(misc_tab)
+        icons_dir = (
+            Path(__file__).resolve().parents[4] / "VideoForge" / "ui" / "icons"
+        )
+        sidebar_items = [
+            (icons_dir / "transcribe.svg", "Transcribe"),
+            (icons_dir / "edit.svg", "Edit"),
+            (icons_dir / "multicam.svg", "Multicam"),
+            (icons_dir / "broll.svg", "B-roll"),
+            (icons_dir / "beat.svg", "Beat"),
+            (icons_dir / "settings.svg", "Settings"),
+        ]
+        self.sidebar_buttons = []
+        for idx, (icon_path, tooltip) in enumerate(sidebar_items):
+            button = QToolButton()
+            button.setObjectName("SidebarButton")
+            button.setText(tooltip)
+            button.setIcon(QIcon(str(icon_path)))
+            button.setIconSize(QSize(24, 24))
+            button.setCheckable(True)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            button.setToolTip(tooltip)
+            button.setFixedSize(48, 48)
+            button.clicked.connect(lambda checked, i=idx: self._set_active_page(i))
+            self.sidebar_buttons.append(button)
+            sidebar_layout.addWidget(button)
 
-        misc_layout = QVBoxLayout(misc_tab)
-        misc_layout.setContentsMargins(8, 8, 8, 8)
-        build_misc_section(self, misc_layout)
-        misc_layout.addStretch()
-        self.tabs.addTab(misc_scroll, "🧰 Misc")
+        sidebar_layout.addStretch()
+
+        body_layout.addWidget(self.sidebar)
+        body_layout.addWidget(self.page_stack, 1)
+
+        saved_index = int(Config.get("ui_sidebar_index", 0) or 0)
+        self._set_active_page(saved_index, save=False)
 
         # --- Footer (Always Visible) ---
         self._setup_footer(layout)
@@ -506,8 +535,6 @@ class VideoForgePanel(QWidget):
 
     def _setup_footer(self, parent_layout: QVBoxLayout) -> None:
         """Footer with progress bar and global status."""
-        parent_layout.addStretch()
-
         # Progress bar (hidden by default)
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)  # Indeterminate mode
@@ -534,6 +561,17 @@ class VideoForgePanel(QWidget):
         self.log_timer = QTimer(self)
         self.log_timer.timeout.connect(self._update_last_log)
         self.log_timer.start(1000)
+
+    def _set_active_page(self, index: int, save: bool = True) -> None:
+        if not hasattr(self, "page_stack"):
+            return
+        if index < 0 or index >= self.page_stack.count():
+            index = 0
+        self.page_stack.setCurrentIndex(index)
+        for idx, button in enumerate(getattr(self, "sidebar_buttons", [])):
+            button.setChecked(idx == index)
+        if save:
+            Config.set("ui_sidebar_index", int(index))
 
     def _configure_sync_mode_options(self) -> None:
         combo = getattr(self, "sync_mode_combo", None)

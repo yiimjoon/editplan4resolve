@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 try:
-    from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer
+    from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer, QSize
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -24,14 +25,17 @@ try:
         QProgressBar,
         QScrollArea,
         QSlider,
+        QStackedWidget,
         QTabWidget,
         QTableWidget,
         QTableWidgetItem,
+        QToolButton,
         QVBoxLayout,
         QWidget,
     )
 except Exception:
-    from PySide2.QtCore import QObject, QThread, Signal, Qt, QTimer
+    from PySide2.QtCore import QObject, QThread, Signal, Qt, QTimer, QSize
+    from PySide2.QtGui import QIcon
     from PySide2.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -52,9 +56,11 @@ except Exception:
         QProgressBar,
         QScrollArea,
         QSlider,
+        QStackedWidget,
         QTabWidget,
         QTableWidget,
         QTableWidgetItem,
+        QToolButton,
         QVBoxLayout,
         QWidget,
     )
@@ -69,6 +75,7 @@ __all__ = [
     "QGroupBox",
     "QHBoxLayout",
     "QHeaderView",
+    "QIcon",
     "QInputDialog",
     "QLabel",
     "QLineEdit",
@@ -79,11 +86,14 @@ __all__ = [
     "QPushButton",
     "QScrollArea",
     "QSlider",
+    "QSize",
+    "QStackedWidget",
     "QTabWidget",
     "QTableWidget",
     "QTableWidgetItem",
     "QTextBrowser",
     "QThread",
+    "QToolButton",
     "Qt",
     "QTimer",
     "QVBoxLayout",
