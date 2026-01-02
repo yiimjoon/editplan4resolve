@@ -35,79 +35,124 @@ from VideoForge.ui.qt_compat import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QIcon,
     QLabel,
     QLineEdit,
     QMessageBox,
     QObject,
+    QPropertyAnimation,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QSlider,
-    QTabWidget,
+    QSize,
+    QStackedWidget,
     QThread,
+    QToolButton,
     Qt,
     QTimer,
     QVBoxLayout,
     QWidget,
+    QEasingCurve,
+    QGraphicsOpacityEffect,
     Signal,
 )
 from VideoForge.ui.sections.analyze_section import build_analyze_section
-from VideoForge.ui.sections.agent_section import AgentSection
 from VideoForge.ui.sections.beat_section import BeatSection
+from VideoForge.ui.sections.edit_section import build_edit_section
 from VideoForge.ui.sections.library_section import build_library_section
 from VideoForge.ui.sections.match_section import build_match_section
-from VideoForge.ui.sections.misc_section import build_misc_section
 from VideoForge.ui.sections.multicam_section import MulticamSection
 from VideoForge.ui.sections.settings_section import build_settings_section
 from VideoForge.ui.sections.sync_section import build_sync_section
 
 
-# --- Color Palette (Parchment & Mist) ---
+# --- Color Palette (DaVinci Neutral Dark) ---
 COLORS = {
-    "bg_window": "#e9e5de",
-    "bg_card": "#fdfbf7",
-    "text_main": "#1a1a1a",
-    "text_dim": "rgba(26, 26, 26, 0.6)",
-    "accent": "#d4cfc3",
-    "accent_hover": "#c9c4b8",
-    "button_bg": "rgba(255, 255, 255, 0.5)",
-    "button_hover": "rgba(255, 255, 255, 0.8)",
-    "border": "rgba(0, 0, 0, 0.05)",
-    "highlight": "rgba(0, 0, 0, 0.02)",
-    "success": "#4caf50",
-    "error": "#d32f2f",
+    "bg_window": "#1F1F1F",
+    "bg_panel": "#292929",
+    "bg_card": "#252525",
+    "bg_timeline": "#131313",
+    "text_main": "#CCCCCC",
+    "text_dim": "#999999",
+    "accent": "#4C8BF5",
+    "accent_hover": "#3D7BE0",
+    "button_bg": "#2A2A2A",
+    "button_hover": "#333333",
+    "border": "#333333",
+    "highlight": "#222222",
+    "success": "#6E9C76",
+    "error": "#F54E4E",
     "warning": "#FFA500",
+    "sidebar_bg": "#181818",
+    "sidebar_active": "#2A2A2A",
+    "sidebar_hover": "#222222",
 }
 
-VERSION = "v1.10.0"
+VERSION = "v2.0.0"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
     QWidget {{
         background-color: {COLORS['bg_window']};
-        font-family: 'Inter', 'Segoe UI', sans-serif;
-        font-size: 13px;
+        font-family: 'SF Pro Display', 'Segoe UI', 'Helvetica Neue', sans-serif;
+        font-size: 12px;
         color: {COLORS['text_main']};
     }}
 
     /* Section Cards */
     QFrame#SectionCard {{
         background-color: {COLORS['bg_card']};
-        border-radius: 4px;
+        border-radius: 6px;
         border: 1px solid {COLORS['border']};
         padding: 16px;
     }}
 
     /* Section Titles */
     QLabel#SectionTitle {{
-        font-family: 'Space Mono', monospace;
-        font-size: 11px;
+        font-family: 'JetBrains Mono', 'Consolas', monospace;
+        font-size: 10px;
         font-weight: bold;
-        color: {COLORS['text_main']};
-        letter-spacing: 0.15em;
+        color: {COLORS['text_dim']};
+        letter-spacing: 0.18em;
         text-transform: uppercase;
         padding-bottom: 8px;
-        opacity: 0.8;
+    }}
+
+    /* Status Bar */
+    QLabel#StatusBarLabel {{
+        color: {COLORS['text_dim']};
+        font-size: 11px;
+        background: transparent;
+    }}
+    QLabel#StatusBarCenter {{
+        color: {COLORS['text_dim']};
+        font-size: 11px;
+        background: transparent;
+    }}
+    QLabel#StatusBadge {{
+        background-color: {COLORS['button_bg']};
+        color: {COLORS['text_main']};
+        border-radius: 10px;
+        padding: 2px 8px;
+        font-size: 10px;
+    }}
+
+    /* Collapsible Card Headers */
+    QPushButton#CollapsibleHeader {{
+        background: transparent;
+        border: none;
+        text-align: left;
+        padding: 0;
+        font-family: 'JetBrains Mono', 'Consolas', monospace;
+        font-size: 10px;
+        font-weight: bold;
+        color: {COLORS['text_dim']};
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+    }}
+    QPushButton#CollapsibleHeader:hover {{
+        color: {COLORS['text_main']};
     }}
 
     /* Description Labels */
@@ -121,10 +166,10 @@ STYLESHEET = f"""
     QPushButton {{
         background-color: {COLORS['button_bg']};
         border: 1px solid {COLORS['border']};
-        border-radius: 2px;
+        border-radius: 4px;
         padding: 6px 12px;
         color: {COLORS['text_main']};
-        font-family: 'Space Mono', monospace;
+        font-family: 'JetBrains Mono', 'Consolas', monospace;
         font-size: 11px;
         text-transform: lowercase;
     }}
@@ -134,7 +179,8 @@ STYLESHEET = f"""
     }}
     QPushButton#PrimaryButton {{
         background-color: {COLORS['accent']};
-        border: none;
+        border: 1px solid {COLORS['accent']};
+        color: #FFFFFF;
     }}
     QPushButton#PrimaryButton:hover {{
         background-color: {COLORS['accent_hover']};
@@ -142,9 +188,9 @@ STYLESHEET = f"""
 
     /* Text Inputs & Combos */
     QLineEdit, QComboBox {{
-        background-color: white;
+        background-color: {COLORS['bg_panel']};
         border: 1px solid {COLORS['border']};
-        border-radius: 2px;
+        border-radius: 4px;
         padding: 4px 8px;
         color: {COLORS['text_main']};
     }}
@@ -152,29 +198,37 @@ STYLESHEET = f"""
         border: 1px solid {COLORS['accent']};
     }}
 
-    /* Tabs */
-    QTabWidget::pane {{
-        border: none;
-        background: transparent;
-    }}
-    QTabBar::tab {{
-        background: transparent;
-        padding: 8px 16px;
-        font-family: 'Space Mono', monospace;
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        color: {COLORS['text_dim']};
-    }}
-    QTabBar::tab:selected {{
-        color: {COLORS['text_main']};
-        border-bottom: 2px solid {COLORS['text_main']};
-    }}
-
     /* Scroll Area */
     QScrollArea {{
         border: none;
         background: transparent;
+    }}
+
+    /* Sidebar */
+    QFrame#Sidebar {{
+        background-color: {COLORS['sidebar_bg']};
+        border-right: 1px solid {COLORS['border']};
+    }}
+    QToolButton#SidebarButton {{
+        background-color: {COLORS['sidebar_bg']};
+        border: none;
+        border-radius: 8px;
+        color: {COLORS['text_dim']};
+        width: 48px;
+        height: 48px;
+        padding: 0;
+    }}
+    QToolButton#SidebarButton:hover {{
+        background-color: {COLORS['sidebar_hover']};
+        color: {COLORS['text_main']};
+    }}
+    QToolButton#SidebarButton:checked {{
+        background-color: {COLORS['sidebar_active']};
+        color: {COLORS['accent']};
+    }}
+
+    QFrame#Separator {{
+        background-color: {COLORS['border']};
     }}
     
     /* Sliders */
@@ -281,6 +335,7 @@ class VideoForgePanel(QWidget):
         self._threads: list[QThread] = []
         self._workers: list[Worker] = []
         self.transcript_panel = None
+        self.error_count = 0
         self._threads_lock = threading.Lock()
         self.status_signal.connect(self._set_status)
         self.progress_signal.connect(self._set_progress_value)
@@ -341,6 +396,8 @@ class VideoForgePanel(QWidget):
             self.analyze_status.setStyleSheet(f"color: {COLORS['success']}; margin-top: 6px;")
             self.edit_transcript_btn.setEnabled(True)
             self._refresh_alignment_status()
+            self._update_clip_selection_label(self.main_video_path)
+            self._refresh_transcript_preview()
             logging.getLogger("VideoForge.ui").info(
                 "Restored project DB for %s", project_key
             )
@@ -350,6 +407,7 @@ class VideoForgePanel(QWidget):
         self.setWindowTitle("VideoForge - Auto B-roll")
         self.resize(1200, 720)
         self.setMinimumSize(800, 500)
+        self.setFocusPolicy(Qt.StrongFocus)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
@@ -358,111 +416,113 @@ class VideoForgePanel(QWidget):
         # --- Header (Always Visible) ---
         self._setup_header(layout)
 
-        # --- Tabs ---
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs)
+        body_layout = QHBoxLayout()
+        body_layout.setSpacing(0)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(body_layout, 1)
 
-        # Tab 1: Analyze
-        analyze_scroll = QScrollArea()
-        analyze_scroll.setWidgetResizable(True)
-        analyze_scroll.setFrameShape(QFrame.NoFrame)
-        analyze_tab = QWidget()
-        analyze_scroll.setWidget(analyze_tab)
-        
-        analyze_layout = QHBoxLayout(analyze_tab)
-        analyze_layout.setContentsMargins(8, 8, 8, 8)
-        analyze_layout.setSpacing(12)
-        
-        # Left side: Analyze Main Clip
-        analyze_left_col = QVBoxLayout()
-        build_analyze_section(self, analyze_left_col)
-        analyze_left_col.addStretch()
-        
-        # Right side: B-roll Library
-        analyze_right_col = QVBoxLayout()
-        build_library_section(self, analyze_right_col)
-        analyze_right_col.addStretch()
-        
-        analyze_layout.addLayout(analyze_left_col, 1)
-        analyze_layout.addLayout(analyze_right_col, 1)
-        
-        self.tabs.addTab(analyze_scroll, "📝 Analyze")
+        self.sidebar = QFrame()
+        self.sidebar.setObjectName("Sidebar")
+        self.sidebar.setFixedWidth(64)
+        sidebar_layout = QVBoxLayout(self.sidebar)
+        sidebar_layout.setContentsMargins(8, 8, 8, 8)
+        sidebar_layout.setSpacing(8)
 
-        # Tab 2: Match
-        match_scroll = QScrollArea()
-        match_scroll.setWidgetResizable(True)
-        match_scroll.setFrameShape(QFrame.NoFrame)
-        match_tab = QWidget()
-        match_scroll.setWidget(match_tab)
-        
-        match_layout = QVBoxLayout(match_tab)
-        match_layout.setContentsMargins(8, 8, 8, 8)
-        build_match_section(self, match_layout)
-        match_layout.addStretch()
-        self.tabs.addTab(match_scroll, "🎬 Match")
+        self.page_stack = QStackedWidget()
+        self._page_fade_effect = QGraphicsOpacityEffect(self.page_stack)
+        self._page_fade_effect.setOpacity(1.0)
+        self.page_stack.setGraphicsEffect(self._page_fade_effect)
+        self._page_fade_anim = None
 
-        # Tab 3: Sync
-        sync_scroll = QScrollArea()
-        sync_scroll.setWidgetResizable(True)
-        sync_scroll.setFrameShape(QFrame.NoFrame)
-        sync_tab = QWidget()
-        sync_scroll.setWidget(sync_tab)
+        def _build_scroll_page() -> tuple[QScrollArea, QVBoxLayout]:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            container = QWidget()
+            scroll.setWidget(container)
+            page_layout = QVBoxLayout(container)
+            page_layout.setContentsMargins(12, 12, 12, 12)
+            page_layout.setSpacing(12)
+            return scroll, page_layout
 
-        sync_layout = QVBoxLayout(sync_tab)
-        sync_layout.setContentsMargins(8, 8, 8, 8)
-        build_sync_section(self, sync_layout)
-        sync_layout.addStretch()
-        self.tabs.addTab(sync_scroll, "Sync")
+        # Page 0: Transcribe
+        transcribe_scroll, transcribe_layout = _build_scroll_page()
+        build_analyze_section(self, transcribe_layout)
+        transcribe_layout.addStretch()
+        self.page_stack.addWidget(transcribe_scroll)
 
-        # Tab 4: Beat
+        # Page 1: Edit
+        edit_scroll, edit_layout = _build_scroll_page()
+        build_edit_section(self, edit_layout)
+        edit_layout.addStretch()
+        self.page_stack.addWidget(edit_scroll)
+
+        # Page 2: Multicam
+        multicam_scroll, multicam_layout = _build_scroll_page()
+        build_sync_section(self, multicam_layout)
+        multicam_layout.addSpacing(12)
+        multicam_tab = MulticamSection(self.bridge.resolve_api)
+        multicam_layout.addWidget(multicam_tab)
+        multicam_layout.addStretch()
+        self.page_stack.addWidget(multicam_scroll)
+
+        # Page 3: B-roll
+        broll_scroll, broll_layout = _build_scroll_page()
+        build_library_section(self, broll_layout)
+        broll_layout.addSpacing(12)
+        build_match_section(self, broll_layout)
+        broll_layout.addStretch()
+        self.page_stack.addWidget(broll_scroll)
+
+        # Page 4: Beat
         beat_scroll = QScrollArea()
         beat_scroll.setWidgetResizable(True)
         beat_scroll.setFrameShape(QFrame.NoFrame)
         beat_tab = BeatSection(self.bridge.resolve_api)
         beat_scroll.setWidget(beat_tab)
-        self.tabs.addTab(beat_scroll, "Beat")
+        self.page_stack.addWidget(beat_scroll)
 
-        # Tab 5: Multicam
-        multicam_scroll = QScrollArea()
-        multicam_scroll.setWidgetResizable(True)
-        multicam_scroll.setFrameShape(QFrame.NoFrame)
-        multicam_tab = MulticamSection(self.bridge.resolve_api)
-        multicam_scroll.setWidget(multicam_tab)
-        self.tabs.addTab(multicam_scroll, "Multicam")
-
-        # Tab 6: Agent
-        agent_scroll = QScrollArea()
-        agent_scroll.setWidgetResizable(True)
-        agent_scroll.setFrameShape(QFrame.NoFrame)
-        agent_tab = AgentSection()
-        agent_scroll.setWidget(agent_tab)
-        self.tabs.addTab(agent_scroll, "Agent")
-
-        # Tab 7: Settings
-        settings_scroll = QScrollArea()
-        settings_scroll.setWidgetResizable(True)
-        settings_scroll.setFrameShape(QFrame.NoFrame)
-        settings_tab = QWidget()
-        settings_scroll.setWidget(settings_tab)
-        
-        settings_layout = QVBoxLayout(settings_tab)
-        settings_layout.setContentsMargins(8, 8, 8, 8)
+        # Page 5: Settings
+        settings_scroll, settings_layout = _build_scroll_page()
         build_settings_section(self, settings_layout)
         settings_layout.addStretch()
-        self.tabs.addTab(settings_scroll, "⚙️ Settings")
+        self.page_stack.addWidget(settings_scroll)
 
-        # Tab 8: Misc
-        misc_scroll = QScrollArea()
-        misc_scroll.setWidgetResizable(True)
-        misc_scroll.setFrameShape(QFrame.NoFrame)
-        misc_tab = QWidget()
-        misc_scroll.setWidget(misc_tab)
+        icons_dir = (
+            Path(__file__).resolve().parents[4] / "VideoForge" / "ui" / "icons"
+        )
+        sidebar_items = [
+            (icons_dir / "transcribe.svg", "Transcribe"),
+            (icons_dir / "edit.svg", "Edit"),
+            (icons_dir / "multicam.svg", "Multicam"),
+            (icons_dir / "broll.svg", "B-roll"),
+            (icons_dir / "beat.svg", "Beat"),
+            (icons_dir / "settings.svg", "Settings"),
+        ]
+        self.sidebar_buttons = []
+        for idx, (icon_path, tooltip) in enumerate(sidebar_items):
+            button = QToolButton()
+            button.setObjectName("SidebarButton")
+            button.setText(tooltip)
+            button.setIcon(QIcon(str(icon_path)))
+            button.setIconSize(QSize(24, 24))
+            button.setCheckable(True)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            button.setToolTip(tooltip)
+            button.setFixedSize(48, 48)
+            button.clicked.connect(lambda checked, i=idx: self._set_active_page(i))
+            self.sidebar_buttons.append(button)
+            sidebar_layout.addWidget(button)
 
-        misc_layout = QVBoxLayout(misc_tab)
-        misc_layout.setContentsMargins(8, 8, 8, 8)
-        build_misc_section(self, misc_layout)
-        misc_layout.addStretch()
-        self.tabs.addTab(misc_scroll, "🧰 Misc")
+        sidebar_layout.addStretch()
+
+        body_layout.addWidget(self.sidebar)
+        body_layout.addWidget(self.page_stack, 1)
+
+        saved_index = int(Config.get("ui_sidebar_index", 0) or 0)
+        self._set_active_page(saved_index, save=False, animate=False)
+        self._refresh_transcribe_settings_summary()
 
         # --- Footer (Always Visible) ---
         self._setup_footer(layout)
@@ -506,8 +566,6 @@ class VideoForgePanel(QWidget):
 
     def _setup_footer(self, parent_layout: QVBoxLayout) -> None:
         """Footer with progress bar and global status."""
-        parent_layout.addStretch()
-
         # Progress bar (hidden by default)
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)  # Indeterminate mode
@@ -515,13 +573,29 @@ class VideoForgePanel(QWidget):
         self.progress.setVisible(False)
         parent_layout.addWidget(self.progress)
 
-        # Global status
-        self.status = QLabel("Ready")
-        self.status.setAlignment(Qt.AlignCenter)
-        self.status.setStyleSheet(
-            f"color: {COLORS['text_dim']}; font-size: 11px; background: transparent;"
-        )
-        parent_layout.addWidget(self.status)
+        status_bar = QFrame()
+        status_layout = QHBoxLayout(status_bar)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(12)
+
+        self.status_label = QLabel("Ready")
+        self.status_label.setObjectName("StatusBarLabel")
+        self.status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        self.clip_info_label = QLabel("Clips: - | Duration: --:--:--")
+        self.clip_info_label.setObjectName("StatusBarCenter")
+        self.clip_info_label.setAlignment(Qt.AlignCenter)
+
+        self.error_badge = QLabel("Errors: 0")
+        self.error_badge.setObjectName("StatusBadge")
+        self.error_badge.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        status_layout.addWidget(self.status_label)
+        status_layout.addStretch(1)
+        status_layout.addWidget(self.clip_info_label)
+        status_layout.addStretch(1)
+        status_layout.addWidget(self.error_badge)
+        parent_layout.addWidget(status_bar)
 
         self.last_log_label = QLabel("")
         self.last_log_label.setStyleSheet(
@@ -534,6 +608,78 @@ class VideoForgePanel(QWidget):
         self.log_timer = QTimer(self)
         self.log_timer.timeout.connect(self._update_last_log)
         self.log_timer.start(1000)
+
+        self.timeline_timer = QTimer(self)
+        self.timeline_timer.timeout.connect(self._refresh_timeline_info)
+        self.timeline_timer.start(2000)
+        self._refresh_timeline_info()
+
+    def _set_active_page(self, index: int, save: bool = True, animate: bool = True) -> None:
+        if not hasattr(self, "page_stack"):
+            return
+        if index < 0 or index >= self.page_stack.count():
+            index = 0
+        if not animate or not getattr(self, "_page_fade_effect", None):
+            self.page_stack.setCurrentIndex(index)
+            for idx, button in enumerate(getattr(self, "sidebar_buttons", [])):
+                button.setChecked(idx == index)
+            if save:
+                Config.set("ui_sidebar_index", int(index))
+            return
+
+        if index == self.page_stack.currentIndex():
+            for idx, button in enumerate(getattr(self, "sidebar_buttons", [])):
+                button.setChecked(idx == index)
+            if save:
+                Config.set("ui_sidebar_index", int(index))
+            return
+
+        if self._page_fade_anim and self._page_fade_anim.state() == QPropertyAnimation.Running:
+            self._page_fade_anim.stop()
+
+        def _apply_index():
+            self.page_stack.setCurrentIndex(index)
+            for idx, button in enumerate(getattr(self, "sidebar_buttons", [])):
+                button.setChecked(idx == index)
+            if save:
+                Config.set("ui_sidebar_index", int(index))
+
+        def _fade_in():
+            self._page_fade_anim = QPropertyAnimation(self._page_fade_effect, b"opacity", self)
+            self._page_fade_anim.setDuration(120)
+            self._page_fade_anim.setEasingCurve(QEasingCurve.InOutQuad)
+            self._page_fade_anim.setStartValue(0.0)
+            self._page_fade_anim.setEndValue(1.0)
+            self._page_fade_anim.start()
+
+        def _on_fade_out_finished():
+            _apply_index()
+            _fade_in()
+
+        self._page_fade_anim = QPropertyAnimation(self._page_fade_effect, b"opacity", self)
+        self._page_fade_anim.setDuration(80)
+        self._page_fade_anim.setEasingCurve(QEasingCurve.InOutQuad)
+        self._page_fade_anim.setStartValue(self._page_fade_effect.opacity())
+        self._page_fade_anim.setEndValue(0.0)
+        self._page_fade_anim.finished.connect(_on_fade_out_finished)
+        self._page_fade_anim.start()
+
+    def keyPressEvent(self, event) -> None:
+        if event.modifiers() & Qt.ControlModifier:
+            key = event.key()
+            if Qt.Key_1 <= key <= Qt.Key_6:
+                self._set_active_page(key - Qt.Key_1)
+                event.accept()
+                return
+            if key in (Qt.Key_BracketLeft, Qt.Key_BracketRight):
+                if hasattr(self, "page_stack") and self.page_stack.count():
+                    delta = -1 if key == Qt.Key_BracketLeft else 1
+                    current = self.page_stack.currentIndex()
+                    next_index = (current + delta) % self.page_stack.count()
+                    self._set_active_page(next_index)
+                    event.accept()
+                    return
+        super().keyPressEvent(event)
 
     def _configure_sync_mode_options(self) -> None:
         combo = getattr(self, "sync_mode_combo", None)
@@ -650,7 +796,163 @@ class VideoForgePanel(QWidget):
         return path
 
     def _set_status(self, message: str) -> None:
-        self.status.setText(message)
+        label = getattr(self, "status_label", None)
+        if not label:
+            return
+        label.setText(message)
+        level = self._status_level(message)
+        self._apply_status_style(level)
+        if level == "error":
+            self._increment_error_count()
+        if level != "error":
+            self._refresh_timeline_info()
+
+    @staticmethod
+    def _status_level(message: str) -> str:
+        text = str(message or "").strip().lower()
+        if text.startswith("error") or text.startswith("failed") or text.startswith("invalid"):
+            return "error"
+        if text.startswith("warning"):
+            return "warning"
+        return "normal"
+
+    def _apply_status_style(self, level: str) -> None:
+        if not hasattr(self, "status_label"):
+            return
+        if level == "error":
+            color = COLORS["error"]
+        elif level == "warning":
+            color = COLORS["warning"]
+        else:
+            color = COLORS["text_dim"]
+        self.status_label.setStyleSheet(
+            f"color: {color}; font-size: 11px; background: transparent;"
+        )
+
+    def _increment_error_count(self) -> None:
+        if not hasattr(self, "error_count"):
+            self.error_count = 0
+        self.error_count += 1
+        if hasattr(self, "error_badge"):
+            self.error_badge.setText(f"Errors: {self.error_count}")
+            badge_color = COLORS["error"] if self.error_count else COLORS["text_main"]
+            self.error_badge.setStyleSheet(
+                f"background-color: {COLORS['button_bg']}; color: {badge_color}; "
+                "border-radius: 10px; padding: 2px 8px; font-size: 10px;"
+            )
+
+    def _refresh_timeline_info(self) -> None:
+        label = getattr(self, "clip_info_label", None)
+        if not label:
+            return
+        try:
+            api = self.bridge.resolve_api
+            timeline = api.get_current_timeline()
+        except Exception:
+            label.setText("Clips: - | Duration: --:--:--")
+            return
+
+        clip_count = 0
+        max_end = 0.0
+        try:
+            track_count = int(timeline.GetTrackCount("video") or 0)
+        except Exception:
+            track_count = 0
+
+        for track_index in range(1, track_count + 1):
+            try:
+                items = timeline.GetItemListInTrack("video", track_index) or []
+            except Exception:
+                items = []
+            clip_count += len(items)
+            for item in items:
+                try:
+                    timeline_range = api.get_item_range_seconds(item)
+                except Exception:
+                    timeline_range = None
+                if timeline_range:
+                    max_end = max(max_end, float(timeline_range[1]))
+
+        duration_label = "--:--:--"
+        if max_end > 0:
+            duration_label = self._format_duration(max_end)
+        label.setText(f"Clips: {clip_count} | Duration: {duration_label}")
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        if seconds is None:
+            return "--:--:--"
+        total_seconds = max(0, int(seconds))
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        secs = total_seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+    def _update_clip_selection_label(self, video_path: str | None) -> None:
+        label = getattr(self, "clip_selection_label", None)
+        if not label:
+            return
+        if video_path:
+            label.setText(f"Selected: {Path(video_path).name}")
+        else:
+            label.setText("Selected: -")
+
+    def _on_refresh_clip_selection(self) -> None:
+        try:
+            clip = self.bridge.resolve_api.get_primary_clip()
+        except Exception as exc:
+            self._set_status(f"Failed to read selection: {exc}")
+            return
+        if not clip:
+            self._update_clip_selection_label(None)
+            self._set_status("Select a clip or move the playhead over a clip.")
+            return
+        try:
+            video_path = self.bridge._get_clip_path(clip)
+        except Exception as exc:
+            self._set_status(f"Error: Failed to get clip info: {exc}")
+            return
+        self._update_clip_selection_label(video_path)
+
+    def _refresh_transcribe_settings_summary(self) -> None:
+        label = getattr(self, "transcribe_settings_summary", None)
+        if not label:
+            return
+        engine = Config.get("transcription_engine", None)
+        if not engine and hasattr(self, "engine_combo"):
+            engine = self.engine_combo.currentText()
+        engine = engine or "Whisper"
+        language = self.settings.get("whisper", {}).get("language", "auto")
+        task = self.settings.get("whisper", {}).get("task", "transcribe")
+        label.setText(f"Engine: {engine} | Language: {language} | Task: {task}")
+
+    def _open_settings_page(self) -> None:
+        self._set_active_page(5)
+
+    def _refresh_transcript_preview(self) -> None:
+        preview = getattr(self, "transcript_preview", None)
+        if not preview:
+            return
+        if not self.project_db or not Path(self.project_db).exists():
+            preview.setText("No transcript loaded.")
+            return
+        try:
+            store = SegmentStore(self.project_db)
+            sentences = store.get_sentences()
+        except Exception as exc:
+            preview.setText(f"Failed to load transcript: {exc}")
+            return
+        if not sentences:
+            preview.setText("No transcript available. Run Analyze.")
+            return
+        lines = []
+        for sentence in sentences[:6]:
+            text = str(sentence.get("text", "")).strip()
+            if text:
+                lines.append(text)
+        if len(sentences) > len(lines):
+            lines.append("...")
+        preview.setText("\n".join(lines) if lines else "Transcript is empty.")
 
     def _apply_silence_override(self, key: str) -> None:
         override = Config.get(f"silence_{key}")
@@ -761,14 +1063,8 @@ class VideoForgePanel(QWidget):
                     "VideoForge error: %s", err, extra=getattr(err, "details", None)
                 )
             self._set_status(f"Error: {err}")
-            self.status.setStyleSheet(
-                f"color: {COLORS['error']}; font-size: 11px; background: transparent;"
-            )
         elif on_done:
             on_done(result)
-            self.status.setStyleSheet(
-                f"color: {COLORS['text_dim']}; font-size: 11px; background: transparent;"
-            )
         thread.quit()
         thread.wait()
         with self._threads_lock:
@@ -811,9 +1107,11 @@ class VideoForgePanel(QWidget):
 
     def _on_language_changed(self, value: str) -> None:
         self.settings.setdefault("whisper", {})["language"] = value
+        self._refresh_transcribe_settings_summary()
 
     def _on_task_changed(self, value: str) -> None:
         self.settings.setdefault("whisper", {})["task"] = value
+        self._refresh_transcribe_settings_summary()
 
     def _on_transcript_chars_changed(self, value: str) -> None:
         try:
@@ -1445,6 +1743,7 @@ class VideoForgePanel(QWidget):
     def _on_engine_changed(self, value: str) -> None:
         Config.set("transcription_engine", value)
         self._update_transcript_option_visibility(value)
+        self._refresh_transcribe_settings_summary()
 
     def _on_silence_preset_changed(self, value: str) -> None:
         preset = str(value).strip()
@@ -2008,9 +2307,7 @@ class VideoForgePanel(QWidget):
         )
         if not clip:
             self._set_status("Select a clip or move the playhead over a clip.")
-            self.status.setStyleSheet(
-                f"color: {COLORS['error']}; font-size: 11px; background: transparent;"
-            )
+            self._apply_status_style("error")
             return
         try:
             video_path = self.bridge._get_clip_path(clip)
@@ -2020,6 +2317,7 @@ class VideoForgePanel(QWidget):
         if not video_path:
             self._set_status(self._describe_clip_path_issue(clip))
             return
+        self._update_clip_selection_label(video_path)
         clip_range = self.bridge.resolve_api.get_item_range_seconds(clip)
         source_range = self.bridge.resolve_api.get_clip_source_range_seconds(clip)
 
@@ -2050,6 +2348,7 @@ class VideoForgePanel(QWidget):
                 self.edit_transcript_btn.setEnabled(True)
                 self._save_project_state()
                 self._refresh_alignment_status()
+                self._refresh_transcript_preview()
                 self._set_progress_value(90)
                 self._set_status("Saving... (3/4)")
                 self._set_progress_value(100)
@@ -2139,6 +2438,7 @@ class VideoForgePanel(QWidget):
             self.edit_transcript_btn.setEnabled(True)
             self._save_project_state()
             self._refresh_alignment_status()
+            self._refresh_transcript_preview()
             warning = result.get("warning")
             if warning:
                 self._set_status(f"Warning: {warning}")
@@ -2865,6 +3165,14 @@ class VideoForgePanel(QWidget):
                 self._set_status(f"Warning: {warning}")
             else:
                 self._set_status(f"Matched {count} clips")
+            preview = getattr(self, "broll_preview", None)
+            if preview:
+                if warning:
+                    preview.setText(f"Warning: {warning}")
+                else:
+                    preview.setText(
+                        f"Matched {count} clips.\nClick Apply to insert into the timeline."
+                    )
 
         self._set_status("Matching... (searching library)")
         self._run_worker(_match, on_done=_done)

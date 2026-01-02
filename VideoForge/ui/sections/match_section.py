@@ -11,18 +11,26 @@ from VideoForge.ui.qt_compat import (
     QLineEdit,
     QPushButton,
     QSlider,
+    QTextBrowser,
     Qt,
     QVBoxLayout,
 )
 
 
 def build_match_section(panel, parent_layout: QVBoxLayout) -> None:
-    """Build the Match & Apply card."""
+    """Build matching, generation, and preview cards."""
+    build_match_settings_section(panel, parent_layout)
+    build_broll_generation_section(panel, parent_layout)
+    build_broll_preview_section(panel, parent_layout)
+
+
+def build_match_settings_section(panel, parent_layout: QVBoxLayout) -> None:
+    """Build the Matching Settings card."""
     card = panel._create_card()
     card_layout = QVBoxLayout(card)
     card_layout.setSpacing(8)
 
-    card_layout.addWidget(panel._create_section_title("3. Match & Apply"))
+    card_layout.addWidget(panel._create_section_title("2. Matching Settings"))
 
     slider_header = QHBoxLayout()
     slider_label = QLabel("Matching Threshold")
@@ -66,51 +74,16 @@ def build_match_section(panel, parent_layout: QVBoxLayout) -> None:
     scope_row.addWidget(panel.match_scope_combo)
     card_layout.addLayout(scope_row)
 
-    button_layout = QHBoxLayout()
-    button_layout.setSpacing(8)
-
-    panel.generate_broll_btn = QPushButton("Generate B-roll")
-    panel.generate_broll_btn.setCursor(Qt.PointingHandCursor)
-    panel.generate_broll_btn.clicked.connect(panel._on_generate_broll_clicked)
-    panel.generate_broll_btn.setToolTip("Generate B-roll (after editing transcript)")
-
-    panel.match_btn = QPushButton("Match B-roll")
-    panel.match_btn.setCursor(Qt.PointingHandCursor)
-    panel.match_btn.clicked.connect(panel._on_match_clicked)
-
-    panel.apply_btn = QPushButton("Apply to Timeline")
-    panel.apply_btn.setObjectName("PrimaryButton")
-    panel.apply_btn.setCursor(Qt.PointingHandCursor)
-    panel.apply_btn.clicked.connect(panel._on_apply_clicked)
-
-    button_layout.addWidget(panel.generate_broll_btn, 1)
-    button_layout.addWidget(panel.match_btn, 1)
-    button_layout.addWidget(panel.apply_btn, 2)
-    card_layout.addLayout(button_layout)
-
-    align_row = QHBoxLayout()
-    align_label = QLabel("Alignment")
-    align_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
-    panel.alignment_status_label = QLabel("Alignment: -")
-    panel.alignment_status_label.setStyleSheet(
-        f"color: {panel.colors['text_dim']}; font-size: 11px;"
-    )
-    panel.reset_alignment_btn = QPushButton("Reset Alignment")
-    panel.reset_alignment_btn.setCursor(Qt.PointingHandCursor)
-    panel.reset_alignment_btn.clicked.connect(panel._on_reset_alignment_clicked)
-    align_row.addWidget(align_label)
-    align_row.addWidget(panel.alignment_status_label)
-    align_row.addStretch()
-    align_row.addWidget(panel.reset_alignment_btn)
-    card_layout.addLayout(align_row)
-
     parent_layout.addWidget(card)
 
+
+def build_broll_generation_section(panel, parent_layout: QVBoxLayout) -> None:
+    """Build the B-roll generation settings card."""
     broll_card = panel._create_card()
     broll_layout = QVBoxLayout(broll_card)
     broll_layout.setSpacing(8)
 
-    broll_layout.addWidget(panel._create_section_title("B-roll Generation"))
+    broll_layout.addWidget(panel._create_section_title("3. Generation"))
 
     columns = QHBoxLayout()
     columns.setSpacing(12)
@@ -220,4 +193,64 @@ def build_match_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.reset_broll_btn.clicked.connect(panel._on_reset_project_broll_clicked)
     right_col.addWidget(panel.reset_broll_btn)
 
+    panel.generate_broll_btn = QPushButton("Generate B-roll")
+    panel.generate_broll_btn.setCursor(Qt.PointingHandCursor)
+    panel.generate_broll_btn.clicked.connect(panel._on_generate_broll_clicked)
+    panel.generate_broll_btn.setToolTip("Generate B-roll (after editing transcript)")
+    broll_layout.addWidget(panel.generate_broll_btn)
+
     parent_layout.addWidget(broll_card)
+
+
+def build_broll_preview_section(panel, parent_layout: QVBoxLayout) -> None:
+    """Build the timeline preview + apply card."""
+    card = panel._create_card()
+    card_layout = QVBoxLayout(card)
+    card_layout.setSpacing(8)
+
+    card_layout.addWidget(panel._create_section_title("4. Timeline Preview"))
+
+    preview_desc = QLabel("Preview matched B-roll before applying it to the timeline.")
+    preview_desc.setObjectName("Description")
+    preview_desc.setWordWrap(True)
+    card_layout.addWidget(preview_desc)
+
+    panel.broll_preview = QTextBrowser()
+    panel.broll_preview.setReadOnly(True)
+    panel.broll_preview.setMinimumHeight(120)
+    panel.broll_preview.setText("No matches yet. Run Match B-roll to preview.")
+    card_layout.addWidget(panel.broll_preview)
+
+    button_layout = QHBoxLayout()
+    button_layout.setSpacing(8)
+
+    panel.match_btn = QPushButton("Match B-roll")
+    panel.match_btn.setCursor(Qt.PointingHandCursor)
+    panel.match_btn.clicked.connect(panel._on_match_clicked)
+
+    panel.apply_btn = QPushButton("Apply to Timeline")
+    panel.apply_btn.setObjectName("PrimaryButton")
+    panel.apply_btn.setCursor(Qt.PointingHandCursor)
+    panel.apply_btn.clicked.connect(panel._on_apply_clicked)
+
+    button_layout.addWidget(panel.match_btn, 1)
+    button_layout.addWidget(panel.apply_btn, 2)
+    card_layout.addLayout(button_layout)
+
+    align_row = QHBoxLayout()
+    align_label = QLabel("Alignment")
+    align_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
+    panel.alignment_status_label = QLabel("Alignment: -")
+    panel.alignment_status_label.setStyleSheet(
+        f"color: {panel.colors['text_dim']}; font-size: 11px;"
+    )
+    panel.reset_alignment_btn = QPushButton("Reset Alignment")
+    panel.reset_alignment_btn.setCursor(Qt.PointingHandCursor)
+    panel.reset_alignment_btn.clicked.connect(panel._on_reset_alignment_clicked)
+    align_row.addWidget(align_label)
+    align_row.addWidget(panel.alignment_status_label)
+    align_row.addStretch()
+    align_row.addWidget(panel.reset_alignment_btn)
+    card_layout.addLayout(align_row)
+
+    parent_layout.addWidget(card)
