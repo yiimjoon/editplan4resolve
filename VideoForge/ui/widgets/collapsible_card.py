@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 from VideoForge.config.config_manager import Config
-from VideoForge.ui.qt_compat import QFrame, QPushButton, QVBoxLayout, QWidget, Qt
+from VideoForge.ui.qt_compat import (
+    QFrame,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+    Qt,
+    QPropertyAnimation,
+    QEasingCurve,
+)
 
 
 class CollapsibleCard(QFrame):
@@ -24,6 +32,7 @@ class CollapsibleCard(QFrame):
         default_state = True if collapsed is None else bool(collapsed)
         stored = Config.get(f"ui_collapse_{section_id}")
         self.collapsed = self._coerce_bool(stored, default_state)
+        self._animating_expand = False
 
         self.layout = QVBoxLayout(self)
         self.layout.setSpacing(8)
@@ -43,6 +52,12 @@ class CollapsibleCard(QFrame):
         self.layout.addWidget(self.content)
 
         self.content.setVisible(not self.collapsed)
+        self.content.setMaximumHeight(0 if self.collapsed else 16777215)
+
+        self._toggle_anim = QPropertyAnimation(self.content, b"maximumHeight", self)
+        self._toggle_anim.setDuration(150)
+        self._toggle_anim.setEasingCurve(QEasingCurve.InOutQuad)
+        self._toggle_anim.finished.connect(self._on_toggle_finished)
 
     def add_widget(self, widget: QWidget) -> None:
         self.content_layout.addWidget(widget)
@@ -52,9 +67,40 @@ class CollapsibleCard(QFrame):
 
     def _toggle(self) -> None:
         self.collapsed = not self.collapsed
-        self.content.setVisible(not self.collapsed)
         self.toggle_btn.setText(self._header_text())
         Config.set(f"ui_collapse_{self.section_id}", self.collapsed)
+        self._start_toggle_animation()
+
+    def _start_toggle_animation(self) -> None:
+        if self._toggle_anim.state() == QPropertyAnimation.Running:
+            self._toggle_anim.stop()
+        if self.collapsed:
+            self._animate_collapse()
+        else:
+            self._animate_expand()
+
+    def _animate_expand(self) -> None:
+        self._animating_expand = True
+        self.content.setVisible(True)
+        target_height = max(0, self.content.sizeHint().height())
+        self.content.setMaximumHeight(0)
+        self._toggle_anim.setStartValue(0)
+        self._toggle_anim.setEndValue(target_height)
+        self._toggle_anim.start()
+
+    def _animate_collapse(self) -> None:
+        self._animating_expand = False
+        start_height = max(0, self.content.height())
+        self.content.setMaximumHeight(start_height)
+        self._toggle_anim.setStartValue(start_height)
+        self._toggle_anim.setEndValue(0)
+        self._toggle_anim.start()
+
+    def _on_toggle_finished(self) -> None:
+        if self._animating_expand:
+            self.content.setMaximumHeight(16777215)
+        else:
+            self.content.setVisible(False)
 
     def _header_text(self) -> str:
         indicator = ">" if self.collapsed else "v"

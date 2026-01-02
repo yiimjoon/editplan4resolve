@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 try:
-    from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer, QSize
+    from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer, QSize, QPropertyAnimation, QEasingCurve
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import (
         QApplication,
@@ -32,9 +32,10 @@ try:
         QToolButton,
         QVBoxLayout,
         QWidget,
+        QGraphicsOpacityEffect,
     )
 except Exception:
-    from PySide2.QtCore import QObject, QThread, Signal, Qt, QTimer, QSize
+    from PySide2.QtCore import QObject, QThread, Signal, Qt, QTimer, QSize, QPropertyAnimation, QEasingCurve
     from PySide2.QtGui import QIcon
     from PySide2.QtWidgets import (
         QApplication,
@@ -63,6 +64,7 @@ except Exception:
         QToolButton,
         QVBoxLayout,
         QWidget,
+        QGraphicsOpacityEffect,
     )
 
 __all__ = [
@@ -84,6 +86,7 @@ __all__ = [
     "QObject",
     "QProgressBar",
     "QPushButton",
+    "QPropertyAnimation",
     "QScrollArea",
     "QSlider",
     "QSize",
@@ -98,5 +101,7 @@ __all__ = [
     "QTimer",
     "QVBoxLayout",
     "QWidget",
+    "QEasingCurve",
+    "QGraphicsOpacityEffect",
     "Signal",
 ]

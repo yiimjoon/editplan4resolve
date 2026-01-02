@@ -12,7 +12,7 @@ def build_library_section(panel, parent_layout: QVBoxLayout) -> None:
     card_layout = QVBoxLayout(card)
     card_layout.setSpacing(8)
 
-    card_layout.addWidget(panel._create_section_title("2. B-roll Library"))
+    card_layout.addWidget(panel._create_section_title("1. Library Management"))
 
     card_layout.addSpacing(6)
 
