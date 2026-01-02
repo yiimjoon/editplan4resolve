@@ -25,6 +25,7 @@ from VideoForge.core.silence_processor import (
     build_ordered_segments_for_draft,
 )
 from VideoForge.adapters.audio_adapter import render_silence_removed
+from VideoForge.adapters.scene_detector import SceneDetector
 from VideoForge.errors import VideoForgeError
 from VideoForge.ai.llm_hooks import is_llm_enabled, write_llm_env
 from VideoForge.ui.qt_compat import (
@@ -1091,6 +1092,136 @@ class VideoForgePanel(QWidget):
             self.scene_threshold_label.setText(f"Sensitivity: {int(value)}")
         except Exception:
             pass
+
+    def _on_scene_keep_audio_changed(self, state: int) -> None:
+        """Toggle keeping audio when splitting on scene cuts."""
+        Config.set("scene_cut_keep_audio", bool(state))
+
+    def _on_scene_split_clicked(self) -> None:
+        """Split selected timeline clips based on scene changes."""
+        resolve_api = self.bridge.resolve_api
+        clips = resolve_api.get_selected_clips()
+        if not clips:
+            clips = resolve_api.get_selected_items(["video"])
+        if not clips:
+            clip = resolve_api.get_primary_clip()
+            clips = [clip] if clip else []
+        if not clips:
+            self._set_status("Select a video clip first.")
+            return
+
+        fps = float(resolve_api.get_timeline_fps() or 0.0)
+        if fps <= 0:
+            self._set_status("Invalid timeline FPS.")
+            return
+
+        threshold = float(Config.get("scene_detection_threshold", 30) or 30)
+        sample_rate = int(Config.get("scene_detection_sample_rate", 2) or 2)
+        min_gap_frames = int(Config.get("scene_cut_min_gap_frames", 3) or 3)
+        keep_audio = bool(Config.get("scene_cut_keep_audio", False))
+        clip_entries = []
+        for clip in clips:
+            path = self.bridge._get_clip_path(clip)
+            clip_entries.append({"clip": clip, "path": path})
+        self._set_status("Detecting scene cuts...")
+
+        def _detect():
+            detector = SceneDetector(threshold=threshold)
+            results = []
+            for idx, entry in enumerate(clip_entries):
+                path = entry.get("path")
+                if not path:
+                    results.append(
+                        {"index": idx, "path": None, "scenes": [], "error": "no_path"}
+                    )
+                    continue
+                scenes = detector.detect_scene_changes(Path(path), sample_rate=sample_rate)
+                results.append({"index": idx, "path": path, "scenes": scenes})
+            return results
+
+        def _apply_scene_splits(results):
+            total_cuts = 0
+            for entry in results:
+                idx = entry.get("index")
+                if idx is None:
+                    continue
+                clip = clip_entries[int(idx)].get("clip")
+                if entry.get("error"):
+                    self._set_status(self._describe_clip_path_issue(clip))
+                    continue
+                scene_times = entry.get("scenes") or []
+                if not scene_times:
+                    continue
+                timeline_range = resolve_api.get_item_range_seconds(clip)
+                source_range = resolve_api.get_clip_source_range_seconds(clip) or timeline_range
+                if not timeline_range or not source_range:
+                    continue
+                clip_start_frame = int(round(float(timeline_range[0]) * fps))
+                clip_end_frame = int(round(float(timeline_range[1]) * fps))
+                source_start, source_end = source_range
+                pre_items = resolve_api.get_items_by_media_path_in_range(
+                    entry.get("path"),
+                    "video",
+                    clip_start_frame,
+                    clip_end_frame,
+                )
+                cut_frames = []
+                for timestamp in scene_times:
+                    try:
+                        time_sec = float(timestamp)
+                    except Exception:
+                        continue
+                    if time_sec <= source_start or time_sec >= source_end:
+                        continue
+                    cut_offset_sec = time_sec - source_start
+                    cut_frame = clip_start_frame + int(round(cut_offset_sec * fps))
+                    if cut_frame <= clip_start_frame + min_gap_frames:
+                        continue
+                    if clip_end_frame - cut_frame <= min_gap_frames:
+                        continue
+                    if cut_frames and (cut_frame - cut_frames[-1]) < min_gap_frames:
+                        continue
+                    cut_frames.append(cut_frame)
+                if not cut_frames:
+                    continue
+                applied = resolve_api.split_clip_at_frames(
+                    clip, cut_frames, media_path=entry.get("path")
+                )
+                post_items = resolve_api.get_items_by_media_path_in_range(
+                    entry.get("path"),
+                    "video",
+                    clip_start_frame,
+                    clip_end_frame,
+                )
+                if applied == 0 or len(post_items) <= len(pre_items):
+                    if applied != 0:
+                        logging.getLogger("VideoForge.ui").info(
+                            "Scene cuts split reported %s, but timeline items unchanged (pre=%s post=%s).",
+                            applied,
+                            len(pre_items),
+                            len(post_items),
+                        )
+                    applied = resolve_api.split_clip_by_inserting_ranges(
+                        clip, cut_frames, media_path=entry.get("path"), keep_audio=keep_audio
+                    )
+                    logging.getLogger("VideoForge.ui").info(
+                        "Scene cuts fallback applied: %s (clip=%s)",
+                        applied,
+                        entry.get("path"),
+                    )
+                else:
+                    logging.getLogger("VideoForge.ui").info(
+                        "Scene cuts applied: %s (clip=%s)",
+                        applied,
+                        entry.get("path"),
+                    )
+                total_cuts += applied
+            self._set_status(f"Scene cuts applied: {total_cuts}")
+
+        def _done(results):
+            QTimer.singleShot(0, self, lambda: _apply_scene_splits(results))
+
+        self._run_worker(_detect, on_done=_done)
 
     def _on_quality_check_changed(self, state: int) -> None:
         """Toggle stock/AI quality check."""

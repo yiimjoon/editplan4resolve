@@ -1134,22 +1134,459 @@ class ResolveAPI:
                 if s < frame < e:
                     self._split_item_at_frame(timeline, item, frame)
 
+    def _find_item_in_track_at_frame(
+        self,
+        timeline: Any,
+        track_type: str,
+        track_index: int,
+        frame: int,
+        media_path: Optional[str] = None,
+    ) -> Optional[Any]:
+        items = timeline.GetItemListInTrack(track_type, int(track_index)) or []
+        for item in items:
+            s, e = self._get_item_range(item)
+            if s is None or e is None:
+                continue
+            if not (s <= frame <= e):
+                continue
+            if media_path:
+                item_path = self._timeline_item_media_path(item)
+                if not item_path:
+                    continue
+                if str(item_path).lower() != str(media_path).lower():
+                    continue
+            return item
+        return None
+
+    def _find_items_in_track_at_frame(
+        self,
+        timeline: Any,
+        track_type: str,
+        track_index: int,
+        frame: int,
+        media_path: Optional[str] = None,
+    ) -> List[Any]:
+        items = timeline.GetItemListInTrack(track_type, int(track_index)) or []
+        matches: List[Any] = []
+        for item in items:
+            s, e = self._get_item_range(item)
+            if s is None or e is None:
+                continue
+            if not (s <= frame <= e):
+                continue
+            if media_path:
+                item_path = self._timeline_item_media_path(item)
+                if not item_path:
+                    continue
+                if str(item_path).lower() != str(media_path).lower():
+                    continue
+            matches.append(item)
+        return matches
+
+    def split_clip_at_frames(
+        self, clip: Any, frames: List[int], media_path: Optional[str] = None
+    ) -> int:
+        """Split a single clip at the specified timeline frames."""
+        self._ensure_main_thread("split_clip_at_frames")
+        if not frames:
+            return 0
+        timeline = self.get_current_timeline()
+        cut_frames = sorted({int(frame) for frame in frames if frame is not None})
+        track_type = self._safe_call(clip, "GetTrackType") or "video"
+        track_index = self._safe_call(clip, "GetTrackIndex")
+        media_path = media_path or self._timeline_item_media_path(clip)
+        clip_start, clip_end = self._get_item_range(clip)
+        applied = 0
+        for frame in cut_frames:
+            target = None
+            if track_index:
+                target = self._find_item_in_track_at_frame(
+                    timeline,
+                    str(track_type),
+                    int(track_index),
+                    int(frame),
+                    media_path=media_path,
+                )
+            if target is None and media_path:
+                track_count = int(timeline.GetTrackCount(str(track_type)) or 0)
+                for idx in range(1, track_count + 1):
+                    target = self._find_item_in_track_at_frame(
+                        timeline,
+                        str(track_type),
+                        idx,
+                        int(frame),
+                        media_path=media_path,
+                    )
+                    if target is not None:
+                        break
+            if target is None:
+                track_count = int(timeline.GetTrackCount(str(track_type)) or 0)
+                candidates: List[Any] = []
+                for idx in range(1, track_count + 1):
+                    candidates.extend(
+                        self._find_items_in_track_at_frame(
+                            timeline,
+                            str(track_type),
+                            idx,
+                            int(frame),
+                        )
+                    )
+                if candidates:
+                    if clip_start is not None and clip_end is not None:
+                        for cand in candidates:
+                            s, e = self._get_item_range(cand)
+                            if s == clip_start and e == clip_end:
+                                target = cand
+                                break
+                    if target is None and len(candidates) == 1:
+                        target = candidates[0]
+            if target is None:
+                target = clip
+            if self._split_item_at_frame(timeline, target, int(frame), self.get_timeline_fps()):
+                applied += 1
+            else:
+                s, e = self._get_item_range(target)
+                logger.info(
+                    "Split clip failed at frame=%s range=%s-%s track=%s index=%s path=%s",
+                    frame,
+                    s,
+                    e,
+                    track_type,
+                    track_index,
+                    media_path or "<unknown>",
+                )
+        return applied
+
+    def split_clip_by_inserting_ranges(
+        self,
+        clip: Any,
+        frames: List[int],
+        media_path: Optional[str] = None,
+        keep_audio: bool = False,
+    ) -> int:
+        """Fallback: delete the original clip and insert trimmed ranges per cut frame."""
+        self._ensure_main_thread("split_clip_by_inserting_ranges")
+        if not frames:
+            return 0
+        timeline = self.get_current_timeline()
+        fps = self.get_timeline_fps()
+        if fps <= 0:
+            return 0
+        start, end = self._get_item_range(clip)
+        if start is None or end is None:
+            return 0
+
+        track_type = self._safe_call(clip, "GetTrackType") or "video"
+        track_index = self._safe_call(clip, "GetTrackIndex")
+        media_path = media_path or self._timeline_item_media_path(clip)
+        pool_item = self._safe_call(clip, "GetMediaPoolItem")
+        if pool_item is None and media_path:
+            pool_item = self.import_media_if_needed(str(media_path))
+        if pool_item is None:
+            logger.info("Split clip fallback failed: media pool item unavailable for %s", media_path or "<unknown>")
+            return 0
+
+        if not track_index:
+            track_count = int(timeline.GetTrackCount(str(track_type)) or 0)
+            for idx in range(1, track_count + 1):
+                items = timeline.GetItemListInTrack(str(track_type), idx) or []
+                for item in items:
+                    s, e = self._get_item_range(item)
+                    if s is None or e is None:
+                        continue
+                    if s != int(start) or e != int(end):
+                        continue
+                    item_path = self._timeline_item_media_path(item)
+                    if media_path and item_path and str(item_path).lower() != str(media_path).lower():
+                        continue
+                    track_index = idx
+                    break
+                if track_index:
+                    break
+        track_index = int(track_index or 1)
+
+        source_range = self.get_clip_source_range_seconds(clip)
+        if not source_range:
+            return 0
+        source_start_sec, source_end_sec = source_range
+        source_start_frame = int(round(source_start_sec * fps))
+        source_end_frame = int(round(source_end_sec * fps))
+
+        cut_frames = sorted({int(frame) for frame in frames if frame is not None})
+        valid = [f for f in cut_frames if int(start) < f < int(end)]
+        if not valid:
+            return 0
+        pre_snapshot = self._snapshot_track_items(str(track_type))
+
+        insert_track_index = int(track_index)
+        if keep_audio and str(track_type).lower() == "video":
+            insert_track_index = int(track_index) + 1
+            self.ensure_track(str(track_type), int(insert_track_index))
+            try:
+                clip.SetProperty("Video Enabled", False)
+            except Exception:
+                pass
+        else:
+            delete_method = getattr(timeline, "DeleteClips", None)
+            if callable(delete_method):
+                try:
+                    delete_method([clip])
+                except Exception as exc:
+                    logger.info("Split clip fallback: DeleteClips failed: %s", exc)
+
+        boundaries = [int(start)] + valid + [int(end)]
+        inserted = 0
+        audio_deleted = 0
+        for seg_start, seg_end in zip(boundaries, boundaries[1:]):
+            if seg_end - seg_start < 1:
+                continue
+            source_seg_start = source_start_frame + (seg_start - int(start))
+            source_seg_end = source_start_frame + (seg_end - int(start))
+            if source_seg_end <= source_seg_start:
+                continue
+            if source_seg_start < source_start_frame:
+                source_seg_start = source_start_frame
+            if source_seg_end > source_end_frame:
+                source_seg_end = source_end_frame
+            if source_seg_end <= source_seg_start:
+                continue
+            inserted_item = self.insert_clip_at_position_with_range(
+                str(track_type),
+                int(insert_track_index),
+                pool_item,
+                int(seg_start),
+                int(source_seg_start),
+                int(source_seg_end),
+            )
+            if inserted_item is not None:
+                inserted += 1
+                if str(track_type).lower() == "video" and not keep_audio:
+                    try:
+                        inserted_item.SetProperty("Audio Enabled", False)
+                    except Exception:
+                        pass
+                    audio_deleted += self._remove_audio_items_for_media_path(
+                        media_path, int(seg_start), int(seg_end)
+                    )
+        post_snapshot = self._snapshot_track_items(str(track_type))
+        created = 0
+        for idx, ids in post_snapshot.items():
+            before = pre_snapshot.get(idx, set())
+            created += len(ids - before)
+
+        if created == 0 and inserted == 0:
+            logger.info(
+                "Split clip fallback: no timeline items created; keeping original clip (%s)",
+                media_path or "<unknown>",
+            )
+            existing = False
+            track_count = int(timeline.GetTrackCount(str(track_type)) or 0)
+            for idx in range(1, track_count + 1):
+                items = timeline.GetItemListInTrack(str(track_type), idx) or []
+                for item in items:
+                    s, e = self._get_item_range(item)
+                    if s is None or e is None:
+                        continue
+                    if s != int(start) or e != int(end):
+                        continue
+                    item_path = self._timeline_item_media_path(item)
+                    if media_path and item_path and str(item_path).lower() != str(media_path).lower():
+                        continue
+                    existing = True
+                    break
+                if existing:
+                    break
+            if not existing:
+                self.insert_clip_at_position_with_range(
+                    str(track_type),
+                    int(track_index),
+                    pool_item,
+                    int(start),
+                    int(source_start_frame),
+                    int(source_end_frame),
+                )
+            return 0
+
+        total = inserted if inserted > 0 else created
+        logger.info(
+            "Split clip fallback inserted %s segment(s) for %s (audio_deleted=%s keep_audio=%s)",
+            total,
+            media_path or "<unknown>",
+            audio_deleted,
+            keep_audio,
+        )
+        return total
+
+    def _remove_audio_items_for_media_path(
+        self, media_path: Optional[str], start_frame: int, end_frame: int
+    ) -> int:
+        timeline = self.get_current_timeline()
+        delete_method = getattr(timeline, "DeleteClips", None)
+        if not callable(delete_method):
+            return 0
+        track_count = int(timeline.GetTrackCount("audio") or 0)
+        to_delete: List[Any] = []
+        for track_index in range(1, track_count + 1):
+            items = timeline.GetItemListInTrack("audio", track_index) or []
+            for item in items:
+                s, e = self._get_item_range(item)
+                if s is None or e is None:
+                    continue
+                if e < start_frame or s > end_frame:
+                    continue
+                item_path = self._timeline_item_media_path(item)
+                if media_path and item_path and str(item_path).lower() != str(media_path).lower():
+                    continue
+                to_delete.append(item)
+        if not to_delete:
+            return 0
+        try:
+            delete_method(to_delete)
+            return len(to_delete)
+        except Exception as exc:
+            logger.info("Split clip fallback: audio delete failed: %s", exc)
+            return 0
+
+    def get_items_by_media_path_in_range(
+        self,
+        media_path: Optional[str],
+        track_type: str,
+        start_frame: int,
+        end_frame: int,
+    ) -> List[Any]:
+        """Return timeline items for a media path overlapping a frame range."""
+        timeline = self.get_current_timeline()
+        if not timeline or not media_path:
+            return []
+        track_count = int(timeline.GetTrackCount(str(track_type)) or 0)
+        items: List[Any] = []
+        for track_index in range(1, track_count + 1):
+            track_items = timeline.GetItemListInTrack(str(track_type), track_index) or []
+            for item in track_items:
+                s, e = self._get_item_range(item)
+                if s is None or e is None:
+                    continue
+                if e < start_frame or s > end_frame:
+                    continue
+                item_path = self._timeline_item_media_path(item)
+                if not item_path:
+                    continue
+                if str(item_path).lower() != str(media_path).lower():
+                    continue
+                items.append(item)
+        return items
+
     @staticmethod
-    def _split_item_at_frame(timeline: Any, item: Any, frame: int) -> bool:
+    def _split_item_at_frame(
+        timeline: Any, item: Any, frame: int, fps: Optional[float] = None
+    ) -> bool:
+        start, end = ResolveAPI._get_item_range(item)
+        if start is None or end is None:
+            return False
+        if frame <= int(start) or frame >= int(end):
+            return False
+        rel_frame = int(frame) - int(start)
         split_clip = getattr(timeline, "SplitClip", None)
         if callable(split_clip):
+            result = None
             try:
-                split_clip(item, int(frame))
-                return True
+                result = split_clip(item, int(frame))
             except Exception:
-                return False
+                result = None
+            if isinstance(result, bool):
+                if result:
+                    return True
+            elif result is not None:
+                return True
+            try:
+                result = split_clip(item, int(rel_frame))
+                if isinstance(result, bool):
+                    if result:
+                        return True
+                elif result is not None:
+                    return True
+            except Exception:
+                pass
+            if fps:
+                try:
+                    timecode = ResolveAPI._frames_to_timecode(int(frame), float(fps))
+                    result = split_clip(item, timecode)
+                    if isinstance(result, bool):
+                        return bool(result)
+                    if result is not None:
+                        return True
+                except Exception:
+                    pass
+            set_frame = getattr(timeline, "SetCurrentFrame", None)
+            set_timecode = getattr(timeline, "SetCurrentTimecode", None)
+            get_frame = getattr(timeline, "GetCurrentFrame", None)
+            get_timecode = getattr(timeline, "GetCurrentTimecode", None)
+            prev_frame = None
+            prev_timecode = None
+            if callable(get_frame):
+                try:
+                    prev_frame = int(get_frame())
+                except Exception:
+                    prev_frame = None
+            if prev_frame is None and callable(get_timecode):
+                try:
+                    prev_timecode = str(get_timecode())
+                except Exception:
+                    prev_timecode = None
+            if callable(set_frame):
+                try:
+                    set_frame(int(frame))
+                except Exception:
+                    pass
+            elif callable(set_timecode) and fps:
+                try:
+                    set_timecode(ResolveAPI._frames_to_timecode(int(frame), float(fps)))
+                except Exception:
+                    pass
+            try:
+                result = split_clip(item)
+                if isinstance(result, bool):
+                    if result:
+                        return True
+                elif result is not None:
+                    return True
+            except Exception:
+                pass
+            try:
+                result = split_clip()
+                if isinstance(result, bool):
+                    if result:
+                        return True
+                elif result is not None:
+                    return True
+            except Exception:
+                pass
+            finally:
+                if prev_frame is not None and callable(set_frame):
+                    try:
+                        set_frame(prev_frame)
+                    except Exception:
+                        pass
+                elif prev_timecode is not None and callable(set_timecode):
+                    try:
+                        set_timecode(prev_timecode)
+                    except Exception:
+                        pass
         split_item = getattr(item, "Split", None)
         if callable(split_item):
             try:
-                split_item(int(frame))
+                result = split_item(int(rel_frame))
+                if isinstance(result, bool):
+                    return bool(result)
                 return True
             except Exception:
-                return False
+                try:
+                    result = split_item(int(frame))
+                    if isinstance(result, bool):
+                        return bool(result)
+                    return True
+                except Exception:
+                    return False
         return False
 
     def _resolve_disable_method(self, timeline: Any, track_count: int) -> Optional[str]:
@@ -2164,6 +2601,9 @@ class ResolveAPI:
 
         append_method = getattr(media_pool, "AppendToTimeline", None)
         if callable(append_method):
+            timeline = self.get_current_timeline()
+            pre_items = timeline.GetItemListInTrack(track_type, int(track_index)) or []
+            pre_ids = {id(item) for item in pre_items}
             payload = {
                 "mediaPoolItem": clip,
                 "startFrame": start_frame,
@@ -2178,14 +2618,55 @@ class ResolveAPI:
                     "Insert clip range debug: AppendToTimeline payload succeeded: %s",
                     payload,
                 )
-                inserted = self._find_item_near_frame(
-                    track_type, track_index, int(record_frame)
-                )
+                post_items = timeline.GetItemListInTrack(track_type, int(track_index)) or []
+                new_items = [item for item in post_items if id(item) not in pre_ids]
+                inserted = None
+                if new_items:
+                    if len(new_items) == 1:
+                        inserted = new_items[0]
+                    else:
+                        for item in new_items:
+                            item_path = self._timeline_item_media_path(item)
+                            clip_path = None
+                            try:
+                                prop = getattr(clip, "GetClipProperty", None)
+                                if callable(prop):
+                                    props = prop() or {}
+                                    if isinstance(props, dict):
+                                        clip_path = props.get("File Path") or props.get("FilePath")
+                            except Exception:
+                                clip_path = None
+                            if clip_path and item_path and str(item_path).lower() != str(clip_path).lower():
+                                continue
+                            inserted = item
+                            break
+                if inserted is None:
+                    inserted = self._find_item_near_frame(
+                        track_type, track_index, int(record_frame)
+                    )
+                    if inserted is not None and id(inserted) in pre_ids:
+                        inserted = None
+                if inserted is None:
+                    track_count = int(timeline.GetTrackCount(track_type) or 0)
+                    for idx in range(1, track_count + 1):
+                        if idx == int(track_index):
+                            continue
+                        post_items = timeline.GetItemListInTrack(track_type, idx) or []
+                        new_items = [item for item in post_items if id(item) not in pre_ids]
+                        if not new_items:
+                            continue
+                        inserted = new_items[0]
+                        logger.info(
+                            "Insert clip range debug: inserted on track %s (requested %s)",
+                            idx,
+                            track_index,
+                        )
+                        break
                 if inserted is None:
                     logger.info(
                         "Insert clip range debug: append succeeded but timeline item not located"
                     )
-                    return clip
+                    return None
                 return inserted
             except Exception as exc:
                 logger.info("Insert clip range debug: AppendToTimeline failed: %s", exc)

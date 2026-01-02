@@ -42,6 +42,7 @@ class ConfigManager:
         self._ensure_audio_sync_defaults()
         self._ensure_beat_defaults()
         self._ensure_multicam_defaults()
+        self._ensure_scene_defaults()
         self._ensure_agent_defaults()
 
     @staticmethod
@@ -191,6 +192,38 @@ class ConfigManager:
             if key not in self._config:
                 self._config[key] = value
                 changed = True
+        if changed:
+            self._save()
+
+    def _ensure_scene_defaults(self) -> None:
+        defaults = {
+            "scene_detection_threshold": 8,
+            "scene_detection_sample_rate": 1,
+            "scene_cut_min_gap_frames": 3,
+            "scene_cut_keep_audio": False,
+        }
+        changed = False
+        for key, value in defaults.items():
+            if key not in self._config:
+                self._config[key] = value
+                changed = True
+        raw_threshold = self._config.get("scene_detection_threshold")
+        try:
+            threshold_value = float(raw_threshold) if raw_threshold is not None else None
+        except (TypeError, ValueError):
+            threshold_value = None
+        if threshold_value in {30.0, 10.0}:
+            self._config["scene_detection_threshold"] = defaults["scene_detection_threshold"]
+            changed = True
+
+        raw_sample_rate = self._config.get("scene_detection_sample_rate")
+        try:
+            sample_rate_value = int(raw_sample_rate) if raw_sample_rate is not None else None
+        except (TypeError, ValueError):
+            sample_rate_value = None
+        if sample_rate_value in {2}:
+            self._config["scene_detection_sample_rate"] = defaults["scene_detection_sample_rate"]
+            changed = True
         if changed:
             self._save()
 

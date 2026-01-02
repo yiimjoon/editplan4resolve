@@ -361,9 +361,9 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
 
     raw_threshold = Config.get("scene_detection_threshold")
     try:
-        threshold_value = int(float(raw_threshold)) if raw_threshold is not None else 30
+        threshold_value = int(float(raw_threshold)) if raw_threshold is not None else 8
     except (TypeError, ValueError):
-        threshold_value = 30
+        threshold_value = 8
 
     panel.scene_threshold_label = QLabel(f"Sensitivity: {threshold_value}")
     panel.scene_threshold_label.setStyleSheet(
@@ -372,11 +372,22 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     right_col.addWidget(panel.scene_threshold_label)
 
     panel.scene_threshold_slider = QSlider(Qt.Horizontal)
-    panel.scene_threshold_slider.setMinimum(10)
+    panel.scene_threshold_slider.setMinimum(5)
     panel.scene_threshold_slider.setMaximum(50)
     panel.scene_threshold_slider.setValue(int(threshold_value))
     panel.scene_threshold_slider.valueChanged.connect(panel._on_scene_threshold_changed)
     right_col.addWidget(panel.scene_threshold_slider)
+
+    panel.scene_split_btn = QPushButton("Split Selected Clips (Scene Cuts)")
+    panel.scene_split_btn.setCursor(Qt.PointingHandCursor)
+    panel.scene_split_btn.clicked.connect(panel._on_scene_split_clicked)
+    right_col.addWidget(panel.scene_split_btn)
+
+    panel.scene_keep_audio_checkbox = QCheckBox("Keep Audio on Scene Cuts")
+    keep_audio_value = Config.get("scene_cut_keep_audio", False)
+    panel.scene_keep_audio_checkbox.setChecked(bool(keep_audio_value))
+    panel.scene_keep_audio_checkbox.stateChanged.connect(panel._on_scene_keep_audio_changed)
+    right_col.addWidget(panel.scene_keep_audio_checkbox)
 
     panel.quality_check_checkbox = QCheckBox("Enable Quality Check (Stock/AI)")
     quality_check_value = Config.get("enable_quality_check")
