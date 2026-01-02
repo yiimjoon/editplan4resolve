@@ -72,7 +72,7 @@ def build_analyze_section(panel, parent_layout: QVBoxLayout) -> None:
 
     log_row = QHBoxLayout()
     log_row.setSpacing(6)
-    panel.log_path_label = QLabel("Log: VideoForge.log")
+    panel.log_path_label = QLabel("Log: EditPlan.log")
     log_path = panel._get_log_path()
     if log_path:
         panel.log_path_label.setToolTip(str(log_path))

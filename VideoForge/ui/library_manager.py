@@ -169,7 +169,7 @@ class ClipsTableModel(QAbstractTableModel):
 class LibraryManager(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("VideoForge Library Manager")
+        self.setWindowTitle("editρlan Library Manager")
         self.resize(1280, 760)
 
         self._db_path: Optional[Path] = None
@@ -445,6 +445,15 @@ class LibraryManager(QMainWindow):
             return
         self.load_database(path)
 
+    def _ensure_schema(self, path: Path) -> None:
+        schema_path = Path(__file__).resolve().parents[1] / "config" / "schema.sql"
+        if not schema_path.exists():
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(path) as conn:
+            schema = schema_path.read_text(encoding="utf-8")
+            conn.executescript(schema)
+
     @staticmethod
     def _normalize_path(path: str) -> str:
         return os.path.normcase(os.path.abspath(path))
@@ -461,13 +470,14 @@ class LibraryManager(QMainWindow):
 
     def load_database(self, path: str) -> None:
         self._db_path = Path(path)
+        self._ensure_schema(self._db_path)
         self._ensure_library_folder_column()
         self._ensure_library_folder_table()
         self._library_type = self._resolve_library_type(self._db_path)
         self.db_label.setText(f"Database: {path}")
         self.library_type_label.setText(f"Library Type: {self._library_type}")
         self.stats_library_label.setText(f"Library Type: {self._library_type}")
-        self.setWindowTitle(f"VideoForge Library Manager ({self._library_type})")
+        self.setWindowTitle(f"editρlan Library Manager ({self._library_type})")
         self._load_columns()
         self._page = 0
         self._search_text = ""

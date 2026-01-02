@@ -4,7 +4,7 @@ from __future__ import annotations
 
 try:
     from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer, QSize, QPropertyAnimation, QEasingCurve
-    from PySide6.QtGui import QIcon
+    from PySide6.QtGui import QIcon, QFontMetrics
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -36,7 +36,7 @@ try:
     )
 except Exception:
     from PySide2.QtCore import QObject, QThread, Signal, Qt, QTimer, QSize, QPropertyAnimation, QEasingCurve
-    from PySide2.QtGui import QIcon
+    from PySide2.QtGui import QIcon, QFontMetrics
     from PySide2.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -78,6 +78,7 @@ __all__ = [
     "QHBoxLayout",
     "QHeaderView",
     "QIcon",
+    "QFontMetrics",
     "QInputDialog",
     "QLabel",
     "QLineEdit",

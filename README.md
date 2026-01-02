@@ -1,85 +1,93 @@
-# VideoForge MVP
+﻿# editρlan for DaVinci Resolve
 
-Local-first video editing automation pipeline. This MVP provides a runnable skeleton with clear module boundaries, adapters, and a timeline.json export used by both DaVinci Resolve and EDL. It also includes a Resolve Fusion Script UI entry point for in-app execution.
+> **Plan-driven precision editing for professionals**
 
-## Quickstart
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)]()
+[![Resolve](https://img.shields.io/badge/DaVinci%20Resolve-18.5%2B-orange.svg)]()
+[![Python](https://img.shields.io/badge/python-3.12-green.svg)]()
 
-Requirements:
-- Python 3.11+
-- ffmpeg + ffprobe on PATH
-- (Optional) faster-whisper, open-clip-torch, faiss-cpu, DaVinci Resolve scripting
+---
 
-Setup:
-```
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install -e .
-```
+## 🎯 What is editρlan?
 
-Index a B-roll library (use a real folder path):
-```
-videoforge library scan E:\Media\Broll --library VideoForge\data\cache\library.db
-```
+**editρlan** (pronounced "Edit-Rho-Plan") is a plan-review-apply workflow automation plugin for DaVinci Resolve, designed by **Rho Young Woo** for professional video editors.
 
-Analyze a main video:
-```
-videoforge analyze path\to\main.mp4 --stage all
-```
+### Why ρ (Rho)?
 
-Match B-roll:
-```
-videoforge match VideoForge\data\projects\<project_id>.db --library VideoForge\data\cache\library.db
-```
+- **Creator Signature:** Named after the developer's last name (Rho)
+- **Engineering Symbolism:**
+  - **ρ = Density** (Physics): Tight, precise edits with no waste
+  - **ρ = Correlation** (Statistics): Perfect sync/match of timeline elements
+- **Professional Tool Aesthetic:** A specialist tool, not a consumer app
 
-Build timeline.json:
-```
-videoforge build VideoForge\data\projects\<project_id>.db --main path\to\main.mp4 --output timeline.json
-```
+---
 
-Export:
-```
-videoforge export timeline.json --to resolve
-videoforge export timeline.json --format edl --output output.edl
+## ✨ Core Philosophy: Plan → Review → Apply
+
+Unlike "auto" tools, editρlan emphasizes **human control**:
+
+1. **Plan:** Define your editing strategy (transcription, B-roll matching, multicam sync)
+2. **Review:** Approve AI-generated plans before execution
+3. **Apply:** Precise, non-destructive timeline updates
+
+---
+
+## 🚀 Quick Start (3 Steps)
+
+### 1. Install Dependencies
+
+```bash
+pip install -r requirements.txt
 ```
 
-Debug:
+### 2. Deploy to Resolve
+
+Note: The technical package name remains `VideoForge` for compatibility. The UI displays **editρlan**.
+
+```bash
+# Windows
+robocopy VideoForge "%APPDATA%\Blackmagic Design\DaVinci Resolve\Support\Fusion\Scripts\Comp\VideoForge" /E
+
+# macOS/Linux
+cp -r VideoForge ~/Library/Application\ Support/Blackmagic\ Design/DaVinci\ Resolve/Fusion/Scripts/Comp/VideoForge
 ```
-videoforge debug VideoForge\data\projects\<project_id>.db --show-segments
-```
 
-## Notes
-- AutoResolve interactions are encapsulated in adapters.
-- The pipeline uses timeline.json as the single export interface.
-- Optional dependencies degrade gracefully.
-- If image/JPG metadata is stripped by downloads or editors, generate `.json` sidecars from the Scene_* video metadata using `scripts/generate_sidecars.py`.
+### 3. Launch in Resolve
 
-## Resolve Plugin
-Install the Resolve Fusion Script plugin using `INSTALL_PLUGIN.md`. Run it from Workspace > Scripts > Comp > VideoForge > VideoForge.
+Workspace → Scripts → Comp → VideoForge → VideoForge
 
-Plugin workflow (inside Resolve):
-1. Select a timeline clip.
-2. Click "Analyze Selected Clip".
-3. Set or scan the B-roll library.
-4. Click "Match B-roll".
-5. Click "Apply to Timeline".
+---
 
-CLI vs Plugin:
-- CLI runs externally and exports `timeline.json`, which you then import or export to Resolve/EDL.
-- Plugin runs inside Resolve and applies results directly to the active timeline.
+## 📚 Documentation
 
-## Credits
+- User Guide
+- Developer Guide
+- API Reference
 
-VideoForge is built upon MIT-licensed open source projects:
+## 🎨 UI Preview
 
-- AutoResolve by HawzhinBlanca
-  https://github.com/HawzhinBlanca/AutoResolve
-- Video-Editing-Automation by ap-atul
-  https://github.com/ap-atul/Video-Editing-Automation
-- eddie-smart-video-editor by ZoeDekraker
-  https://github.com/ZoeDekraker/eddie-smart-video-editor
-- pydavinci by Pedro Labonia
-  https://github.com/pedrolabonia/pydavinci
+VSCode-style sidebar with DaVinci Resolve color palette.
 
-## License
+## 🛠️ Tech Stack
 
-MIT
+- UI: PySide6, VSCode-style navigation
+- AI: OpenCLIP (ViT-B-32), Faster-Whisper (large-v3)
+- Video: OpenCV (scene detection, quality check)
+- Backend: SQLite (FTS5 + Vector), DaVinci Resolve Scripting API
+
+## 📖 Version History
+
+- v2.0.0 (2026-01-02): Complete UI redesign + Rebranding to editρlan
+- v1.10.0 (2025-XX-XX): Previous version (VideoForge legacy)
+
+## 📄 License
+
+MIT License - See LICENSE for details
+
+## 👤 Author
+
+Rho Young Woo
+
+Specialist video editor & automation engineer
+
+editρlan - Precision editing, planned.

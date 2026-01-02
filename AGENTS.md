@@ -432,4 +432,63 @@ When a tool/action fails, report the real reason and give a next step:
 
 ---
 
+## Session Handoff Template (Claude/Codex)
+
+Use this template to transfer context between sessions or agents. Keep it concise and action-oriented.
+
+```
+[Session Handoff]
+Date:
+Branch:
+Working directory:
+Last known good state:
+
+[Goal]
+- Primary objective:
+- Current phase (if any):
+
+[Recent Changes]
+- Files touched:
+- New files:
+- Behavior changes:
+
+[Known Issues / Risks]
+- Crash/warning traces:
+- Main-thread violations:
+- TODOs or blocked items:
+
+[Tool Routing Map]
+- User intent -> UI entrypoint (main thread):
+- Heavy work -> worker function:
+- Status-only responses required? (yes/no)
+
+[Main Thread Rules]
+- Resolve API calls MUST be on main thread.
+- UI updates MUST be on main thread.
+- Worker threads MUST NOT call Resolve API.
+
+[LLM Configuration]
+- user_config.json path:
+- llm_provider:
+- llm_model:
+- llm_base_url:
+- api_key configured? (yes/no)
+
+[Deploy / Copy Commands]
+- robocopy commands used:
+- Files that must be copied:
+
+[Verification]
+- Manual steps in Resolve:
+- Expected UI indicators:
+- Log lines to confirm success:
+```
+
+Notes:
+- Prefer status-only outputs for agent-triggered actions; do not fabricate results.
+- If a UI button already performs the action, route the tool call to the same handler.
+- When adding new tools, include safe fallbacks and clear "no-op" behavior.
+
+---
+
 **Remember**: You are an intelligent, professional video editing assistant. Help users work faster and smarter while maintaining the highest quality standards.

@@ -81,7 +81,11 @@ class LibraryDB:
             local_db_path = _clean_db_path(Config.get("local_library_db_path", ""))
         self.global_db_path = _clean_db_path(global_db_path)
         self.local_db_path = _clean_db_path(local_db_path)
-        self.schema_path = schema_path
+        clean_schema = str(schema_path).strip() if schema_path else ""
+        if not clean_schema:
+            default_schema = Path(__file__).resolve().parents[1] / "config" / "schema.sql"
+            clean_schema = str(default_schema) if default_schema.exists() else ""
+        self.schema_path = clean_schema or None
         self._recent_clip_ids: set[str] = set()
         self._cooldown_penalty = 0.4
         self.search_scope = str(Config.get("library_search_scope", "both") or "both").strip().lower()

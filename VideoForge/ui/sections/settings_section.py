@@ -90,9 +90,9 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     llm_layout = llm_card.content_layout
 
     panel.llm_provider_combo = QComboBox()
-    panel.llm_provider_combo.addItems(["disabled", "gemini"])
+    panel.llm_provider_combo.addItems(["disabled", "gemini", "zai"])
     saved_provider = Config.get("llm_provider") or get_llm_provider() or "disabled"
-    if saved_provider in {"disabled", "gemini"}:
+    if saved_provider in {"disabled", "gemini", "zai"}:
         panel.llm_provider_combo.setCurrentText(saved_provider)
     else:
         panel.llm_provider_combo.setCurrentText("disabled")
@@ -109,10 +109,16 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
 
     panel.llm_key_edit = QLineEdit()
     panel.llm_key_edit.setEchoMode(QLineEdit.Password)
-    panel.llm_key_edit.setPlaceholderText("Gemini API key")
+    panel.llm_key_edit.setPlaceholderText("LLM API key (Gemini/Z.ai)")
     panel.llm_key_edit.setText(str(Config.get("llm_api_key") or (get_llm_api_key() or "")))
     panel.llm_key_edit.textChanged.connect(panel._on_llm_key_changed)
     add_setting_row(llm_layout, "LLM API Key", panel.llm_key_edit)
+
+    panel.llm_base_url_edit = QLineEdit()
+    panel.llm_base_url_edit.setPlaceholderText("https://api.z.ai/api/paas/v4/")
+    panel.llm_base_url_edit.setText(str(Config.get("llm_base_url") or ""))
+    panel.llm_base_url_edit.textChanged.connect(panel._on_llm_base_url_changed)
+    add_setting_row(llm_layout, "LLM Base URL", panel.llm_base_url_edit)
 
     panel.llm_max_tokens_edit = QLineEdit()
     panel.llm_max_tokens_edit.setFixedWidth(80)
@@ -251,13 +257,13 @@ def build_settings_section(panel, parent_layout: QVBoxLayout) -> None:
     panel.agent_mode_combo.currentTextChanged.connect(panel._on_agent_mode_changed)
     agent_layout.addWidget(panel.agent_mode_combo)
 
-    agent_key_label = QLabel("Agent API Key (Gemini):")
+    agent_key_label = QLabel("Agent API Key:")
     agent_key_label.setStyleSheet(f"color: {panel.colors['text_dim']}; font-size: 11px;")
     agent_layout.addWidget(agent_key_label)
 
     panel.agent_api_key_input = QLineEdit()
     panel.agent_api_key_input.setEchoMode(QLineEdit.Password)
-    panel.agent_api_key_input.setPlaceholderText("Gemini API key (uses LLM key if empty)")
+    panel.agent_api_key_input.setPlaceholderText("LLM API key (uses LLM key if empty)")
     agent_key_value = str(Config.get("agent_api_key", "")).strip()
     if not agent_key_value:
         agent_key_value = str(Config.get("llm_api_key", "")).strip()

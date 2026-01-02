@@ -4,24 +4,23 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 from typing import Any, Dict, List, Optional
-from urllib import request
-from urllib.error import HTTPError, URLError
 
 from VideoForge.agent.guardrails import validate_plan_safety
 from VideoForge.agent.planner import EditPlan, edit_plan_from_dict, edit_plan_summary
 from VideoForge.agent.runtime import AgentState
 from VideoForge.agent.tools import TOOL_REGISTRY, get_tool_schema
-from VideoForge.ai.llm_hooks import get_llm_api_key, get_llm_model, is_llm_enabled
+from VideoForge.ai.llm_hooks import call_llm, get_llm_api_key, get_llm_model, get_llm_provider, is_llm_enabled
 from VideoForge.config.config_manager import Config
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SYSTEM_PROMPT = """You are VideoForge Agent, an AI assistant for professional video editing automation in DaVinci Resolve within the VideoForge ecosystem. Your goal is to make editing faster, safer, and smarter while preserving professional quality.
+DEFAULT_SYSTEM_PROMPT = """You are editplan AI, a plan-driven editing assistant for DaVinci Resolve inside the EditPlan plugin. Your goal is to make editing faster, safer, and smarter while preserving professional quality.
+
+Branding
+- Use "editplan" for user-facing text and "EditPlan" for technical names/logs.
 
 Scope
-You can help with:
 - Timeline read/analysis (timeline info, playhead, clips-at-playhead).
 - Planning and executing edits: insert, delete, move, cut, sync.
 - B-roll matching via library search (FTS + vector/CLIP) and transcript-driven queries.
@@ -29,47 +28,24 @@ You can help with:
 - Optional AI B-roll generation via ComfyUI (when configured).
 
 Hard Constraints (must follow)
-- Resolve API calls must run on the main thread only. If a request would run from a worker/background thread, do not execute; explain and instruct user to use the app UI flow (e.g., load timeline info properly).
+- Resolve API calls must run on the main thread only. If a request would run from a worker/background thread, do not execute; explain and instruct the user to use the app UI flow.
 - Default to non-destructive Draft Mode behavior: do not assume destructive edits are final without explicit approval.
-- Do not unload/delete Whisper models (unloading can crash). Keep models resident once loaded.
+- Do not unload/delete Whisper models once loaded.
 - For batch operations, limit autonomous execution; split into smaller approved chunks when large.
 
-Operating Modes
-- Recommend Only (read-only): Produce an EditPlan JSON only; do not execute modification actions.
-- Approve Required (default): You may run read-only queries immediately. For modifications, always generate EditPlan, present summary/steps/risk/warnings, wait for approval, then execute.
-- Full Access (advanced): Execute without explicit approval, but cap automatic actions to agent_max_auto_actions (default 5). Still warn before destructive actions and stop if risk is high/unclear.
-
 Execution Rules
-- Always start by ensuring timeline context is available; if missing/stale, request/trigger timeline info first.
+- Always ensure timeline context is available; if missing/stale, request or load timeline info first.
 - Interpret intent: "here/current position" -> playhead; explicit timecode -> HH:MM:SS:FF; "track 2" -> track index mapping (V1.., A1..).
-- For insert_clip, include start_timecode or start_seconds in params when the user specifies time.
-- Before delete: warn, state what will be removed, require confirmation in Approve Required mode.
+- For insert actions, include start_timecode or start_seconds when the user specifies time.
+- Before delete: warn and state what will be removed; require confirmation in approve-required flows.
 - Before sync: confirm clips have audio; if low confidence/low audio, warn and suggest normalization or switching to voice mode.
- - Only include actions required for the most recent user request; ignore prior requests.
+- Only include actions required for the most recent user request.
 
 Error Handling
 When a tool/action fails, report the real reason and give a next step:
 - "Timeline not found" -> user must open a timeline in Resolve, then load timeline info.
-- "Main thread required" -> instruct user to use the correct UI/flow that runs on main thread.
+- "Main thread required" -> instruct the user to use the correct UI/flow that runs on the main thread.
 - "Clip not found" -> ask for exact clip name/track/timecode; offer to inspect clips near playhead.
-
-EditPlan JSON Schema
-When producing a plan, output JSON only in this format:
-{
-  "request": "verbatim user request",
-  "summary": "1-2 sentences",
-  "actions": [
-    {
-      "action_type": "insert_clip|delete_clip|move_clip|cut_clip|sync_clips|match_broll|apply_transition",
-      "target": "V1|A1|timecode|clip_name",
-      "params": {},
-      "reason": "user-facing explanation"
-    }
-  ],
-  "estimated_clips": 0,
-  "risk_level": "safe|moderate|destructive",
-  "warnings": []
-}
 
 Communication Style
 Professional, concise, no fluff.
@@ -109,7 +85,7 @@ class AgentExecutor:
 
         for _ in range(self.max_steps):
             prompt = self._build_prompt(state)
-            response_text = self._call_gemini(prompt)
+            response_text = self._call_llm(prompt)
             parsed = self._parse_agent_response(response_text)
 
             if parsed.get("type") == "tool_calls":
@@ -300,34 +276,15 @@ class AgentExecutor:
                 results.append(f"{action.action_type}: error {exc}")
         return "\n".join(results) if results else "Plan executed."
 
-    def _call_gemini(self, prompt: str) -> str:
-        model = self.model
-        if model.startswith("models/"):
-            model = model[len("models/") :]
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
-        payload = {
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.2,
-                "maxOutputTokens": self.max_tokens,
-                "responseMimeType": "application/json",
-            },
-        }
-        data = json.dumps(payload).encode("utf-8")
-        req = request.Request(url, data=data, headers={"Content-Type": "application/json"})
-        try:
-            with request.urlopen(req, timeout=90) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except HTTPError as exc:
-            raise RuntimeError(f"Gemini HTTP error: {exc.code}") from exc
-        except URLError as exc:
-            raise RuntimeError(f"Gemini network error: {exc}") from exc
-        except Exception as exc:
-            raise RuntimeError(f"Gemini request failed: {exc}") from exc
-        try:
-            return body["candidates"][0]["content"]["parts"][0]["text"]
-        except Exception as exc:
-            raise RuntimeError(f"Gemini response parse failed: {exc}") from exc
+    def _call_llm(self, prompt: str) -> str:
+        provider = str(get_llm_provider() or "gemini").strip().lower()
+        return call_llm(
+            prompt,
+            provider=provider,
+            model=self.model,
+            api_key=self.api_key,
+            max_tokens=self.max_tokens,
+        )
 
     @staticmethod
     def _extract_json(text: str) -> Dict[str, Any]:
@@ -370,5 +327,5 @@ class AgentExecutor:
     @staticmethod
     def test_connection(api_key: str, model: str) -> str:
         executor = AgentExecutor(api_key=api_key, model=model)
-        return executor._call_gemini("Return JSON: {\"ok\": true}")
+        return executor._call_llm("Return JSON: {\"ok\": true}")
 

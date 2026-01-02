@@ -98,24 +98,36 @@ def is_llm_enabled() -> bool:
         return False
     provider = str(provider).strip().lower()
     if provider == "gemini":
-        return bool(get_llm_api_key())
+        return bool(get_llm_api_key("gemini"))
+    if provider == "zai":
+        return bool(get_llm_api_key("zai"))
     return False
 
 
-def call_llm(prompt: str) -> str:
+def call_llm(
+    prompt: str,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
+    max_tokens: int | None = None,
+) -> str:
     """Call the configured LLM provider with the given prompt."""
-    provider = get_llm_provider()
+    provider = provider or get_llm_provider()
     if not provider:
         raise NotImplementedError(
             "LLM provider not configured. Set Config llm_provider or VIDEOFORGE_LLM_PROVIDER."
         )
     provider = str(provider).strip().lower()
     if provider == "gemini":
-        return _call_gemini(prompt)
+        return _call_gemini(prompt, api_key=api_key, model=model, max_tokens=max_tokens)
+    if provider == "zai":
+        return _call_zai(prompt, api_key=api_key, model=model, max_tokens=max_tokens)
     raise NotImplementedError(f"Unsupported LLM provider: {provider}")
 
 
-def get_llm_model() -> str:
+def get_llm_model(provider: str | None = None) -> str:
+    provider = str(provider or get_llm_provider() or "").strip().lower()
     model = os.environ.get("VIDEOFORGE_LLM_MODEL")
     if model:
         return model
@@ -126,17 +138,41 @@ def get_llm_model() -> str:
         cfg_model = Config.get("llm_model")
         if cfg_model and str(cfg_model).strip():
             return cfg_model
+        if provider == "zai":
+            return "glm-4.7"
         return "gemini-3-flash-preview"
     except Exception:
+        if provider == "zai":
+            return "glm-4.7"
         return "gemini-3-flash-preview"
 
 
-def get_llm_api_key() -> str | None:
-    key = os.environ.get("VIDEOFORGE_GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+def get_llm_api_key(provider: str | None = None) -> str | None:
+    env = load_llm_env()
+    if provider is None:
+        raw_provider = os.environ.get("VIDEOFORGE_LLM_PROVIDER") or env.get("VIDEOFORGE_LLM_PROVIDER")
+        try:
+            cfg_provider = Config.get("llm_provider")
+        except Exception:
+            cfg_provider = None
+        provider = str(cfg_provider or raw_provider or "gemini").strip().lower()
+        if provider in {"", "disabled"}:
+            provider = "gemini"
+    provider = str(provider or "gemini").strip().lower()
+    key = None
+    if provider == "zai":
+        key = os.environ.get("VIDEOFORGE_ZAI_API_KEY") or os.environ.get("ZAI_API_KEY")
+        if not key:
+            key = env.get("VIDEOFORGE_ZAI_API_KEY") or env.get("ZAI_API_KEY")
+    else:
+        key = os.environ.get("VIDEOFORGE_GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        if not key:
+            key = env.get("VIDEOFORGE_GEMINI_API_KEY") or env.get("GEMINI_API_KEY")
+    if not key:
+        key = os.environ.get("VIDEOFORGE_LLM_API_KEY")
     if key:
         return key
-    env = load_llm_env()
-    key = env.get("VIDEOFORGE_GEMINI_API_KEY") or env.get("GEMINI_API_KEY")
+    key = env.get("VIDEOFORGE_LLM_API_KEY")
     if key:
         return key
     try:
@@ -145,6 +181,23 @@ def get_llm_api_key() -> str | None:
         cfg_key = None
     if cfg_key and str(cfg_key).strip():
         return cfg_key
+    return None
+
+
+def get_llm_base_url(provider: str | None = None) -> str | None:
+    provider = str(provider or get_llm_provider() or "").strip().lower()
+    env = load_llm_env()
+    env_url = os.environ.get("VIDEOFORGE_LLM_BASE_URL") or env.get("VIDEOFORGE_LLM_BASE_URL")
+    if env_url and str(env_url).strip():
+        return str(env_url).strip()
+    try:
+        cfg_url = Config.get("llm_base_url")
+    except Exception:
+        cfg_url = None
+    if cfg_url and str(cfg_url).strip():
+        return str(cfg_url).strip()
+    if provider == "zai":
+        return "https://api.z.ai/api/paas/v4/"
     return None
 
 
@@ -233,6 +286,7 @@ def write_llm_env(
     api_key: str | None = None,
     instructions: str | None = None,
     instructions_mode: str | None = None,
+    base_url: str | None = None,
 ) -> None:
     env = load_llm_env()
     if provider is not None:
@@ -247,9 +301,21 @@ def write_llm_env(
             env.pop("VIDEOFORGE_LLM_MODEL", None)
     if api_key is not None:
         if api_key:
-            env["VIDEOFORGE_GEMINI_API_KEY"] = api_key
+            env["VIDEOFORGE_LLM_API_KEY"] = api_key
+            active_provider = str(provider or get_llm_provider() or "gemini").strip().lower()
+            if active_provider == "zai":
+                env["VIDEOFORGE_ZAI_API_KEY"] = api_key
+            else:
+                env["VIDEOFORGE_GEMINI_API_KEY"] = api_key
         else:
+            env.pop("VIDEOFORGE_LLM_API_KEY", None)
             env.pop("VIDEOFORGE_GEMINI_API_KEY", None)
+            env.pop("VIDEOFORGE_ZAI_API_KEY", None)
+    if base_url is not None:
+        if base_url:
+            env["VIDEOFORGE_LLM_BASE_URL"] = base_url
+        else:
+            env.pop("VIDEOFORGE_LLM_BASE_URL", None)
     if instructions is not None:
         mode = (
             str(instructions_mode).strip().lower()
@@ -294,15 +360,20 @@ def _extract_json(text: str) -> Dict[str, Any]:
     return json.loads(payload)
 
 
-def _call_gemini(prompt: str) -> str:
-    api_key = get_llm_api_key()
+def _call_gemini(
+    prompt: str,
+    api_key: str | None = None,
+    model: str | None = None,
+    max_tokens: int | None = None,
+) -> str:
+    api_key = api_key or get_llm_api_key("gemini")
     if not api_key:
         raise NotImplementedError(
             "Gemini API key missing. Set VIDEOFORGE_GEMINI_API_KEY or "
             "Config llm_api_key."
         )
     _log_llm_prompt("gemini", prompt)
-    model = get_llm_model().strip()
+    model = str(model or get_llm_model("gemini")).strip()
     if model.startswith("models/"):
         model = model[len("models/"):]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
@@ -335,14 +406,110 @@ def _call_gemini(prompt: str) -> str:
         raise RuntimeError(f"Gemini response parse failed: {exc}") from exc
 
 
+def _normalize_openai_url(url: str) -> str:
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    lower = text.lower()
+    if text.endswith("/chat/completions"):
+        return text
+    if "/api/paas/" in lower:
+        return text.rstrip("/") + "/chat/completions"
+    if text.endswith("/v1"):
+        return f"{text}/chat/completions"
+    if text.endswith("/v1/"):
+        return f"{text}chat/completions"
+    return text.rstrip("/") + "/v1/chat/completions"
+
+
+def _call_zai(
+    prompt: str,
+    api_key: str | None = None,
+    model: str | None = None,
+    max_tokens: int | None = None,
+) -> str:
+    api_key = api_key or get_llm_api_key("zai")
+    if not api_key:
+        raise NotImplementedError("Z.ai API key missing. Set VIDEOFORGE_ZAI_API_KEY or llm_api_key.")
+    base_url = get_llm_base_url("zai")
+    url = _normalize_openai_url(base_url or "")
+    if not url:
+        raise NotImplementedError("Z.ai base URL missing. Set Config llm_base_url or VIDEOFORGE_LLM_BASE_URL.")
+    _log_llm_prompt("zai", prompt)
+    model = str(model or get_llm_model("zai")).strip() or "glm-4.7"
+    if max_tokens is None:
+        max_tokens = Config.get("llm_max_tokens", 4096)
+    try:
+        max_tokens = int(max_tokens)
+    except Exception:
+        max_tokens = 4096
+    if max_tokens <= 0:
+        max_tokens = 4096
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "max_tokens": max_tokens,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    req = request.Request(url, data=data, headers=headers)
+    try:
+        with request.urlopen(req, timeout=90) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="ignore")
+        except Exception:
+            detail = ""
+        log_id = ""
+        retry_after = ""
+        try:
+            log_id = str(exc.headers.get("X-LOG-ID") or exc.headers.get("X-Log-Id") or "").strip()
+            retry_after = str(exc.headers.get("Retry-After") or "").strip()
+        except Exception:
+            log_id = ""
+            retry_after = ""
+        extra = []
+        if log_id:
+            extra.append(f"X-LOG-ID={log_id}")
+        if retry_after:
+            extra.append(f"retry_after={retry_after}")
+        if detail:
+            extra.append(f"body={detail}")
+        suffix = f" ({'; '.join(extra)})" if extra else ""
+        raise RuntimeError(f"Z.ai HTTP error: {exc.code}{suffix}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Z.ai network error: {exc}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Z.ai request failed: {exc}") from exc
+
+    try:
+        choices = body.get("choices") or []
+        if choices:
+            message = choices[0].get("message") or {}
+            content = message.get("content")
+            if content:
+                return content
+            text = choices[0].get("text")
+            if text:
+                return text
+        if body.get("output"):
+            return str(body["output"])
+    except Exception:
+        pass
+    raise RuntimeError("Z.ai response parse failed.")
+
+
 def suggest_reflow_lines(
     sentences: List[Dict],
     max_chars: int,
 ) -> List[Dict]:
     provider = get_llm_provider()
-    if provider != "gemini":
+    if not provider:
         raise NotImplementedError(
-            "LLM provider not configured for reflow. Set VIDEOFORGE_LLM_PROVIDER=gemini."
+            "LLM provider not configured for reflow. Set Config llm_provider first."
         )
 
     lines = []
@@ -362,7 +529,7 @@ def suggest_reflow_lines(
         + "\n".join(lines)
     )
 
-    raw_text = _call_gemini(prompt)
+    raw_text = call_llm(prompt, provider=provider)
     data = _extract_json(raw_text)
     updated = {int(item["index"]): str(item["text"]) for item in data.get("lines", [])}
 
@@ -384,9 +551,9 @@ def suggest_reorder(
     cut_strength: float = 0.2,
 ) -> Dict[str, Any]:
     provider = get_llm_provider()
-    if provider != "gemini":
+    if not provider:
         raise NotImplementedError(
-            "LLM provider not configured for reorder. Set VIDEOFORGE_LLM_PROVIDER=gemini."
+            "LLM provider not configured for reorder. Set Config llm_provider first."
         )
 
     lines = []
@@ -408,7 +575,7 @@ def suggest_reorder(
         + "\n".join(lines)
     )
 
-    raw_text = _call_gemini(prompt)
+    raw_text = call_llm(prompt, provider=provider)
     data = _extract_json(raw_text)
 
     def _to_int(value: Any) -> int | None:

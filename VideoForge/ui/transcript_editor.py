@@ -139,7 +139,7 @@ class TranscriptEditorPanel(QWidget):
         self._load_transcript()
 
     def _build_ui(self) -> None:
-        self.setWindowTitle("VideoForge - Transcript Editor")
+        self.setWindowTitle("editρlan - Transcript Editor")
         self.setMinimumSize(800, 500)
 
         layout = QVBoxLayout(self)

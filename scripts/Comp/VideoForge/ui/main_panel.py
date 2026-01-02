@@ -19,6 +19,7 @@ from VideoForge.config.config_manager import Config
 from VideoForge.core.segment_store import SegmentStore
 from VideoForge.core.project_cleanup import cleanup_project_files
 from VideoForge.plugin.resolve_bridge import ResolveBridge
+from VideoForge.agent.executor import DEFAULT_SYSTEM_PROMPT
 from VideoForge.core.silence_processor import (
     process_silence,
     render_silence_removed_with_reorder,
@@ -27,12 +28,19 @@ from VideoForge.core.silence_processor import (
 from VideoForge.adapters.audio_adapter import render_silence_removed
 from VideoForge.adapters.scene_detector import SceneDetector
 from VideoForge.errors import VideoForgeError
-from VideoForge.ai.llm_hooks import is_llm_enabled, write_llm_env
+from VideoForge.ai.llm_hooks import (
+    call_llm,
+    get_llm_model,
+    get_llm_provider,
+    is_llm_enabled,
+    write_llm_env,
+)
 from VideoForge.ui.qt_compat import (
     QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QFontMetrics,
     QFrame,
     QHBoxLayout,
     QIcon,
@@ -47,6 +55,7 @@ from VideoForge.ui.qt_compat import (
     QSlider,
     QSize,
     QStackedWidget,
+    QTextBrowser,
     QThread,
     QToolButton,
     Qt,
@@ -136,6 +145,45 @@ STYLESHEET = f"""
         border-radius: 10px;
         padding: 2px 8px;
         font-size: 10px;
+    }}
+
+    /* Chat Panel */
+    QFrame#ChatPanel {{
+        background-color: {COLORS['bg_panel']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 6px;
+    }}
+    QLabel#ChatTitle {{
+        color: {COLORS['text_main']};
+        font-size: 11px;
+        font-weight: 600;
+    }}
+    QLabel#ChatMeta {{
+        color: {COLORS['text_dim']};
+        font-size: 10px;
+    }}
+    QTextBrowser#ChatHistory {{
+        background-color: {COLORS['bg_window']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 4px;
+        padding: 6px;
+        font-size: 11px;
+    }}
+    QLineEdit#ChatInput {{
+        background-color: {COLORS['bg_window']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 4px;
+        padding: 6px 8px;
+    }}
+    QPushButton#ChatClear {{
+        background-color: {COLORS['button_bg']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 4px;
+        padding: 6px 12px;
+        color: {COLORS['text_main']};
+        font-family: 'JetBrains Mono', 'Consolas', monospace;
+        font-size: 11px;
+        text-transform: lowercase;
     }}
 
     /* Collapsible Card Headers */
@@ -245,6 +293,15 @@ STYLESHEET = f"""
         border-radius: 5px;
     }}
 """
+
+
+class ClickableLabel(QLabel):
+    clicked = Signal()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 class Worker(QObject):
@@ -404,7 +461,11 @@ class VideoForgePanel(QWidget):
     def _init_ui(self) -> None:
         """Initialize the modernized UI."""
         self.setStyleSheet(STYLESHEET)
-        self.setWindowTitle("VideoForge - Auto B-roll")
+        brand_title = self._brand_title_text()
+        if brand_title == "EditPlan for Resolve":
+            self.setWindowTitle("EditPlan for DaVinci Resolve")
+        else:
+            self.setWindowTitle("editρlan for DaVinci Resolve")
         self.resize(1200, 720)
         self.setMinimumSize(800, 500)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -532,13 +593,13 @@ class VideoForgePanel(QWidget):
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 4)
 
-        title = QLabel("VideoForge")
+        title = QLabel(self._brand_title_text())
         title.setStyleSheet(
             f"font-size: 18px; font-weight: 800; color: {COLORS['text_main']}; "
             "letter-spacing: 1px; background: transparent;"
         )
 
-        subtitle = QLabel("AI B-roll Automation")
+        subtitle = QLabel("Plan-driven Editing for Resolve")
         subtitle.setStyleSheet(
             f"color: {COLORS['text_dim']}; font-size: 11px; background: transparent;"
         )
@@ -564,6 +625,21 @@ class VideoForgePanel(QWidget):
         line.setFixedHeight(1)
         parent_layout.addWidget(line)
 
+    def _brand_title_text(self) -> str:
+        primary = "editρlan"
+        fallback = "EditPlan for Resolve"
+        try:
+            metrics = QFontMetrics(self.font())
+            if hasattr(metrics, "inFontUcs4"):
+                if not metrics.inFontUcs4(ord("ρ")):
+                    return fallback
+            elif hasattr(metrics, "inFont"):
+                if not metrics.inFont("ρ"):
+                    return fallback
+        except Exception:
+            return primary
+        return primary
+
     def _setup_footer(self, parent_layout: QVBoxLayout) -> None:
         """Footer with progress bar and global status."""
         # Progress bar (hidden by default)
@@ -586,9 +662,12 @@ class VideoForgePanel(QWidget):
         self.clip_info_label.setObjectName("StatusBarCenter")
         self.clip_info_label.setAlignment(Qt.AlignCenter)
 
-        self.error_badge = QLabel("Errors: 0")
+        self.error_badge = ClickableLabel("Errors: 0")
         self.error_badge.setObjectName("StatusBadge")
         self.error_badge.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.error_badge.setCursor(Qt.PointingHandCursor)
+        self.error_badge.setToolTip("Open log file")
+        self.error_badge.clicked.connect(self._on_open_log)
 
         status_layout.addWidget(self.status_label)
         status_layout.addStretch(1)
@@ -613,6 +692,226 @@ class VideoForgePanel(QWidget):
         self.timeline_timer.timeout.connect(self._refresh_timeline_info)
         self.timeline_timer.start(2000)
         self._refresh_timeline_info()
+
+        self._setup_chat_panel(parent_layout)
+
+    def _setup_chat_panel(self, parent_layout: QVBoxLayout) -> None:
+        self.chat_messages: list[dict[str, str]] = []
+        self._chat_pending = False
+        self._chat_pending_action = ""
+        self.chat_system_prompt = (
+            DEFAULT_SYSTEM_PROMPT.strip()
+            + "\n\nChat tool mode:\n"
+            + "- Only output JSON.\n"
+            + "- Use tool calls for actions.\n"
+            + "- Never fabricate results; return status-only responses.\n"
+            + "Tools:\n"
+            + "- analyze_selected_clip: Trigger Analyze Selected Clip using current UI settings.\n"
+            + "Output formats:\n"
+            + "{\"type\":\"tool_calls\",\"tool_calls\":[{\"name\":\"analyze_selected_clip\",\"arguments\":{}}]}\n"
+            + "{\"type\":\"final\",\"response\":\"no_action\"}\n"
+        )
+        self.chat_tools = {
+            "analyze_selected_clip": self._chat_action_analyze_selected_clip,
+        }
+
+        chat_panel = QFrame()
+        chat_panel.setObjectName("ChatPanel")
+        chat_layout = QVBoxLayout(chat_panel)
+        chat_layout.setContentsMargins(8, 8, 8, 8)
+        chat_layout.setSpacing(6)
+
+        header = QHBoxLayout()
+        title = QLabel("editρlan AI")
+        title.setObjectName("ChatTitle")
+        self.chat_provider_label = QLabel("")
+        self.chat_provider_label.setObjectName("ChatMeta")
+        header.addWidget(title)
+        header.addStretch(1)
+        header.addWidget(self.chat_provider_label)
+        chat_layout.addLayout(header)
+
+        self.chat_history = QTextBrowser()
+        self.chat_history.setObjectName("ChatHistory")
+        self.chat_history.setMinimumHeight(120)
+        self.chat_history.setMaximumHeight(200)
+        self.chat_history.setOpenExternalLinks(True)
+        chat_layout.addWidget(self.chat_history)
+
+        input_row = QHBoxLayout()
+        self.chat_input = QLineEdit()
+        self.chat_input.setObjectName("ChatInput")
+        self.chat_input.setPlaceholderText("Ask editρlan AI...")
+        self.chat_input.returnPressed.connect(self._on_chat_send)
+        self.chat_send_btn = QPushButton("Send")
+        self.chat_send_btn.setObjectName("PrimaryButton")
+        self.chat_send_btn.clicked.connect(self._on_chat_send)
+        self.chat_clear_btn = QPushButton("Clear")
+        self.chat_clear_btn.setObjectName("ChatClear")
+        self.chat_clear_btn.clicked.connect(self._on_chat_clear)
+        input_row.addWidget(self.chat_input, 1)
+        input_row.addWidget(self.chat_send_btn)
+        input_row.addWidget(self.chat_clear_btn)
+        chat_layout.addLayout(input_row)
+
+        parent_layout.addWidget(chat_panel)
+        self._update_chat_header()
+        self._update_llm_buttons()
+
+    def _update_chat_header(self) -> None:
+        label = getattr(self, "chat_provider_label", None)
+        if not label:
+            return
+        provider = str(get_llm_provider() or "disabled").strip().lower()
+        model = str(Config.get("llm_model") or get_llm_model(provider)).strip()
+        if provider in {"", "disabled"}:
+            label.setText("LLM: disabled")
+        elif model:
+            label.setText(f"LLM: {provider} / {model}")
+        else:
+            label.setText(f"LLM: {provider}")
+
+    def _on_chat_send(self) -> None:
+        if getattr(self, "_chat_pending", False):
+            return
+        text = str(self.chat_input.text() or "").strip()
+        if not text:
+            return
+        if not is_llm_enabled():
+            self._append_chat("system", "LLM is disabled. Enable it in Settings first.")
+            return
+        self.chat_input.clear()
+        self.chat_messages.append({"role": "user", "content": text})
+        self._append_chat("user", text)
+        prompt = self._build_chat_prompt()
+        self._chat_pending = True
+        self.chat_input.setEnabled(False)
+        self.chat_send_btn.setEnabled(False)
+        self._set_status("editρlan AI: thinking...")
+        self._run_chat_worker(lambda: self._chat_request(prompt), on_done=self._on_chat_response)
+
+    def _on_chat_clear(self) -> None:
+        if hasattr(self, "chat_history"):
+            self.chat_history.clear()
+        self.chat_messages.clear()
+        self._chat_pending = False
+
+    def _build_chat_prompt(self) -> str:
+        lines = [self.chat_system_prompt, ""]
+        history = self.chat_messages[-12:]
+        for msg in history:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if not content:
+                continue
+            if role == "assistant":
+                lines.append(f"Assistant: {content}")
+            else:
+                lines.append(f"User: {content}")
+        lines.append("Assistant:")
+        return "\n".join(lines)
+
+    def _chat_request(self, prompt: str) -> str:
+        try:
+            provider = str(get_llm_provider() or "disabled").strip().lower()
+            if provider in {"", "disabled"}:
+                return "Error: LLM provider disabled."
+            model = str(Config.get("llm_model") or get_llm_model(provider)).strip() or None
+            api_key = str(Config.get("llm_api_key") or "").strip() or None
+            return call_llm(prompt, provider=provider, model=model, api_key=api_key)
+        except Exception as exc:
+            return f"Error: {exc}"
+
+    def _on_chat_response(self, response: str) -> None:
+        self._chat_pending = False
+        self.chat_input.setEnabled(True)
+        self.chat_send_btn.setEnabled(True)
+        if not response:
+            response = "Error: empty response"
+        if response.startswith("Error:"):
+            self._append_chat("system", response)
+            self._set_status("editρlan AI: error")
+            return
+        parsed = self._parse_chat_response(response)
+        if parsed.get("type") == "tool_calls":
+            tool_calls = parsed.get("tool_calls", [])
+            if not tool_calls:
+                self._append_chat("system", "Status: no action")
+                self._set_status("editρlan AI: idle")
+                return
+            self._execute_chat_tools(tool_calls)
+            return
+        final_text = str(parsed.get("response") or "").strip() or "no_action"
+        if len(final_text) > 120:
+            final_text = "no_action"
+        self.chat_messages.append({"role": "assistant", "content": final_text})
+        self._append_chat("system", f"Status: {final_text}")
+        self._set_status("editρlan AI: ready")
+
+    def _append_chat(self, role: str, text: str) -> None:
+        if not hasattr(self, "chat_history") or not text:
+            return
+        safe_text = (
+            str(text)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        if role == "user":
+            html = f"<div align='right'><b>You:</b> {safe_text}</div>"
+        elif role == "assistant":
+            html = f"<div align='left'><b>editρlan AI:</b> {safe_text}</div>"
+        else:
+            html = f"<div align='left'><i>{safe_text}</i></div>"
+        self.chat_history.append(html)
+
+    @staticmethod
+    def _parse_chat_response(text: str) -> dict:
+        raw = str(text or "").strip()
+        if not raw:
+            return {"type": "final", "response": ""}
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                if "type" not in data and "tool_calls" in data:
+                    data["type"] = "tool_calls"
+                return data
+        except Exception:
+            pass
+        start_obj = raw.find("{")
+        start_arr = raw.find("[")
+        if start_obj == -1 and start_arr == -1:
+            return {"type": "final", "response": raw}
+        start = start_obj if start_arr == -1 else min(start_obj, start_arr) if start_obj != -1 else start_arr
+        decoder = json.JSONDecoder()
+        try:
+            parsed, _end = decoder.raw_decode(raw[start:])
+            if isinstance(parsed, dict):
+                if "type" not in parsed and "tool_calls" in parsed:
+                    parsed["type"] = "tool_calls"
+                return parsed
+        except Exception:
+            pass
+        return {"type": "final", "response": raw}
+
+    def _execute_chat_tools(self, tool_calls: list[dict]) -> None:
+        for call in tool_calls:
+            name = str(call.get("name") or "").strip()
+            args = call.get("arguments", {}) or {}
+            handler = self.chat_tools.get(name)
+            if not handler:
+                self._append_chat("system", f"Status: unsupported action ({name})")
+                continue
+            QTimer.singleShot(0, self, lambda h=handler, a=args: h(a))
+
+    def _chat_action_analyze_selected_clip(self, _args: dict) -> None:
+        started = bool(self._on_analyze_clicked())
+        if not started:
+            self._append_chat("system", "Status: analyze not started")
+            return
+        self._chat_pending_action = "analyze"
+        self.chat_messages.append({"role": "assistant", "content": "analyze_selected_clip"})
+        self._append_chat("system", "Status: analyzing (started)")
 
     def _set_active_page(self, index: int, save: bool = True, animate: bool = True) -> None:
         if not hasattr(self, "page_stack"):
@@ -806,6 +1105,16 @@ class VideoForgePanel(QWidget):
             self._increment_error_count()
         if level != "error":
             self._refresh_timeline_info()
+        if getattr(self, "_chat_pending_action", "") == "analyze":
+            lower = str(message).strip().lower()
+            if (
+                lower.startswith("analysis complete")
+                or lower.startswith("complete (4/4)")
+                or lower.startswith("warning:")
+                or lower.startswith("error:")
+            ):
+                self._append_chat("system", f"Status: {message}")
+                self._chat_pending_action = ""
 
     @staticmethod
     def _status_level(message: str) -> str:
@@ -1013,7 +1322,7 @@ class VideoForgePanel(QWidget):
             / "Blackmagic Design"
             / "DaVinci Resolve"
             / "Support"
-            / "VideoForge.log"
+            / "EditPlan.log"
         )
 
     def _set_busy(self, busy: bool) -> None:
@@ -1044,10 +1353,9 @@ class VideoForgePanel(QWidget):
         worker = Worker(func, *args)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.finished.connect(
-            lambda result, err, t=thread, w=worker: self._on_worker_done(t, w, result, err, on_done),
-            Qt.QueuedConnection,
-        )
+        def _handle_finished(result, err, t=thread, w=worker, cb=on_done):
+            QTimer.singleShot(0, self, lambda: self._on_worker_done(t, w, cb, result, err))
+        worker.finished.connect(_handle_finished)
         worker.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         thread.start()
@@ -1055,7 +1363,14 @@ class VideoForgePanel(QWidget):
             self._threads.append(thread)
             self._workers.append(worker)
 
-    def _on_worker_done(self, thread: QThread, worker: Worker, result, err, on_done) -> None:
+    def _on_worker_done(
+        self,
+        thread: QThread,
+        worker: Worker,
+        on_done,
+        result,
+        err,
+    ) -> None:
         self._set_busy(False)
         if err:
             if isinstance(err, VideoForgeError):
@@ -1063,6 +1378,42 @@ class VideoForgePanel(QWidget):
                     "VideoForge error: %s", err, extra=getattr(err, "details", None)
                 )
             self._set_status(f"Error: {err}")
+        elif on_done:
+            on_done(result)
+        thread.quit()
+        thread.wait()
+        with self._threads_lock:
+            if thread in self._threads:
+                self._threads.remove(thread)
+            if worker in self._workers:
+                self._workers.remove(worker)
+
+    def _run_chat_worker(self, func, *args, on_done=None) -> None:
+        thread = QThread(self)
+        worker = Worker(func, *args)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        def _handle_finished(result, err, t=thread, w=worker, cb=on_done):
+            QTimer.singleShot(0, self, lambda: self._on_chat_worker_done(t, w, cb, result, err))
+        worker.finished.connect(_handle_finished)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+        with self._threads_lock:
+            self._threads.append(thread)
+            self._workers.append(worker)
+
+    def _on_chat_worker_done(
+        self,
+        thread: QThread,
+        worker: Worker,
+        on_done,
+        result,
+        err,
+    ) -> None:
+        if err:
+            if on_done:
+                on_done(f"Error: {err}")
         elif on_done:
             on_done(result)
         thread.quit()
@@ -1229,6 +1580,10 @@ class VideoForgePanel(QWidget):
         else:
             Config.set("llm_provider", provider)
             write_llm_env(provider=provider)
+            if provider == "zai" and hasattr(self, "llm_model_edit"):
+                model_value = str(self.llm_model_edit.text() or "").strip().lower()
+                if not model_value or model_value.startswith("gemini"):
+                    self.llm_model_edit.setText("glm-4.7")
         enabled = provider != "disabled"
         if hasattr(self, "llm_model_edit"):
             self.llm_model_edit.setEnabled(enabled)
@@ -1236,12 +1591,15 @@ class VideoForgePanel(QWidget):
             self.llm_key_edit.setEnabled(enabled)
         if hasattr(self, "llm_max_tokens_edit"):
             self.llm_max_tokens_edit.setEnabled(enabled)
+        if hasattr(self, "llm_base_url_edit"):
+            self.llm_base_url_edit.setEnabled(enabled)
         if hasattr(self, "agent_mode_combo"):
             self.agent_mode_combo.setEnabled(enabled)
         if hasattr(self, "agent_api_key_input"):
             self.agent_api_key_input.setEnabled(enabled)
         if hasattr(self, "agent_test_btn"):
             self.agent_test_btn.setEnabled(enabled)
+        self._update_llm_buttons()
         if hasattr(self, "agent_status_label") and not enabled:
             self.agent_status_label.setText("Agent Status: Disabled (LLM off)")
         self._update_llm_buttons()
@@ -1263,6 +1621,10 @@ class VideoForgePanel(QWidget):
         Config.set("llm_api_key", str(value))
         write_llm_env(api_key=str(value))
         self._update_llm_buttons()
+
+    def _on_llm_base_url_changed(self, value: str) -> None:
+        Config.set("llm_base_url", str(value))
+        write_llm_env(base_url=str(value))
 
     def _on_llm_max_tokens_changed(self, value: str) -> None:
         try:
@@ -1813,6 +2175,11 @@ class VideoForgePanel(QWidget):
         if hasattr(self, "llm_status_label"):
             status = "Active" if enabled else "Inactive"
             self.llm_status_label.setText(f"LLM Status: {status}")
+        if hasattr(self, "chat_input"):
+            self.chat_input.setEnabled(enabled and not getattr(self, "_chat_pending", False))
+        if hasattr(self, "chat_send_btn"):
+            self.chat_send_btn.setEnabled(enabled and not getattr(self, "_chat_pending", False))
+        self._update_chat_header()
         if getattr(self, "transcript_panel", None):
             try:
                 self.transcript_panel.ai_reflow_btn.setEnabled(enabled)
@@ -2174,7 +2541,7 @@ class VideoForgePanel(QWidget):
             action = Config.get("silence_action", "Insert Above Track (keep original)")
             if action == "Manual (Media Pool only)":
                 try:
-                    self.bridge.resolve_api.add_media_to_bin(str(result), "VideoForge Rendered")
+                    self.bridge.resolve_api.add_media_to_bin(str(result), "editρlan Rendered")
                 except Exception:
                     pass
             self._set_status(f"Rendered: {Path(result).name}")
@@ -2199,7 +2566,7 @@ class VideoForgePanel(QWidget):
 
         def _replace():
             if action == "Manual (Media Pool only)":
-                return self.bridge.resolve_api.add_media_to_bin(rendered, "VideoForge Rendered")
+                return self.bridge.resolve_api.add_media_to_bin(rendered, "editρlan Rendered")
             return self.bridge.resolve_api.insert_rendered_above_clip(
                 clip,
                 rendered,
@@ -2209,7 +2576,7 @@ class VideoForgePanel(QWidget):
         def _done(result):
             if result:
                 if action == "Manual (Media Pool only)":
-                    self._set_status("Rendered clip added to Media Pool (VideoForge Rendered).")
+                    self._set_status("Rendered clip added to Media Pool (editρlan Rendered).")
                 else:
                     self._set_status("Rendered clip inserted above (original preserved).")
             else:
@@ -2294,29 +2661,29 @@ class VideoForgePanel(QWidget):
 
     # --- Event Handlers ---
 
-    def _on_analyze_clicked(self) -> None:
+    def _on_analyze_clicked(self) -> bool:
         logging.getLogger("VideoForge.ui").info("Analyze clicked")
         try:
             clip = self.bridge.resolve_api.get_primary_clip()
         except Exception as exc:
             logging.getLogger("VideoForge.ui").error("Failed to read selection: %s", exc)
             self._set_status(f"Failed to read selection: {exc}")
-            return
+            return False
         logging.getLogger("VideoForge.ui").info(
             "Primary clip found: %s", bool(clip)
         )
         if not clip:
             self._set_status("Select a clip or move the playhead over a clip.")
             self._apply_status_style("error")
-            return
+            return False
         try:
             video_path = self.bridge._get_clip_path(clip)
         except Exception as exc:
             self._set_status(f"Error: Failed to get clip info: {exc}")
-            return
+            return False
         if not video_path:
             self._set_status(self._describe_clip_path_issue(clip))
-            return
+            return False
         self._update_clip_selection_label(video_path)
         clip_range = self.bridge.resolve_api.get_item_range_seconds(clip)
         source_range = self.bridge.resolve_api.get_clip_source_range_seconds(clip)
@@ -2357,14 +2724,15 @@ class VideoForgePanel(QWidget):
                 self._set_status(f"Error: {exc}")
             finally:
                 self._set_busy(False)
-            return
+            return True
 
         def _analyze():
             logger = logging.getLogger("VideoForge.ui.Analyze")
             logger.info("[1/4] Preparing analysis")
             self._update_progress_safe(8)
             self._update_status_safe("Preparing... (1/4)")
-            srt_path = self.srt_path_edit.text().strip() if self.srt_path_edit else ""
+            srt_edit = getattr(self, "srt_path_edit", None)
+            srt_path = srt_edit.text().strip() if srt_edit else ""
             srt_path = srt_path or None
             whisper_task = self.settings.get("whisper", {}).get("task", "transcribe")
             whisper_language = self.settings.get("whisper", {}).get("language", "auto")
@@ -2449,6 +2817,7 @@ class VideoForgePanel(QWidget):
         self.progress.setValue(0)
         self._set_status("Analyzing... Check log for progress")
         self._run_worker(_analyze, on_done=_done)
+        return True
 
     def _on_browse_library(self) -> None:
         logging.getLogger("VideoForge.ui").info("Browse library clicked")
@@ -2477,6 +2846,21 @@ class VideoForgePanel(QWidget):
         global_path = str(Config.get("global_library_db_path") or "").strip()
         local_path = str(Config.get("local_library_db_path") or "").strip()
         return global_path, local_path
+
+    def _ensure_local_library_path(self) -> str:
+        local_path = str(Config.get("local_library_db_path") or "").strip()
+        if local_path:
+            return local_path
+        default_path = ""
+        try:
+            default_path = str(Config._default_local_library_path() or "").strip()
+        except Exception:
+            default_path = ""
+        if default_path:
+            Config.set("local_library_db_path", default_path)
+            if hasattr(self, "local_library_path_input"):
+                self.local_library_path_input.setText(default_path)
+        return default_path
 
     def _validate_library_scope(self) -> bool:
         scope = self._normalize_scope(Config.get("library_search_scope", "both"))
@@ -2787,24 +3171,8 @@ class VideoForgePanel(QWidget):
             QMessageBox.warning(self, "Library Manager", message)
             return
         global_path, local_path = self._get_library_paths()
-        db_path = None
-        if global_path and local_path:
-            dialog = QMessageBox(self)
-            dialog.setWindowTitle("Open Library Manager")
-            dialog.setText("Choose which library to open.")
-            global_btn = dialog.addButton("Global", QMessageBox.AcceptRole)
-            local_btn = dialog.addButton("Local", QMessageBox.AcceptRole)
-            dialog.addButton(QMessageBox.Cancel)
-            dialog.exec()
-            clicked = dialog.clickedButton()
-            if clicked == global_btn:
-                db_path = global_path
-            elif clicked == local_btn:
-                db_path = local_path
-            else:
-                return
-        else:
-            db_path = global_path or local_path
+        local_path = local_path or self._ensure_local_library_path()
+        db_path = local_path or global_path
         if not db_path:
             message = "Set Global/Local library DB path in Settings first."
             self._set_status(message)

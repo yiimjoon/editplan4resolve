@@ -12,7 +12,7 @@ Place this folder in the Resolve Fusion Scripts/Comp directory.
 def main() -> None:
     log_dir = Path(os.environ.get("APPDATA", ".")) / "Blackmagic Design" / "DaVinci Resolve" / "Support"
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "VideoForge.log"
+    log_path = log_dir / "EditPlan.log"
     os.environ.setdefault("VIDEOFORGE_LOG_PATH", str(log_path))
     root_logger = logging.getLogger()
     if not root_logger.handlers:
