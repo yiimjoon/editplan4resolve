@@ -207,5 +207,6 @@ Config.get("multicam_face_model_dir", "")       # optional model dir override
 Config.get("multicam_boundary_mode", "hybrid")  # sentence/fixed/hybrid
 ```
 
-## Version
+## Version History
+v2.0.0 (2026-01-02) - UI Redesign: VSCode-style navigation + DaVinci palette
 v1.12.0 (2025-01-XX) - Phase 11 Auto Multicam Cutter

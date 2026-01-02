@@ -89,7 +89,7 @@ COLORS = {
     "sidebar_hover": "#222222",
 }
 
-VERSION = "v1.10.0"
+VERSION = "v2.0.0"
 
 # --- Stylesheet ---
 STYLESHEET = f"""
